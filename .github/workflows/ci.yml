@@ -21,6 +21,10 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
+      # Type-checks tests too. The build only covers src/, and vitest strips
+      # types, so without this step compile-time assertions in tests - and
+      # plain type errors in tests - are never checked by anything.
+      - run: pnpm typecheck
       - run: pnpm -r --if-present test
       - run: pnpm -r --if-present lint
       - run: pnpm format:check

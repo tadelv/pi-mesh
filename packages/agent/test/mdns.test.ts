@@ -39,7 +39,13 @@ class FakeBonjour implements BonjourLike {
     options: { type: string },
     onup?: (service: BonjourDiscoveredService) => void,
   ): FakeBrowser {
-    this.finds.push({ type: options.type, onup });
+    // exactOptionalPropertyTypes: an explicit undefined is not assignable to an
+    // optional property, so only set the key when there is a handler.
+    this.finds.push(
+      onup === undefined
+        ? { type: options.type }
+        : { type: options.type, onup },
+    );
     const browser = new FakeBrowser();
     this.browsers.push(browser);
     return browser;
@@ -182,7 +188,8 @@ describe("agent mDNS", () => {
         port: 7330,
         txt: { id: "agent-1", name: "Agent 1", port: "7330" },
       };
-      const newestMeshBrowser = (): ((service: unknown) => void) | undefined =>
+      const newestMeshBrowser = ():
+        ((service: BonjourDiscoveredService) => void) | undefined =>
         bonjour.finds.at(-2)?.onup;
 
       bonjour.finds[0]?.onup?.(service);

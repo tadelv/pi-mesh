@@ -10,6 +10,7 @@
   "packageManager": "pnpm@9.12.0",
   "scripts": {
     "build": "tsc -b",
+    "typecheck": "tsc -p tsconfig.test.json",
     "clean": "tsc -b --clean && rm -rf packages/*/dist",
     "test": "pnpm -r --if-present test",
     "lint": "pnpm -r --if-present lint",

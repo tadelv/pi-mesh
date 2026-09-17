@@ -120,10 +120,14 @@ describe("shared utilities", () => {
       await writeFile(validPath, JSON.stringify({ ready: true }), "utf8");
       await writeFile(invalidPath, "{not-json", "utf8");
 
-      await expect(readJsonFile<{ ready: boolean }>(validPath)).resolves.toEqual({
+      await expect(
+        readJsonFile<{ ready: boolean }>(validPath),
+      ).resolves.toEqual({
         ready: true,
       });
-      await expect(readJsonFile(invalidPath)).rejects.toBeInstanceOf(SyntaxError);
+      await expect(readJsonFile(invalidPath)).rejects.toBeInstanceOf(
+        SyntaxError,
+      );
       await expect(readJsonFile(missingPath)).rejects.toMatchObject({
         code: "ENOENT",
       });

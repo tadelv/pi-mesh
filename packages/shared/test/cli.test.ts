@@ -24,7 +24,9 @@ describe("isDirectInvocation", () => {
         // import.meta.url is the real file. These must still be one module.
         expect(isDirectInvocation(metaUrl, linkPath)).toBe(true);
         expect(isDirectInvocation(metaUrl, realFile)).toBe(true);
-        expect(isDirectInvocation(metaUrl, join(directory, "other.js"))).toBe(false);
+        expect(isDirectInvocation(metaUrl, join(directory, "other.js"))).toBe(
+          false,
+        );
         expect(isDirectInvocation(metaUrl, undefined)).toBe(false);
       } finally {
         await rm(directory, { recursive: true, force: true });

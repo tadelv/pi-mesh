@@ -12,8 +12,18 @@ function captured(bonjour?: BonjourLike) {
   let stdout = "";
   let stderr = "";
   const io: CliIO = {
-    stdout: { write: (chunk: string) => { stdout += chunk; return true; } },
-    stderr: { write: (chunk: string) => { stderr += chunk; return true; } },
+    stdout: {
+      write: (chunk: string) => {
+        stdout += chunk;
+        return true;
+      },
+    },
+    stderr: {
+      write: (chunk: string) => {
+        stderr += chunk;
+        return true;
+      },
+    },
     ...(bonjour === undefined ? {} : { bonjour }),
   };
   return { io, read: () => ({ stdout, stderr }) };
@@ -24,7 +34,9 @@ describe("control-plane CLI", () => {
     const output = captured();
 
     await expect(run(argv, output.io)).resolves.toBe(0);
-    expect(output.read().stdout).toMatch(/Usage: pi-mesh-control-plane <publish\|help>/);
+    expect(output.read().stdout).toMatch(
+      /Usage: pi-mesh-control-plane <publish\|help>/,
+    );
     expect(output.read().stderr).toBe("");
   });
 
@@ -33,7 +45,9 @@ describe("control-plane CLI", () => {
 
     await expect(run(["bogus"], output.io)).resolves.toBe(2);
     expect(output.read().stdout).toBe("");
-    expect(output.read().stderr).toMatch(/Usage: pi-mesh-control-plane <publish\|help>/);
+    expect(output.read().stderr).toMatch(
+      /Usage: pi-mesh-control-plane <publish\|help>/,
+    );
   });
 
   it("publishes through an injected bonjour instance until SIGINT", async () => {
@@ -41,7 +55,11 @@ describe("control-plane CLI", () => {
     let destroyed = false;
     const bonjour: BonjourLike = {
       publish(options) {
-        published.push({ type: options.type, name: options.name, port: options.port });
+        published.push({
+          type: options.type,
+          name: options.name,
+          port: options.port,
+        });
         return undefined;
       },
       destroy() {

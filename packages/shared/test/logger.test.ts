@@ -33,7 +33,10 @@ describe("createLogger", () => {
     logger.error("failed", { retryable: false });
 
     expect(stream.lines).toHaveLength(2);
-    const warning = JSON.parse(stream.lines[0] ?? "") as Record<string, unknown>;
+    const warning = JSON.parse(stream.lines[0] ?? "") as Record<
+      string,
+      unknown
+    >;
     expect(warning).toMatchObject({
       level: "warn",
       msg: "visible",
@@ -67,10 +70,12 @@ describe("createLogger", () => {
 
   it("defaults to stderr so CLI JSON on stdout stays parseable", () => {
     const written: string[] = [];
-    const spy = vi.spyOn(process.stderr, "write").mockImplementation((chunk) => {
-      written.push(String(chunk));
-      return true;
-    });
+    const spy = vi
+      .spyOn(process.stderr, "write")
+      .mockImplementation((chunk) => {
+        written.push(String(chunk));
+        return true;
+      });
 
     try {
       createLogger().info("to stderr");
@@ -79,6 +84,9 @@ describe("createLogger", () => {
     }
 
     expect(written).toHaveLength(1);
-    expect(JSON.parse(written[0] ?? "")).toMatchObject({ level: "info", msg: "to stderr" });
+    expect(JSON.parse(written[0] ?? "")).toMatchObject({
+      level: "info",
+      msg: "to stderr",
+    });
   });
 });

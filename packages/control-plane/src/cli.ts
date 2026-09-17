@@ -60,7 +60,8 @@ export async function run(
 
   const service = controlPlaneService(controlPlanePort());
   try {
-    const options = io.bonjour === undefined ? undefined : { bonjour: io.bonjour };
+    const options =
+      io.bonjour === undefined ? undefined : { bonjour: io.bonjour };
     const handle = await publishControlPlane(service, options);
     io.stderr.write(
       `Advertised ${SERVICE_TYPE_CONTROL} service "${service.name}" on port ${service.port}\n`,

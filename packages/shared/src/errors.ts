@@ -19,7 +19,11 @@ export class PiMeshError extends Error {
   readonly code: number;
   private readonly data: unknown;
 
-  constructor(code: number, message: string, options?: { cause?: unknown; data?: unknown }) {
+  constructor(
+    code: number,
+    message: string,
+    options?: { cause?: unknown; data?: unknown },
+  ) {
     super(message);
     this.name = "PiMeshError";
     this.code = code;

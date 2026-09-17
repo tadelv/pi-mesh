@@ -28,17 +28,28 @@ const LEVEL_VALUES: Record<LogLevel, number> = {
 };
 
 function isLogLevel(value: string | undefined): value is LogLevel {
-  return value === "debug" || value === "info" || value === "warn" || value === "error";
+  return (
+    value === "debug" ||
+    value === "info" ||
+    value === "warn" ||
+    value === "error"
+  );
 }
 
 export function createLogger(options?: LoggerOptions): Logger {
   const configuredLevel = options?.level ?? process.env.PI_MESH_LOG_LEVEL;
-  const minimumLevel: LogLevel = isLogLevel(configuredLevel) ? configuredLevel : "info";
+  const minimumLevel: LogLevel = isLogLevel(configuredLevel)
+    ? configuredLevel
+    : "info";
   // stderr, not stdout: CLI commands print machine-readable JSON on stdout.
   const stream = options?.stream ?? process.stderr;
   const name = options?.name;
 
-  const write = (level: LogLevel, msg: string, fields?: Record<string, unknown>): void => {
+  const write = (
+    level: LogLevel,
+    msg: string,
+    fields?: Record<string, unknown>,
+  ): void => {
     if (LEVEL_VALUES[level] < LEVEL_VALUES[minimumLevel]) {
       return;
     }

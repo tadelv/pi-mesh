@@ -19,7 +19,10 @@ function finiteOr(value: number | undefined, fallback: number): number {
   return value !== undefined && Number.isFinite(value) ? value : fallback;
 }
 
-export async function retry<T>(fn: () => Promise<T>, options?: RetryOptions): Promise<T> {
+export async function retry<T>(
+  fn: () => Promise<T>,
+  options?: RetryOptions,
+): Promise<T> {
   const retries = Math.max(0, Math.floor(finiteOr(options?.retries, 3)));
   const delayMs = Math.max(0, finiteOr(options?.delayMs, 100));
   const backoff = Math.max(0, finiteOr(options?.backoff, 2));

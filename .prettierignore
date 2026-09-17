@@ -1,0 +1,14 @@
+node_modules
+**/node_modules
+dist
+**/dist
+pnpm-lock.yaml
+LICENSE
+.review-diff.patch
+*.tsbuildinfo
+
+# Prose and spec documents are deliberately not auto-formatted: the bootstrap
+# spec and the milestone task list contain indented file trees and examples
+# that Prettier would reflow. .editorconfig already opts markdown out of
+# whitespace trimming for the same reason.
+*.md

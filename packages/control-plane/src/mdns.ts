@@ -10,6 +10,7 @@ import {
   TXT_KEY_PORT,
   TXT_KEY_VERSION,
   toBonjourServiceName,
+  withoutEmptyTxtValues,
 } from "@pi-mesh/protocol";
 
 export {
@@ -21,6 +22,7 @@ export {
   TXT_KEY_PORT,
   TXT_KEY_VERSION,
   toBonjourServiceName,
+  withoutEmptyTxtValues,
 };
 
 export interface ControlPlaneService {
@@ -47,14 +49,14 @@ export interface BonjourLike {
 export function buildControlTxtRecord(
   service: ControlPlaneService,
 ): Record<string, string> {
-  return {
+  return withoutEmptyTxtValues({
     [TXT_KEY_ID]: service.id,
     [TXT_KEY_NAME]: service.name,
     [TXT_KEY_VERSION]: service.version,
     [TXT_KEY_API_VERSION]: service.apiVersion,
     [TXT_KEY_PORT]: String(service.port),
     [TXT_KEY_FINGERPRINT]: service.fingerprint,
-  };
+  });
 }
 
 export async function publishControlPlane(

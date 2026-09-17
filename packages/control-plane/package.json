@@ -15,10 +15,13 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -b",
     "test": "vitest run --passWithNoTests",
+    "lint": "eslint . --max-warnings 0",
     "dev": "node dist/cli.js"
   },
   "dependencies": {

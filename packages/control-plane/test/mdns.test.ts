@@ -63,8 +63,13 @@ describe("control-plane mDNS", () => {
 
   it("publishes under the bare service name bonjour-service expects", async () => {
     const fake = fakeBonjour();
-    const handle = await publishControlPlane(service, { bonjour: fake.bonjour });
-    const published = fake.published() as { type: string; txt: Record<string, string> };
+    const handle = await publishControlPlane(service, {
+      bonjour: fake.bonjour,
+    });
+    const published = fake.published() as {
+      type: string;
+      txt: Record<string, string>;
+    };
 
     // Assert the bare name, not our own SERVICE_TYPE_CONTROL constant: echoing
     // the constant would pass even while the publisher wrote

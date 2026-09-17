@@ -1,0 +1,25 @@
+{
+  "name": "@pi-mesh/control-plane",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "license": "GPL-3.0-or-later",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -b",
+    "test": "vitest run --passWithNoTests"
+  },
+  "dependencies": {
+    "@pi-mesh/protocol": "workspace:*",
+    "@pi-mesh/shared": "workspace:*",
+    "bonjour-service": "^1.2.1"
+  }
+}

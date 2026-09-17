@@ -1,0 +1,19 @@
+services:
+  control-plane:
+    build:
+      context: ..
+      dockerfile: packages/control-plane/Dockerfile
+    image: pi-mesh/control-plane:dev
+    container_name: pi-mesh-control-plane
+    restart: unless-stopped
+    ports:
+      - "7331:7331"
+    volumes:
+      - pi-mesh-data:/var/lib/pi-mesh
+    environment:
+      PI_MESH_PORT: "7331"
+      PI_MESH_DB: "/var/lib/pi-mesh/pi-mesh.db"
+      PI_MESH_LOG_LEVEL: "info"
+
+volumes:
+  pi-mesh-data:

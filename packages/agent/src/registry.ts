@@ -58,6 +58,10 @@ export class PeerRegistry {
     return [...this.records.values()];
   }
 
+  get(serviceType: PeerServiceType, id: string): PeerRecord | undefined {
+    return this.records.get(`${serviceType}:${id}`);
+  }
+
   list(): PeerRecord[] {
     return this.peers;
   }

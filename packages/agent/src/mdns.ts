@@ -126,6 +126,11 @@ export interface BrowseHandle {
   stop: () => Promise<void>;
 }
 
+const BROWSED_SERVICES: ReadonlyArray<[string, PeerServiceType]> = [
+  [SERVICE_TYPE_MESH, "mesh"],
+  [SERVICE_TYPE_CONTROL, "control"],
+];
+
 export function browsePeers(
   registry: PeerRegistry,
   options: BrowseOptions = {},
@@ -135,29 +140,50 @@ export function browsePeers(
   }
 
   const bonjour = options.bonjour ?? new Bonjour();
-  const browsers: BonjourBrowserLike[] = [];
-  const browse = (
-    serviceType: string,
-    peerServiceType: PeerServiceType,
-  ): void => {
-    const browser = bonjour.find(
-      { type: toBonjourServiceName(serviceType) },
-      (service) => {
-        const peer = discoveredPeer(service, peerServiceType);
-        if (peer !== undefined) {
-          const record = registry.upsert(peer);
-          options.onPeer?.(record);
-        }
-      },
-    );
-    browsers.push(browser);
+  let browsers: BonjourBrowserLike[] = [];
+
+  const stopBrowsers = (): void => {
+    for (const browser of browsers) {
+      browser.stop();
+    }
+    browsers = [];
   };
 
-  browse(SERVICE_TYPE_MESH, "mesh");
-  browse(SERVICE_TYPE_CONTROL, "control");
+  const startBrowsers = (): void => {
+    for (const [serviceType, peerServiceType] of BROWSED_SERVICES) {
+      const browser = bonjour.find(
+        { type: toBonjourServiceName(serviceType) },
+        (service) => {
+          const peer = discoveredPeer(service, peerServiceType);
+          if (peer === undefined) {
+            return;
+          }
+          const known = registry.get(peerServiceType, peer.id) !== undefined;
+          const record = registry.upsert(peer);
+          // Only a genuinely new peer is a discovery event; a re-answer to the
+          // periodic re-query is a liveness refresh and must stay quiet.
+          if (!known) {
+            options.onPeer?.(record);
+          }
+        },
+      );
+      browsers.push(browser);
+    }
+  };
+
+  startBrowsers();
+
+  // A responder does not re-announce an unchanged record, and bonjour-service
+  // emits 'up' once per service per browser, so lastSeen would never refresh
+  // and a blind prune would drop peers that are still alive. Re-querying with
+  // fresh browsers lets a live peer refresh its own lastSeen and lets a
+  // silent one age out.
   const intervalMs =
-    options.intervalMs ?? Math.min(1_000, Math.max(1, registry.ttlMs / 2));
+    options.intervalMs ??
+    Math.min(5_000, Math.max(1_000, Math.floor(registry.ttlMs / 3)));
   const timer = setInterval(() => {
+    stopBrowsers();
+    startBrowsers();
     registry.prune();
   }, intervalMs);
 
@@ -169,9 +195,7 @@ export function browsePeers(
       }
       stopped = true;
       clearInterval(timer);
-      for (const browser of browsers) {
-        browser.stop();
-      }
+      stopBrowsers();
       await bonjour.destroy();
     },
   };

@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import {
   browsePeers,
   PeerRegistry,
@@ -163,6 +163,50 @@ describe("agent mDNS", () => {
     expect(bonjour.browsers.every((browser) => browser.stopped)).toBe(true);
     expect(SERVICE_TYPE_MESH).toBe("_pi-mesh._tcp");
     expect(SERVICE_TYPE_CONTROL).toBe("_pi-mesh-control._tcp");
+  });
+
+  it("refreshes a live peer on re-query and ages out a silent one", () => {
+    // The regression: lastSeen used to be written only on the discovery
+    // callback, and a responder does not re-announce an unchanged record, so a
+    // blind TTL prune removed peers that were still running. Verified live
+    // before this fix - a peer alive for the whole run vanished at ~30s.
+    vi.useFakeTimers();
+    try {
+      let now = 0;
+      const registry = new PeerRegistry({ ttlMs: 30, now: () => now });
+      const bonjour = new FakeBonjour();
+      const handle = browsePeers(registry, { bonjour, intervalMs: 10 });
+      const service = {
+        name: "Agent 1",
+        host: "agent.local",
+        port: 7330,
+        txt: { id: "agent-1", name: "Agent 1", port: "7330" },
+      };
+      const newestMeshBrowser = (): ((service: unknown) => void) | undefined =>
+        bonjour.finds.at(-2)?.onup;
+
+      bonjour.finds[0]?.onup?.(service);
+      expect(registry.peers).toHaveLength(1);
+
+      // Three cycles: each re-query is answered, so the peer stays despite
+      // having outlived its TTL in wall-clock terms.
+      for (let cycle = 0; cycle < 3; cycle += 1) {
+        now += 20;
+        vi.advanceTimersByTime(10);
+        const onup = newestMeshBrowser();
+        onup?.(service);
+      }
+      expect(registry.peers).toHaveLength(1);
+
+      // Now it goes silent: no further answers, so it ages out.
+      now += 31;
+      vi.advanceTimersByTime(10);
+      expect(registry.peers).toEqual([]);
+
+      return handle.stop();
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("does not browse in the public profile", () => {

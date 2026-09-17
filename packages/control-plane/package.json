@@ -5,6 +5,9 @@
   "type": "module",
   "license": "GPL-3.0-or-later",
   "main": "./dist/index.js",
+  "bin": {
+    "pi-mesh-control-plane": "./dist/cli.js"
+  },
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
@@ -15,7 +18,8 @@
   "files": ["dist"],
   "scripts": {
     "build": "tsc -b",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "dev": "node dist/cli.js"
   },
   "dependencies": {
     "@pi-mesh/protocol": "workspace:*",

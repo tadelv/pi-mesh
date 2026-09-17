@@ -3,6 +3,17 @@
 export const SERVICE_TYPE_MESH = "_pi-mesh._tcp";
 export const SERVICE_TYPE_CONTROL = "_pi-mesh-control._tcp";
 
+/**
+ * Convert a DNS-SD service type to the bare name bonjour-service expects.
+ *
+ * bonjour-service composes `_<name>._<protocol>` itself, so handing it the
+ * DNS-SD form produces `__pi-mesh-control._tcp._tcp`, a record no browser can
+ * find. Always pass this to publish() and find().
+ */
+export function toBonjourServiceName(serviceType: string): string {
+  return serviceType.replace(/^_/, "").replace(/\._(tcp|udp)$/, "");
+}
+
 export const AGENT_CARD_ROUTE = "/.well-known/agent-card.json";
 
 export const TXT_KEY_ID = "id";

@@ -1,16 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import { createInterface } from "node:readline";
-import { Readable } from "node:stream";
 import { describe, expect, it } from "vitest";
 import { JsonlDecoder, decodeJsonl } from "../src/jsonl.js";
-
-async function readlineRecords(input: string): Promise<string[]> {
-  const records: string[] = [];
-  const lines = createInterface({ input: Readable.from([input]) });
-  for await (const line of lines) records.push(line);
-  return records;
-}
 
 describe("JSONL decoder", () => {
   it("splits records incrementally and strips CR from CRLF", () => {
@@ -27,19 +18,24 @@ describe("JSONL decoder", () => {
     expect(decoder.push("\n")).toEqual(['{"partial":true}']);
   });
 
-  it("keeps U+2028 inside one JSON record while readline incorrectly splits it", async () => {
-    const input = `${JSON.stringify({ text: "left\u2028right" })}\n`;
-    expect(decodeJsonl(input)).toEqual([
-      JSON.stringify({ text: "left\u2028right" }),
-    ]);
+  it("keeps U+2028 inside one JSON record", () => {
+    const record = JSON.stringify({ text: "left\u2028right" });
+    const input = `${record}\n`;
 
-    // Pi's session format requires LF-only splitting. Node readline also
-    // treats U+2028 as a line boundary, so this comparison demonstrates why it
-    // cannot be used as the protocol decoder.
-    const readlineResult = await readlineRecords(input);
-    expect(readlineResult).not.toEqual([
-      JSON.stringify({ text: "left\u2028right" }),
-    ]);
-    expect(readlineResult).toHaveLength(2);
+    expect(decodeJsonl(input)).toEqual([record]);
+
+    // Pi's format is LF-only. A splitter that also treats the Unicode line
+    // separators U+2028/U+2029 as boundaries - which naive line readers do, and
+    // which node:readline has done on some Node versions - breaks this record
+    // in two. Spelled out here rather than by calling readline, because
+    // readline's behaviour varies BY NODE VERSION: CI on Node 22 kept the
+    // record whole, so a test asserting readline splits it failed on the very
+    // version where readline is correct. The decoder's own behaviour is the
+    // thing under test; the failure mode is illustrative.
+    const unicodeAwareSplit = input
+      .split(/\r?\n|\u2028|\u2029/)
+      .filter(Boolean);
+    expect(unicodeAwareSplit).toHaveLength(2);
+    expect(unicodeAwareSplit).not.toEqual([record]);
   });
 });

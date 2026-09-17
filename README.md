@@ -22,7 +22,7 @@ losing visibility into what each instance is doing. pi-mesh gives you:
 On each device that runs Pi:
 
     npm install -g @pi-mesh/agent
-    pi-mesh-agent keygen > ~/.pi-mesh/swarm.key
+    (umask 077 && pi-mesh-agent keygen > ~/.pi-mesh/swarm.key)
     pi-mesh-agent start
 
 Deploy the control plane (optional but recommended):

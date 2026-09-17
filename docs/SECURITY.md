@@ -26,9 +26,14 @@ Use `public` on untrusted networks (coffee shops, conferences, hotels).
 
 **Format:** base64-encoded 32 bytes (256 bits).
 
-**Generation:** `pi-mesh-agent keygen > ~/.pi-mesh/swarm.key`
+**Generation:** `(umask 077 && pi-mesh-agent keygen > ~/.pi-mesh/swarm.key)`
 
-**Storage:** `~/.pi-mesh/swarm.key`, mode 0600.
+The subshell matters: a bare `>` creates the file with the shell's umask
+(commonly `0644`), and an agent refuses to load a key that any group or other
+user can read.
+
+**Storage:** `~/.pi-mesh/swarm.key`, no group or other access (`0600`
+recommended; the loader rejects anything with group or other permission bits).
 
 **Distribution:** manual, out-of-band. Copy the file to each device.
 Future: `pi-mesh-agent join <code>` for QR-based sharing.
@@ -74,7 +79,7 @@ without affecting mesh membership.
 
 To revoke a compromised swarm key:
 
-1. Generate a new key: `pi-mesh-agent keygen > ~/.pi-mesh/swarm.key`
+1. Generate a new key: `(umask 077 && pi-mesh-agent keygen > ~/.pi-mesh/swarm.key)`
 2. Distribute to trusted devices.
 3. Restart agents. Peers with the old key will fail the handshake and
    be removed from the registry.

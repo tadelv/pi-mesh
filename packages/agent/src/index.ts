@@ -7,3 +7,4 @@ export * from "./registry.js";
 export * from "./mdns.js";
 export * from "./jsonl.js";
 export * from "./sessions.js";
+export * from "./stream.js";

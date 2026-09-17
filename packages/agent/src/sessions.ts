@@ -297,29 +297,42 @@ export class SessionStore {
     return summaries;
   }
 
+  /**
+   * Locate the file for a session id. Shared with streaming so the directory
+   * walk - including its guards for unreadable and symlinked directories -
+   * exists in exactly one place. Streaming previously duplicated this walk and
+   * silently lost those guards.
+   */
+  async findSessionPath(sessionId: string): Promise<string | undefined> {
+    for (const path of await sessionFiles(this.sessionsRoot)) {
+      const parsed = await this.parseFile(path);
+      if (parsed.header?.id === sessionId) return path;
+    }
+    return undefined;
+  }
+
   async read(request: SessionReadRequest): Promise<Event[]> {
     assertPlainUuid(request.id);
     this.parseErrors = [];
 
-    for (const path of await sessionFiles(this.sessionsRoot)) {
-      const parsed = await this.parseFile(path);
-      if (parsed.header?.id !== request.id) continue;
-      const start =
-        request.since === undefined
-          ? -1
-          : parsed.entries.findIndex((entry) => entry.id === request.since);
-      if (request.since !== undefined && start === -1) {
-        throw new Error(`Unknown session entry id: ${request.since}`);
-      }
-      return parsed.entries.slice(start + 1).map((entry) => ({
-        entryId: entry.id,
-        type: entry.type,
-        timestamp: entry.timestamp,
-        data: entry,
-      }));
+    const path = await this.findSessionPath(request.id);
+    if (path === undefined) {
+      throw new Error(`Unknown session id: ${request.id}`);
     }
-
-    throw new Error(`Unknown session id: ${request.id}`);
+    const parsed = await this.parseFile(path);
+    const start =
+      request.since === undefined
+        ? -1
+        : parsed.entries.findIndex((entry) => entry.id === request.since);
+    if (request.since !== undefined && start === -1) {
+      throw new Error(`Unknown session entry id: ${request.since}`);
+    }
+    return parsed.entries.slice(start + 1).map((entry) => ({
+      entryId: entry.id,
+      type: entry.type,
+      timestamp: entry.timestamp,
+      data: entry,
+    }));
   }
 
   private async parseFile(path: string): Promise<SessionParseResult> {

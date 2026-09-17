@@ -66,7 +66,22 @@ export const HANDOFF_EXTENSION_URI =
   "https://pi-mesh.dev/extensions/handoff/v1";
 
 /**
- * The A2A revision pi-mesh targets. docs/PROTOCOL.md links only the A2A site,
- * so without a pinned revision there is nothing to check wire shapes against.
+ * The pinned A2A revision pi-mesh targets, recorded as a COMMIT rather than a
+ * URL. The specification site's `/latest` page moves, so citing it would make
+ * "conformant with A2A 1.0" unfalsifiable. `spec/a2a.proto` is a verbatim copy
+ * of the file at this commit and is what the conformance test reads; see
+ * `spec/PROVENANCE.md`.
  */
+export const A2A_SOURCE = {
+  repository: "https://github.com/a2aproject/A2A",
+  tag: "v1.0.1",
+  commit: "3303592588e388e62e0f69f701af531d2f4e3991",
+  specFile: "specification/a2a.proto",
+  sha256: "e195bf96ab630c69797851970203e1b2b6b19528f2e9803b7d904b91a5104016",
+} as const;
+
+/** The A2A protocol version this source declares. */
 export const A2A_PROTOCOL_VERSION = "1.0";
+
+/** Clients MUST send this header on every request (empty implies 0.3). */
+export const A2A_VERSION_HEADER = "A2A-Version";

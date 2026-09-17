@@ -4,9 +4,13 @@ pi-mesh uses the [A2A protocol](https://a2a-protocol.org) as its wire
 format. This document specifies only the pi-mesh extensions and
 conventions.
 
-The targeted A2A revision is **1.0** (see `A2A_PROTOCOL_VERSION` in
-`@pi-mesh/protocol`). Wire shapes in this document are defined against that
-revision; a change of revision is a protocol change.
+The targeted A2A revision is **1.0**, pinned to a commit rather than to the
+specification site's moving `/latest` page: `a2aproject/A2A` tag `v1.0.1`,
+commit `3303592588e388e62e0f69f701af531d2f4e3991`. The normative file is
+vendored verbatim at `packages/protocol/spec/a2a.proto` with its provenance
+recorded alongside, and the conformance test derives expected field names from
+that file rather than from our own declarations. A change of revision is a
+protocol change.
 
 ## mDNS service types
 

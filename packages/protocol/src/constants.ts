@@ -35,3 +35,9 @@ export const MESH_TXT_KEYS = [
 
 export const HANDOFF_EXTENSION_URI =
   "https://pi-mesh.dev/extensions/handoff/v1";
+
+/**
+ * The A2A revision pi-mesh targets. docs/PROTOCOL.md links only the A2A site,
+ * so without a pinned revision there is nothing to check wire shapes against.
+ */
+export const A2A_PROTOCOL_VERSION = "1.0";

@@ -6,11 +6,11 @@ import { ErrorCode, PiMeshError, isPiMeshError } from "../src/index.js";
 describe("PiMeshError", () => {
   it("exports the protocol error codes", () => {
     expect(ErrorCode).toEqual({
-      Unauthorized: -32001,
-      UnknownSession: -32002,
-      SpawnDenied: -32003,
-      PeerUnreachable: -32004,
-      HandoffRejected: -32005,
+      Unauthorized: -32100,
+      UnknownSession: -32101,
+      SpawnDenied: -32102,
+      PeerUnreachable: -32103,
+      HandoffRejected: -32104,
     });
   });
 
@@ -23,10 +23,10 @@ describe("PiMeshError", () => {
     expect(error).toBeInstanceOf(Error);
     expect(error).toBeInstanceOf(PiMeshError);
     expect(error.name).toBe("PiMeshError");
-    expect(error.code).toBe(-32002);
+    expect(error.code).toBe(-32101);
     expect(error.message).toBe("missing");
     expect(error.toJSON()).toEqual({
-      code: -32002,
+      code: -32101,
       message: "missing",
       data: { sessionId: "s-1" },
     });
@@ -41,6 +41,6 @@ describe("PiMeshError", () => {
     expect(isPiMeshError(child)).toBe(true);
     expect(isPiMeshError(new Error("other"))).toBe(false);
     expect(isPiMeshError({ code: ErrorCode.Unauthorized })).toBe(false);
-    expect(child.toJSON()).toEqual({ code: -32001, message: "no access" });
+    expect(child.toJSON()).toEqual({ code: -32100, message: "no access" });
   });
 });

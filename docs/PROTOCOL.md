@@ -4,6 +4,10 @@ pi-mesh uses the [A2A protocol](https://a2a-protocol.org) as its wire
 format. This document specifies only the pi-mesh extensions and
 conventions.
 
+The targeted A2A revision is **1.0** (see `A2A_PROTOCOL_VERSION` in
+`@pi-mesh/protocol`). Wire shapes in this document are defined against that
+revision; a change of revision is a protocol change.
+
 ## mDNS service types
 
 | Service | Advertised by | TXT keys |
@@ -72,10 +76,17 @@ Extension URI: `https://pi-mesh.dev/extensions/handoff/v1`
 
 ## Error codes
 
+pi-mesh carries A2A on the wire, and A2A reserves JSON-RPC codes
+`-32001`-`-32099` for its own errors (`TaskNotFoundError` is `-32001`,
+`TaskNotCancelableError` is `-32002`, and so on). pi-mesh errors therefore
+start at `-32100` so that an A2A error and a pi-mesh error can never share a
+number. See ADR 0005.
+
 | Code | Meaning |
 |---|---|
-| `-32001` | Unauthorized (swarm key mismatch) |
-| `-32002` | Unknown session |
-| `-32003` | Process spawn denied (policy) |
-| `-32004` | Peer unreachable |
-| `-32005` | Handoff rejected |
+| `-32100` | Unauthorized (swarm key mismatch) |
+| `-32101` | Unknown session |
+| `-32102` | Process spawn denied (policy) |
+| `-32103` | Peer unreachable |
+| `-32104` | Handoff rejected |
+| `-32600`-`-32699` | Reserved for standard JSON-RPC 2.0 errors |

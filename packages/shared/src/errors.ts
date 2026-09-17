@@ -1,12 +1,18 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-/** Mirrors the error-code table in docs/PROTOCOL.md. */
+/**
+ * Mirrors the error-code table in docs/PROTOCOL.md.
+ *
+ * These sit above -32000 deliberately: A2A reserves -32001..-32099 for its
+ * own errors (TaskNotFoundError, TaskNotCancelableError, ...) and pi-mesh
+ * carries A2A over the same JSON-RPC channel. See ADR 0005.
+ */
 export const ErrorCode = {
-  Unauthorized: -32001,
-  UnknownSession: -32002,
-  SpawnDenied: -32003,
-  PeerUnreachable: -32004,
-  HandoffRejected: -32005,
+  Unauthorized: -32100,
+  UnknownSession: -32101,
+  SpawnDenied: -32102,
+  PeerUnreachable: -32103,
+  HandoffRejected: -32104,
 } as const;
 
 export class PiMeshError extends Error {

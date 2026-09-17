@@ -15,10 +15,13 @@
       "import": "./dist/index.js"
     }
   },
-  "files": ["dist"],
+  "files": [
+    "dist"
+  ],
   "scripts": {
     "build": "tsc -b",
-    "test": "vitest run --passWithNoTests"
+    "test": "vitest run --passWithNoTests",
+    "lint": "eslint . --max-warnings 0"
   },
   "dependencies": {
     "@pi-mesh/protocol": "workspace:*",

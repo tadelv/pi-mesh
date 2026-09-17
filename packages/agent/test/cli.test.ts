@@ -8,8 +8,18 @@ function output() {
   let stderr = "";
   return {
     io: {
-      stdout: { write: (chunk: string) => { stdout += chunk; return true; } },
-      stderr: { write: (chunk: string) => { stderr += chunk; return true; } },
+      stdout: {
+        write: (chunk: string) => {
+          stdout += chunk;
+          return true;
+        },
+      },
+      stderr: {
+        write: (chunk: string) => {
+          stderr += chunk;
+          return true;
+        },
+      },
     },
     read: () => ({ stdout, stderr }),
   };
@@ -27,13 +37,26 @@ describe("agent CLI", () => {
     expect(stderr).toBe("");
   });
 
-  it.each([[[]], [["bogus"]]])("rejects an unknown or missing command", async (argv) => {
+  it.each([[[]], [["bogus"]], [["--profile", "bogus", "peers"]]])(
+    "rejects an unknown or missing command or profile",
+    async (argv) => {
+      const captured = output();
+
+      await expect(run(argv, captured.io)).resolves.toBe(2);
+
+      const { stdout, stderr } = captured.read();
+      expect(stdout).toBe("");
+      expect(stderr).toMatch(/Usage: pi-mesh-agent keygen\n/);
+    },
+  );
+
+  it("prints an empty peer registry as JSON on stdout only", async () => {
     const captured = output();
 
-    await expect(run(argv, captured.io)).resolves.toBe(2);
+    await expect(run(["peers"], captured.io)).resolves.toBe(0);
 
     const { stdout, stderr } = captured.read();
-    expect(stdout).toBe("");
-    expect(stderr).toMatch(/Usage: pi-mesh-agent keygen\n/);
+    expect(JSON.parse(stdout)).toEqual([]);
+    expect(stderr).toBe("");
   });
 });

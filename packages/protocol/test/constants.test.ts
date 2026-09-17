@@ -5,6 +5,7 @@ import {
   SERVICE_TYPE_CONTROL,
   SERVICE_TYPE_MESH,
   toBonjourServiceName,
+  withoutEmptyTxtValues,
 } from "../src/index.js";
 
 describe("discovery constants", () => {
@@ -26,5 +27,11 @@ describe("discovery constants", () => {
     for (const serviceType of [SERVICE_TYPE_MESH, SERVICE_TYPE_CONTROL]) {
       expect(`_${toBonjourServiceName(serviceType)}._tcp`).toBe(serviceType);
     }
+  });
+
+  it("drops empty TXT values instead of emitting a bare key", () => {
+    expect(
+      withoutEmptyTxtValues({ id: "a", caps: "", fp: "x", name: "" }),
+    ).toEqual({ id: "a", fp: "x" });
   });
 });

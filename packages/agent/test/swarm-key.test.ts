@@ -23,7 +23,11 @@ async function temporaryKey(contents: string, mode: number): Promise<string> {
 }
 
 afterEach(async () => {
-  await Promise.all(temporaryDirectories.splice(0).map((directory) => rm(directory, { recursive: true, force: true })));
+  await Promise.all(
+    temporaryDirectories
+      .splice(0)
+      .map((directory) => rm(directory, { recursive: true, force: true })),
+  );
 });
 
 describe("swarm keys", () => {
@@ -34,21 +38,28 @@ describe("swarm keys", () => {
   });
 
   it.each([16, 64])("rejects a decoded key of %i bytes", (length) => {
-    expect(() => decodeSwarmKey(Buffer.alloc(length).toString("base64"))).toThrow(
-      /exactly 32 bytes/,
-    );
+    expect(() =>
+      decodeSwarmKey(Buffer.alloc(length).toString("base64")),
+    ).toThrow(/exactly 32 bytes/);
   });
 
   it("rejects malformed base64", () => {
-    expect(() => decodeSwarmKey("not base64!"))
-      .toThrow("Swarm key must be valid base64");
+    expect(() => decodeSwarmKey("not base64!")).toThrow(
+      "Swarm key must be valid base64",
+    );
   });
 
-  it.each([16, 64])("rejects a file containing %i decoded bytes", async (length) => {
-    const path = await temporaryKey(Buffer.alloc(length).toString("base64"), 0o600);
+  it.each([16, 64])(
+    "rejects a file containing %i decoded bytes",
+    async (length) => {
+      const path = await temporaryKey(
+        Buffer.alloc(length).toString("base64"),
+        0o600,
+      );
 
-    await expect(loadSwarmKey(path)).rejects.toThrow(/exactly 32 bytes/);
-  });
+      await expect(loadSwarmKey(path)).rejects.toThrow(/exactly 32 bytes/);
+    },
+  );
 
   it("loads a valid owner-only key and tolerates a trailing newline", async () => {
     const encoded = generateSwarmKey();
@@ -65,16 +76,17 @@ describe("swarm keys", () => {
     await expect(loadSwarmKey(path)).rejects.toThrow(path);
   });
 
-  it.skipIf(process.platform === "win32")("refuses a group/world-readable key", async () => {
+  it("refuses a group/world-readable key", async () => {
     const path = await temporaryKey(generateSwarmKey(), 0o644);
 
-    await expect(loadSwarmKey(path)).rejects.toThrow(/mode 0644, expected 0600/);
+    await expect(loadSwarmKey(path)).rejects.toThrow(
+      /mode 0644, expected 0600/,
+    );
   });
 
-  it.skipIf(process.platform === "win32")("accepts an owner-readable key", async () => {
+  it("accepts an owner-readable key", async () => {
     const path = await temporaryKey(generateSwarmKey(), 0o400);
 
     await expect(loadSwarmKey(path)).resolves.toHaveLength(32);
   });
 });
-

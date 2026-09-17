@@ -17,6 +17,11 @@ revision; a change of revision is a protocol change.
 
 `caps` is a comma-separated list of skill names the agent supports.
 
+mDNS TXT attributes are unordered `key=value` strings with no separate value
+concept, so an entry whose value is empty reaches the wire as a bare `key=` and
+parsers disagree about the result. A key whose value would be empty MUST be
+omitted instead; a reader treats a missing key as an empty value.
+
 ## Agent card
 
 Every agent serves `GET /.well-known/agent-card.json` on its local

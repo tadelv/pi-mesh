@@ -14,6 +14,24 @@ export function toBonjourServiceName(serviceType: string): string {
   return serviceType.replace(/^_/, "").replace(/\._(tcp|udp)$/, "");
 }
 
+/**
+ * Drop TXT entries whose value is the empty string.
+ *
+ * mDNS TXT attributes are unordered `key=value` strings with no separate value
+ * concept, so an empty value goes on the wire as `key=`. Parsers then disagree:
+ * bonjour-service drops such an entry from a locally-published record, and
+ * returns a key literally named `caps=` when it arrives from the wire. Either
+ * way `txt.caps` is undefined. Omit the key instead; a missing key means the
+ * same thing to a reader.
+ */
+export function withoutEmptyTxtValues(
+  record: Record<string, string>,
+): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(record).filter(([, value]) => value !== ""),
+  );
+}
+
 export const AGENT_CARD_ROUTE = "/.well-known/agent-card.json";
 
 export const TXT_KEY_ID = "id";

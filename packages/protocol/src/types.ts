@@ -149,8 +149,7 @@ export interface JsonRpcErrorResponse {
 }
 
 export type JsonRpcResponse<Result = unknown> =
-  | JsonRpcSuccessResponse<Result>
-  | JsonRpcErrorResponse;
+  JsonRpcSuccessResponse<Result> | JsonRpcErrorResponse;
 
 export type MessageRole = "user" | "agent";
 
@@ -246,9 +245,7 @@ export interface TaskArtifactUpdateEvent {
 }
 
 export type MessageStreamResult =
-  | TaskStatusUpdateEvent
-  | TaskArtifactUpdateEvent
-  | Message;
+  TaskStatusUpdateEvent | TaskArtifactUpdateEvent | Message;
 
 export type MessageStreamRequest = JsonRpcRequest<
   "message/stream",

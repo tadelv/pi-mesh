@@ -13,6 +13,10 @@ swarm key file from disk.
 
 ## Network profiles
 
+pi-mesh is POSIX-only for now. Windows is not supported: the swarm key
+permission model relies on POSIX file modes, which Windows reports
+synthetically.
+
 The agent supports two profiles, set via `--profile`:
 
 | Profile | Behavior |

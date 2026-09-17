@@ -65,10 +65,33 @@ describe("swarm key handshake", () => {
     );
   });
 
-  it("derives the same HMAC for both parties", () => {
+  it("binds the HMAC to the role ordering of the transcript", () => {
     const encoded = encodeTranscript(transcript);
-    expect(computeHandshakeHmac(key, encoded)).toBe(
-      computeHandshakeHmac(new Uint8Array(key), encoded),
-    );
+    const swapped = encodeTranscript({
+      ...transcript,
+      clientNonce: transcript.serverNonce,
+      serverNonce: transcript.clientNonce,
+    });
+
+    const swappedHmac = computeHandshakeHmac(key, swapped);
+    expect(swappedHmac).not.toBe(expectedHmac);
+    expect(verifyHandshake(key, swappedHmac, encoded)).toBe(false);
+  });
+
+  it("rejects a transcript field containing the NUL separator", () => {
+    expect(() =>
+      encodeTranscript({ ...transcript, clientPeerId: "peer\u0000injected" }),
+    ).toThrow(TypeError);
+  });
+
+  it("returns false rather than throwing for non-string remote values", () => {
+    const encoded = encodeTranscript(transcript);
+
+    expect(verifyHandshake(key, null, encoded)).toBe(false);
+    expect(verifyHandshake(key, undefined, encoded)).toBe(false);
+    expect(verifyHandshake(key, 42, encoded)).toBe(false);
+    expect(verifyHandshake(key, {}, encoded)).toBe(false);
+    expect(verifyHandshake(key, Buffer.from(expectedHmac), encoded)).toBe(false);
+    expect(verifyHandshake(new Uint8Array(0), expectedHmac, encoded)).toBe(false);
   });
 });

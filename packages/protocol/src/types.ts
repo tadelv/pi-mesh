@@ -106,6 +106,18 @@ export interface HandoffPayload {
   deadline_ms: number;
 }
 
+/** Wire shapes for GET /handshake, per docs/PROTOCOL.md. */
+export interface HandshakeRequest {
+  peer_id: string;
+  nonce: string;
+}
+
+export interface HandshakeResponse {
+  peer_id: string;
+  nonce: string;
+  hmac: string;
+}
+
 export type JsonRpcId = string | number | null;
 
 export interface JsonRpcRequest<

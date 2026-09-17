@@ -18,14 +18,20 @@ export function createNonce(): string {
 }
 
 export function encodeTranscript(transcript: HandshakeTranscript): Uint8Array {
-  return new TextEncoder().encode(
-    [
-      transcript.clientNonce,
-      transcript.serverNonce,
-      transcript.clientPeerId,
-      transcript.serverPeerId,
-    ].join("\u0000"),
-  );
+  const fields = [
+    transcript.clientNonce,
+    transcript.serverNonce,
+    transcript.clientPeerId,
+    transcript.serverPeerId,
+  ];
+
+  // NUL is the separator, so a value containing one would alias a different
+  // transcript. docs/PROTOCOL.md forbids U+0000 in these fields.
+  if (fields.some((field) => field.includes("\u0000"))) {
+    throw new TypeError("Handshake fields must not contain U+0000");
+  }
+
+  return new TextEncoder().encode(fields.join("\u0000"));
 }
 
 export function computeHandshakeHmac(
@@ -36,24 +42,26 @@ export function computeHandshakeHmac(
 }
 
 function decodeBase64(value: string): Uint8Array | undefined {
-  if (
-    value.length % 4 !== 0 ||
-    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(
-      value,
-    )
-  ) {
+  if (value.length % 4 !== 0) {
     return undefined;
   }
 
+  // Re-encoding is canonical, so this also rejects padding and alphabet
+  // variants that Node's decoder would otherwise accept leniently.
   const decoded = Buffer.from(value, "base64");
   return decoded.toString("base64") === value ? decoded : undefined;
 }
 
 export function verifyHandshake(
   localKey: Uint8Array,
-  remoteHmac: string,
+  remoteHmac: unknown,
   transcript: Uint8Array,
 ): boolean {
+  // This is the trust boundary: the response arrives as parsed JSON.
+  if (typeof remoteHmac !== "string" || localKey.byteLength === 0) {
+    return false;
+  }
+
   const remoteBytes = decodeBase64(remoteHmac);
   if (remoteBytes === undefined) {
     return false;

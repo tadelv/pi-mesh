@@ -45,7 +45,8 @@ extension payload:
       "task": "run tests for repo X",
       "project": "my-repo",
       "context": { },
-      "preferred_agent": "optional-peer-id"
+      "preferred_agent": "optional-peer-id",
+      "deadline_ms": 60000
     }
 
 The receiving agent either accepts (returns a `task` with a stream) or

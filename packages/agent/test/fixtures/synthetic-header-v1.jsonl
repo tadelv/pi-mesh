@@ -1,0 +1,2 @@
+{"type":"session","version":1,"id":"123e4567-e89b-42d3-a456-426614174001","timestamp":"2024-12-03T14:00:00.000Z","cwd":"/synthetic/v1"}
+{"type":"message","timestamp":"2024-12-03T14:00:01.000Z","message":{"role":"user","content":"legacy"}}

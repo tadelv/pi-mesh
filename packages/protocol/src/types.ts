@@ -79,9 +79,18 @@ export interface SessionSummary {
   id: string;
   /** Derived from the session header's working directory. */
   project: string;
-  status: string;
-  started_at?: string;
-  ended_at?: string;
+  /** Display name from a session_info entry, when the session has one. */
+  name?: string;
+  /** Header timestamp. */
+  started_at: string;
+  /**
+   * Timestamp of the last entry: last activity, not an end time. Named
+   * updated_at deliberately, because Pi's session format records no lifecycle
+   * state - there is no `status` and no `ended_at` here, and inventing either
+   * would ship a field that looks like data and carries none (the reason the
+   * `fp` TXT key was removed in ADR 0006).
+   */
+  updated_at: string;
 }
 
 export interface Event {

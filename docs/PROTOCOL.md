@@ -106,6 +106,21 @@ in one `=`), and `nonce` is the base64 encoding of 32 random bytes.
 
 ## Session events and replay
 
+`session.list` returns one `SessionSummary` per session:
+
+| Field | Meaning |
+|---|---|
+| `id` | The session-file header UUID |
+| `project` | The header's working directory |
+| `name` | Display name from a `session_info` entry, when the session has one |
+| `started_at` | Header timestamp |
+| `updated_at` | Last entry's timestamp — last activity, not an end time |
+
+There is deliberately no `status` and no `ended_at`. Pi's session format
+records no lifecycle state, so neither is derivable; a field that is always
+`"unknown"` looks like data while carrying none, which is the same defect as
+the removed `fp` TXT key (ADR 0006). `updated_at` is named for what it is.
+
 A session's durable entries are the canonical event stream. Each `Event`
 carries the **Pi entry ID** (a string) as its cursor, in the field `entryId`
 to keep it distinct from a session ID; there is no numeric

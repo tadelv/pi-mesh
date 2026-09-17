@@ -1,0 +1,6 @@
+{"type":"session","version":3,"id":"123e4567-e89b-42d3-a456-426614174000","timestamp":"2024-12-03T14:00:00.000Z","cwd":"/synthetic/project"}
+{"type":"compaction","id":"11111111","parentId":null,"timestamp":"2024-12-03T14:00:01.000Z","summary":"Earlier work","firstKeptEntryId":"22222222","tokensBefore":50000}
+{"type":"branch_summary","id":"22222222","parentId":"11111111","timestamp":"2024-12-03T14:00:02.000Z","fromId":"11111111","summary":"An abandoned branch"}
+{"type":"custom_message","id":"33333333","parentId":"22222222","timestamp":"2024-12-03T14:00:03.000Z","customType":"synthetic-extension","content":"Injected context","display":false}
+{"type":"label","id":"44444444","parentId":"33333333","timestamp":"2024-12-03T14:00:04.000Z","targetId":"33333333","label":"checkpoint"}
+{"type":"session_info","id":"55555555","parentId":"44444444","timestamp":"2024-12-03T14:00:05.000Z","name":"Synthetic session"}

@@ -1,0 +1,4 @@
+{"type":"session","version":3,"id":"123e4567-e89b-42d3-a456-426614174003","timestamp":"2024-12-03T14:00:00.000Z","cwd":"/synthetic/malformed"}
+{"type":"message","id":"77777777","parentId":null,"timestamp":"2024-12-03T14:00:01.000Z","message":{"role":"user","content":"before corruption"}}
+this is deliberately corrupt JSON
+{"type":"session_info","id":"88888888","parentId":"77777777","timestamp":"2024-12-03T14:00:03.000Z","name":"after corruption"}

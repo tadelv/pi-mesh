@@ -107,7 +107,8 @@ in one `=`), and `nonce` is the base64 encoding of 32 random bytes.
 ## Session events and replay
 
 A session's durable entries are the canonical event stream. Each `Event`
-carries the **Pi entry ID** (a string) as its cursor; there is no numeric
+carries the **Pi entry ID** (a string) as its cursor, in the field `entryId`
+to keep it distinct from a session ID; there is no numeric
 sequence.
 
 `session.read` accepts `since` as an entry ID and returns entries appended

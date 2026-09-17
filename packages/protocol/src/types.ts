@@ -75,7 +75,9 @@ export type ControlTxtKey = (typeof CONTROL_TXT_KEYS)[number];
 export type MeshTxtKey = (typeof MESH_TXT_KEYS)[number];
 
 export interface SessionSummary {
+  /** Public session ID: the session-file header UUID. */
   id: string;
+  /** Derived from the session header's working directory. */
   project: string;
   status: string;
   started_at?: string;
@@ -83,7 +85,13 @@ export interface SessionSummary {
 }
 
 export interface Event {
-  seq: number;
+  /**
+   * Pi's durable entry ID, and the replay cursor. Deliberately a string: Pi
+   * appends entries with string IDs and there is no numeric sequence to
+   * resume from. Named entryId rather than id so it is not confused with a
+   * session ID.
+   */
+  entryId: string;
   type: string;
   timestamp: string;
   data: unknown;
@@ -95,6 +103,11 @@ export interface PeerSummary {
   host: string;
   port: number;
   skills: Skill[];
+  /**
+   * Removed from v1 discovery: M0 advertised a constant "unpaired", which
+   * looks like data and verifies nothing. Returns when it has verification
+   * semantics (ADR 0006).
+   */
   fingerprint?: string;
 }
 

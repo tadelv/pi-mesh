@@ -28,11 +28,22 @@ wire shapes against.
 
 ## Decision
 
-1. pi-mesh error codes move out of A2A's reserved range, starting at `-32100`:
-   Unauthorized `-32100`, Unknown session `-32101`, Process spawn denied
-   `-32102`, Peer unreachable `-32103`, Handoff rejected `-32104`.
+1. pi-mesh application errors move out of A2A's reserved range, starting at
+   `-32100`: Unauthorized `-32100`, Unknown session `-32101`, Process spawn
+   denied `-32102`.
 2. `-32001`-`-32099` is A2A's range and pi-mesh never emits a code from it.
-3. pi-mesh targets A2A **1.0**, recorded as `A2A_PROTOCOL_VERSION` in
+3. Only genuine application errors get a code. Two conditions previously
+   listed as errors are removed:
+   - **Handoff rejected** is an A2A task outcome (`TASK_STATE_REJECTED`), not
+     an RPC error. Modelling it both ways would give one condition two
+     representations and leave peers guessing which to trust.
+   - **Peer unreachable** is a transport failure (timeout, connection
+     error). As an RPC error it would conflate "the call failed" with "the
+     call succeeded and reported a negative outcome".
+4. Each code carries a `reason` in UPPER_SNAKE_CASE for A2A's
+   `google.rpc.ErrorInfo` `details` entry, recorded in `docs/PROTOCOL.md` now
+   so the M1 transport does not have to invent them.
+5. pi-mesh targets A2A **1.0**, recorded as `A2A_PROTOCOL_VERSION` in
    `@pi-mesh/protocol` and cited at the top of `docs/PROTOCOL.md`.
 
 ## Consequences
@@ -42,13 +53,14 @@ wire shapes against.
 - Clients must not treat the `-320xx` band as pi-mesh's, and any code that
   catches `PiMeshError` keeps working because it matches on the symbolic name
   rather than the number.
+- The surface stays small: three application errors rather than five, because
+  two of the original five were not errors to begin with.
 - The shift is a breaking wire change, made while nothing is deployed.
-- Aligning the A2A message *shapes* in `@pi-mesh/protocol` to revision 1.0 is
-  not part of this decision. Two names are known to differ from A2A 1.0 and
-  must be reconciled before the M1 transport is written: the streaming update
-  events carry `taskId` (not `id`), and `TaskStatus.state` is one of
-  `TASK_STATE_SUBMITTED`, `TASK_STATE_WORKING`, `TASK_STATE_COMPLETED`,
-  `TASK_STATE_FAILED`, `TASK_STATE_CANCELED`, `TASK_STATE_REJECTED`,
-  `TASK_STATE_INPUT_REQUIRED`, `TASK_STATE_AUTH_REQUIRED`. `message/send`'s
-  send-configuration field name is unverified and must be checked against the
-  pinned revision rather than guessed.
+- Still outstanding, and to be tracked in milestone 1 rather than here: the
+  A2A message *shapes* in `@pi-mesh/protocol` must be reconciled with
+  revision 1.0 before the transport is written. The streaming update events
+  carry `taskId` (not `id`), `TaskStatus.state` is one of the `TASK_STATE_*`
+  values, and `message/send`'s send-configuration field name remains
+  unverified and must be checked against the pinned revision rather than
+  guessed. The revision itself should be pinned to a concrete source, not to
+  the site's moving `/latest` page.

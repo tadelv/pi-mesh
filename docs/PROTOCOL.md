@@ -84,14 +84,30 @@ Extension URI: `https://pi-mesh.dev/extensions/handoff/v1`
 pi-mesh carries A2A on the wire, and A2A reserves JSON-RPC codes
 `-32001`-`-32099` for its own errors (`TaskNotFoundError` is `-32001`,
 `TaskNotCancelableError` is `-32002`, and so on). pi-mesh errors therefore
-start at `-32100` so that an A2A error and a pi-mesh error can never share a
+start at `-32100`, so an A2A error and a pi-mesh error can never share a
 number. See ADR 0005.
 
-| Code | Meaning |
+These are application errors only. A2A 1.0 expects A2A-specific errors to
+carry a `google.rpc.ErrorInfo` in `details` with a `reason` in
+UPPER_SNAKE_CASE; the `reason` column below is the value pi-mesh sends there
+once a transport exists to carry it.
+
+| Code | `reason` | Meaning |
+|---|---|---|
+| `-32100` | `PI_MESH_UNAUTHORIZED` | Unauthorized (swarm key mismatch) |
+| `-32101` | `PI_MESH_UNKNOWN_SESSION` | Unknown session |
+| `-32102` | `PI_MESH_SPAWN_DENIED` | Process spawn denied (policy) |
+
+Two conditions are deliberately **not** error codes:
+
+| Condition | Represented as |
 |---|---|
-| `-32100` | Unauthorized (swarm key mismatch) |
-| `-32101` | Unknown session |
-| `-32102` | Process spawn denied (policy) |
-| `-32103` | Peer unreachable |
-| `-32104` | Handoff rejected |
-| `-32600`-`-32699` | Reserved for standard JSON-RPC 2.0 errors |
+| Handoff rejected | A2A task state `TASK_STATE_REJECTED` |
+| Peer unreachable | A transport failure (timeout or connection error) |
+
+Representing either as a JSON-RPC error would give one condition two
+representations and would conflate "the call failed" with "the call
+succeeded and reported a negative outcome".
+
+Standard JSON-RPC 2.0 errors (`-32600`-`-32699`) are used as the
+specification defines them and are not redefined here.

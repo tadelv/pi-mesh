@@ -9,9 +9,18 @@ describe("PiMeshError", () => {
       Unauthorized: -32100,
       UnknownSession: -32101,
       SpawnDenied: -32102,
-      PeerUnreachable: -32103,
-      HandoffRejected: -32104,
     });
+  });
+
+  it("lists only genuine application errors, not task states or transport failures", () => {
+    // A rejected handoff is TASK_STATE_REJECTED and an unreachable peer is a
+    // transport failure; neither belongs in the RPC error table (ADR 0005).
+    expect(Object.keys(ErrorCode)).toEqual([
+      "Unauthorized",
+      "UnknownSession",
+      "SpawnDenied",
+    ]);
+    expect(Object.values(ErrorCode).every((code) => code < -32099)).toBe(true);
   });
 
   it("serializes code, message, and optional data", () => {

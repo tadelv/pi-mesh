@@ -45,6 +45,12 @@ Every peer connection begins with a challenge-response:
 The swarm key is never transmitted. Both sides derive the HMAC key from
 the raw swarm key bytes.
 
+### Transcript encoding
+
+The HMAC transcript is the four fields `client_nonce`, `server_nonce`,
+`client_peer_id`, and `server_peer_id`, joined with one NUL byte (`\u0000`) in
+that order and then UTF-8 encoded.
+
 ## Handoff extension
 
 Extension URI: `https://pi-mesh.dev/extensions/handoff/v1`

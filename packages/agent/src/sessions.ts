@@ -298,15 +298,17 @@ export class SessionStore {
   }
 
   /**
-   * Locate the file for a session id. Shared with streaming so the directory
-   * walk - including its guards for unreadable and symlinked directories -
-   * exists in exactly one place. Streaming previously duplicated this walk and
-   * silently lost those guards.
+   * Locate the file for a session id, returning the parse it already did.
+   * Sharing the walk and the parse matters: callers that re-read the file
+   * after this return can see a different session (a replace between the two
+   * reads), and re-parsing also double-reports every parse error.
    */
-  async findSessionPath(sessionId: string): Promise<string | undefined> {
+  async findSessionPath(
+    sessionId: string,
+  ): Promise<{ path: string; parsed: SessionParseResult } | undefined> {
     for (const path of await sessionFiles(this.sessionsRoot)) {
       const parsed = await this.parseFile(path);
-      if (parsed.header?.id === sessionId) return path;
+      if (parsed.header?.id === sessionId) return { path, parsed };
     }
     return undefined;
   }
@@ -315,19 +317,18 @@ export class SessionStore {
     assertPlainUuid(request.id);
     this.parseErrors = [];
 
-    const path = await this.findSessionPath(request.id);
-    if (path === undefined) {
+    const found = await this.findSessionPath(request.id);
+    if (found === undefined) {
       throw new Error(`Unknown session id: ${request.id}`);
     }
-    const parsed = await this.parseFile(path);
     const start =
       request.since === undefined
         ? -1
-        : parsed.entries.findIndex((entry) => entry.id === request.since);
+        : found.parsed.entries.findIndex((entry) => entry.id === request.since);
     if (request.since !== undefined && start === -1) {
       throw new Error(`Unknown session entry id: ${request.since}`);
     }
-    return parsed.entries.slice(start + 1).map((entry) => ({
+    return found.parsed.entries.slice(start + 1).map((entry) => ({
       entryId: entry.id,
       type: entry.type,
       timestamp: entry.timestamp,

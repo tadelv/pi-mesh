@@ -15,7 +15,11 @@ with extra skills.
 - Control plane publishes `_pi-mesh-control._tcp` via mDNS.
 - Agents publish `_pi-mesh._tcp` **only when a swarm key is present**.
 - Agents browse for both service types and maintain a peer registry
-  with TTL-based pruning.
+  with TTL-based pruning (default 30s).
+- An mDNS responder never re-announces an unchanged record, so a peer must
+  not be pruned on "no announcement recently": liveness is refreshed by
+  re-querying on an interval, and only a peer that stops answering ages out.
+  `docs/DEMO.md` has the two-device check for this.
 - No manual address configuration in v1. Manual peer fallback is
   deferred to a future milestone.
 

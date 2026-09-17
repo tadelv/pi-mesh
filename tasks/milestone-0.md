@@ -79,8 +79,10 @@ each other. No A2A yet. No control plane yet.
 ## Exit criteria
 
 - CI green on `main`.
-- Two-device mDNS discovery demonstrated in a recorded terminal session
-  (asciinema or GIF) committed to `docs/demos/`.
+- Two-device mDNS discovery verified by the procedure in `docs/DEMO.md`.
+  (Originally this required a committed asciinema/GIF recording. Dropped:
+  a terminal dump cannot be re-run, cannot be reviewed, and its own run was
+  too short to surface a peer-registry defect that a longer run did catch.
+  The durable artifact is the procedure, not the recording.)
 - All ADRs written.
-
 - No open `TODO`s in `packages/`.

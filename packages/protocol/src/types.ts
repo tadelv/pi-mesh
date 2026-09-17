@@ -13,42 +13,6 @@ export type Skill =
   | "mesh.peers"
   | "mesh.handoff";
 
-export interface AgentSkill {
-  id: Skill;
-  name: string;
-  description: string;
-  tags?: string[];
-  examples?: string[];
-  inputModes?: string[];
-  outputModes?: string[];
-}
-
-export interface AgentCard {
-  name: string;
-  description: string;
-  url: string;
-  version: string;
-  skills: AgentSkill[];
-  protocolVersion?: string;
-  capabilities?: AgentCapabilities;
-  defaultInputModes?: string[];
-  defaultOutputModes?: string[];
-  provider?: AgentProvider;
-  documentationUrl?: string;
-  iconUrl?: string;
-}
-
-export interface AgentCapabilities {
-  streaming?: boolean;
-  pushNotifications?: boolean;
-  stateTransitionHistory?: boolean;
-}
-
-export interface AgentProvider {
-  organization: string;
-  url?: string;
-}
-
 export interface ControlTxtRecord {
   id: string;
   name: string;
@@ -173,41 +137,113 @@ export interface JsonRpcErrorResponse {
 export type JsonRpcResponse<Result = unknown> =
   JsonRpcSuccessResponse<Result> | JsonRpcErrorResponse;
 
-export type MessageRole = "user" | "agent";
+export type Role = "ROLE_UNSPECIFIED" | "ROLE_USER" | "ROLE_AGENT";
+export type MessageRole = Role;
 
-export interface TextPart {
-  kind: "text";
-  text: string;
+export type TaskState =
+  | "TASK_STATE_UNSPECIFIED"
+  | "TASK_STATE_SUBMITTED"
+  | "TASK_STATE_WORKING"
+  | "TASK_STATE_COMPLETED"
+  | "TASK_STATE_FAILED"
+  | "TASK_STATE_CANCELED"
+  | "TASK_STATE_INPUT_REQUIRED"
+  | "TASK_STATE_REJECTED"
+  | "TASK_STATE_AUTH_REQUIRED";
+
+export interface AgentInterface {
+  url: string;
+  protocolBinding: string;
+  tenant?: string;
+  protocolVersion: string;
 }
 
-export interface FilePart {
-  kind: "file";
-  file: {
-    name?: string;
-    mimeType?: string;
-    bytes?: string;
-    uri?: string;
-  };
+export interface AgentCard {
+  name: string;
+  description: string;
+  supportedInterfaces: AgentInterface[];
+  provider?: AgentProvider;
+  version: string;
+  documentationUrl?: string;
+  capabilities: AgentCapabilities;
+  securitySchemes?: Record<string, SecurityScheme>;
+  securityRequirements?: SecurityRequirement[];
+  defaultInputModes: string[];
+  defaultOutputModes: string[];
+  skills: AgentSkill[];
+  signatures?: AgentCardSignature[];
+  iconUrl?: string;
 }
 
-export interface DataPart {
-  kind: "data";
-  data: Record<string, unknown>;
+export interface AgentCapabilities {
+  streaming?: boolean;
+  pushNotifications?: boolean;
+  extensions?: AgentExtension[];
+  extendedAgentCard?: boolean;
 }
 
-export type MessagePart = TextPart | FilePart | DataPart;
+export interface AgentProvider {
+  url: string;
+  organization: string;
+}
+
+export interface AgentSkill {
+  id: string;
+  name: string;
+  description: string;
+  tags: string[];
+  examples?: string[];
+  inputModes?: string[];
+  outputModes?: string[];
+  securityRequirements?: SecurityRequirement[];
+}
+
+export interface SecurityRequirement {
+  schemes: Record<string, StringList>;
+}
+
+export interface StringList {
+  list: string[];
+}
+
+export type SecurityScheme = Record<string, unknown>;
+export type AgentExtension = {
+  uri: string;
+  description: string;
+  required: boolean;
+  params?: Record<string, unknown>;
+};
+export type AgentCardSignature = {
+  protected: string;
+  signature: string;
+  header?: Record<string, unknown>;
+};
+
+export interface Part {
+  text?: string;
+  raw?: string;
+  url?: string;
+  data?: unknown;
+  metadata?: Record<string, unknown>;
+  filename?: string;
+  mediaType?: string;
+}
+
+export type MessagePart = Part;
 
 export interface Message {
-  role: MessageRole;
-  parts: MessagePart[];
-  messageId?: string;
-  taskId?: string;
+  messageId: string;
   contextId?: string;
+  taskId?: string;
+  role: Role;
+  parts: Part[];
   metadata?: Record<string, unknown>;
+  extensions?: string[];
+  referenceTaskIds?: string[];
 }
 
 export interface TaskStatus {
-  state: string;
+  state: TaskState;
   message?: Message;
   timestamp?: string;
 }
@@ -216,27 +252,30 @@ export interface Artifact {
   artifactId: string;
   name?: string;
   description?: string;
-  parts: MessagePart[];
+  parts: Part[];
   metadata?: Record<string, unknown>;
+  extensions?: string[];
 }
 
 export interface Task {
   id: string;
   contextId?: string;
   status: TaskStatus;
-  history?: Message[];
   artifacts?: Artifact[];
+  history?: Message[];
   metadata?: Record<string, unknown>;
 }
 
 export interface SendMessageConfiguration {
   acceptedOutputModes?: string[];
+  taskPushNotificationConfig?: Record<string, unknown>;
   historyLength?: number;
+  // A2A v1.0.1 spells this field return_immediately; it is not blocking.
   returnImmediately?: boolean;
-  pushNotificationConfig?: Record<string, unknown>;
 }
 
 export interface MessageSendParams {
+  tenant?: string;
   message: Message;
   configuration?: SendMessageConfiguration;
   metadata?: Record<string, unknown>;
@@ -254,20 +293,29 @@ export type MessageSendResponse = JsonRpcResponse<MessageSendResult>;
 export type MessageStreamParams = MessageSendParams;
 
 export interface TaskStatusUpdateEvent {
-  id: string;
+  taskId: string;
+  contextId: string;
   status: TaskStatus;
-  final?: boolean;
+  metadata?: Record<string, unknown>;
 }
 
 export interface TaskArtifactUpdateEvent {
-  id: string;
+  taskId: string;
+  contextId: string;
   artifact: Artifact;
   append?: boolean;
   lastChunk?: boolean;
+  metadata?: Record<string, unknown>;
 }
 
-export type MessageStreamResult =
-  TaskStatusUpdateEvent | TaskArtifactUpdateEvent | Message;
+export interface StreamResponse {
+  task?: Task;
+  message?: Message;
+  statusUpdate?: TaskStatusUpdateEvent;
+  artifactUpdate?: TaskArtifactUpdateEvent;
+}
+
+export type MessageStreamResult = StreamResponse;
 
 export type MessageStreamRequest = JsonRpcRequest<
   "message/stream",

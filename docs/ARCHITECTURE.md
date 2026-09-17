@@ -54,7 +54,8 @@ extension payload:
     }
 
 The receiving agent either accepts (returns a `task` with a stream) or
-rejects (returns a structured error). Rejections are silent — no
+rejects by settling the task as `TASK_STATE_REJECTED`. A rejection is not a
+JSON-RPC error (ADR 0005); rejections are silent — no
 escalation to an orchestrator.
 
 ## State and persistence

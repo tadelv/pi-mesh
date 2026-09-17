@@ -56,6 +56,17 @@ means unauthenticated: every request carries a proof (below). Process and
 steering skills are withheld until milestone 2 defines a spawn policy; see
 ADR 0006.
 
+## Skill invocation
+
+A skill call uses the standard A2A `message/send` method. The request's
+`Message` has `role: "ROLE_USER"` and one data part containing
+`{ "skill": "session.list", "input": { ... } }`; the skill name is not a
+custom JSON-RPC method or top-level field. A synchronous result is returned as
+an agent `Message` (`role: "ROLE_AGENT"`) whose data part contains
+`{ "result": ... }`. Streaming calls use `message/stream` and return
+`StreamResponse` objects over SSE, with the same result message shape for each
+session event.
+
 ## Peer authentication
 
 There are no sessions, tokens or cookies. Every request is independently

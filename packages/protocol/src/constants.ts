@@ -80,6 +80,22 @@ export const A2A_SOURCE = {
   sha256: "e195bf96ab630c69797851970203e1b2b6b19528f2e9803b7d904b91a5104016",
 } as const;
 
+/**
+ * A2A's own JSON-RPC error codes, from `docs/specification.md` at the pinned
+ * commit (A2A_SOURCE). The range `-32001`-`-32099` is A2A's, which is why
+ * pi-mesh's own codes start at `-32100` (ADR 0005). Only the codes this project
+ * actually emits are listed; add others from the same table rather than
+ * inventing a number in A2A's range.
+ */
+export const A2A_ERROR_CODES = {
+  TaskNotFound: -32001,
+  TaskNotCancelable: -32002,
+  PushNotificationNotSupported: -32003,
+  UnsupportedOperation: -32004,
+  ContentTypeNotSupported: -32005,
+  VersionNotSupported: -32009,
+} as const;
+
 /** The A2A protocol version this source declares. */
 export const A2A_PROTOCOL_VERSION = "1.0";
 

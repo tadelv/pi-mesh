@@ -47,11 +47,24 @@ Future: `pi-mesh-agent join <code>` for QR-based sharing.
 1. **Advertisement gate.** No swarm key → no mDNS advertisement.
 2. **Peer authentication.** Challenge-response HMAC over a nonce
    transcript (see PROTOCOL.md).
+3. **Request authentication.** The handshake proves the key but issues
+   nothing. Every subsequent request carries its own nonce, timestamp and
+   HMAC, so there is no token to capture and replay (ADR 0007).
 
 The swarm key is **not** used for message encryption in v1. Traffic on
 the LAN is plaintext HTTP. Confidentiality relies on the LAN being
 trusted. Encryption is deferred to a future milestone that adds Noise
 or TLS.
+
+## What swarm membership grants
+
+Joining the swarm is a real grant, not just a discovery shortcut: **any member
+may read this agent's session list, session content, and live session
+streams.** That follows from the shared-key model, and it is stated here
+rather than left to be discovered.
+
+Process control and steering are *not* part of that grant in v1. They are not
+served to peers at all until a spawn policy exists (ADR 0006).
 
 ## Pairing with the control plane
 
@@ -70,7 +83,9 @@ without affecting mesh membership.
 ## What the swarm key protects against
 
 - Rogue peers joining the mesh.
-- Passive observers forging A2A messages.
+- Passive observers forging A2A messages. (This is why requests are
+  individually authenticated rather than carrying a bearer token: a captured
+  token would be replayable, which would break exactly this guarantee.)
 - Agents accidentally advertising on untrusted networks (public profile).
 
 ## What it does not protect against

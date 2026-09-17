@@ -26,11 +26,15 @@ with extra skills.
 ## Transport
 
 - **A2A JSON-RPC over HTTP** between peers.
-- Each agent runs a local HTTP server (default port assigned dynamically,
-  advertised via mDNS TXT).
+- Each agent runs **one** HTTP listener, LAN-facing, on a configurable port
+  (`PI_MESH_PORT`, default 7330) which it advertises via mDNS TXT. Only the
+  handshake is reachable unauthenticated; every other route requires a
+  per-request proof (ADR 0006, ADR 0007).
 - Streaming uses SSE (`message/stream`).
 - The control plane connects to agents the same way any peer does —
   there is no privileged channel.
+- Agents serve read-only skills in v1. Process and steering skills are
+  withheld until a spawn policy exists (ADR 0006).
 
 ## Session model
 
@@ -38,7 +42,9 @@ with extra skills.
 - Agents expose `session.list`, `session.read`, `session.stream`,
   `session.steer`, `session.abort` as A2A skills.
 - The control plane caches snapshots in SQLite for offline viewing.
-  On reconnect, it replays from the last cached sequence number.
+  On reconnect, it replays from the last cached **entry ID**, which is the
+  cursor for a session's durable entries (ADR 0006's sibling decision; see
+  `docs/PROTOCOL.md`). There is no numeric sequence to resume from.
 
 ## Work handoff
 

@@ -12,10 +12,16 @@ revision; a change of revision is a protocol change.
 
 | Service | Advertised by | TXT keys |
 |---|---|---|
-| `_pi-mesh-control._tcp` | Control plane | `id`, `name`, `version`, `api_version`, `port`, `fp` |
-| `_pi-mesh._tcp` | Agent (only when swarm key present) | `id`, `name`, `version`, `agent_version`, `port`, `fp`, `caps` |
+| `_pi-mesh-control._tcp` | Control plane | `id`, `name`, `version`, `api_version`, `port` |
+| `_pi-mesh._tcp` | Agent (only when swarm key present) | `id`, `name`, `version`, `agent_version`, `port`, `caps` |
 
-`caps` is a comma-separated list of skill names the agent supports.
+`caps` is a comma-separated list of skill names the agent serves, and it MUST
+list exactly the skills the listener actually answers. Advertising a skill that
+would be refused is worse than omitting it.
+
+There is no `fp` key. M0 advertised a constant `"unpaired"`, which looks like
+data and verifies nothing; the key returns when it has verification semantics
+(ADR 0006).
 
 mDNS TXT attributes are unordered `key=value` strings with no separate value
 concept, so an entry whose value is empty reaches the wire as a bare `key=` and
@@ -24,41 +30,72 @@ omitted instead; a reader treats a missing key as an empty value.
 
 ## Agent card
 
-Every agent serves `GET /.well-known/agent-card.json` on its local
-port. The card declares skills:
+Every agent serves `GET /.well-known/agent-card.json` on its listening
+port. The card declares only the skills that listener serves.
 
-| Skill | Input | Output |
-|---|---|---|
-| `session.list` | `{}` | `{ sessions: SessionSummary[] }` |
-| `session.read` | `{ id, since? }` | `{ entries: Event[] }` |
-| `session.stream` | `{ id }` | SSE stream of `Event` |
-| `session.steer` | `{ id, message }` | `{ accepted: boolean }` |
-| `session.abort` | `{ id }` | `{ stopped: boolean }` |
-| `process.spawn` | `{ project, cwd, argv? }` | `{ pid, session_id }` |
-| `process.stop` | `{ pid, grace_ms? }` | `{ stopped: boolean }` |
-| `mesh.peers` | `{}` | `{ peers: PeerSummary[] }` |
-| `mesh.handoff` | `HandoffPayload` | `{ task_id }` |
+Each skill also declares its **exposure**:
 
-## Swarm key handshake
+| Skill | Exposure | Input | Output |
+|---|---|---|---|
+| `mesh.peers` | peer | `{}` | `{ peers: PeerSummary[] }` |
+| `session.list` | peer | `{}` | `{ sessions: SessionSummary[] }` |
+| `session.read` | peer | `{ id, since? }` | `{ entries: Event[] }` |
+| `session.stream` | peer | `{ id }` | SSE stream of `Event` |
+| `session.steer` | **not served in M1** | `{ id, message }` | `{ accepted: boolean }` |
+| `session.abort` | **not served in M1** | `{ id }` | `{ stopped: boolean }` |
+| `process.spawn` | **not served in M1** | `{ project, cwd, argv? }` | `{ pid, session_id }` |
+| `process.stop` | **not served in M1** | `{ pid, grace_ms? }` | `{ stopped: boolean }` |
+| `mesh.handoff` | **not served in M1** | `HandoffPayload` | `{ task_id }` |
 
-Every peer connection begins with a challenge-response:
+A peer exposure means the skill is reachable by any swarm member, and never
+means unauthenticated: every request carries a proof (below). Process and
+steering skills are withheld until milestone 2 defines a spawn policy; see
+ADR 0006.
 
-1. Client sends `GET /handshake` with `{ peer_id, nonce }`.
-2. Server responds with `{ peer_id, nonce, hmac }` where
+## Peer authentication
+
+There are no sessions, tokens or cookies. Every request is independently
+authenticated, so there is nothing to capture and replay (ADR 0007).
+
+### Handshake
+
+Two POSTs, because a `GET` with a JSON body is an interop hazard:
+
+1. Client `POST /handshake` with `{ peer_id, nonce }`.
+2. Server responds `{ peer_id, nonce, hmac }` where
    `hmac = HMAC-SHA256(swarm_key, client_nonce || server_nonce || peer_ids)`.
-3. Client verifies the HMAC, then sends its own HMAC over the same
-   transcript.
-4. On success, the connection is authenticated. All subsequent A2A
-   messages are accepted without per-message signing.
+3. Client `POST /handshake/verify` with its own HMAC over the same transcript.
+4. On success both sides have verified the other. Nothing is issued: the
+   handshake proves the key, it does not establish a session.
 
 The swarm key is never transmitted. Both sides derive the HMAC key from
 the raw swarm key bytes.
 
+The handshake sits outside the JSON-RPC endpoint, so its failures are HTTP
+status codes (`401`) with a small JSON body, never a JSON-RPC error code.
+
+### Request proof
+
+Every other request carries:
+
+| Header | Meaning |
+|---|---|
+| `X-Pi-Mesh-Peer` | Sender's peer ID |
+| `X-Pi-Mesh-Nonce` | Unique per request, base64 |
+| `X-Pi-Mesh-Timestamp` | ISO 8601 UTC |
+| `X-Pi-Mesh-Signature` | base64 HMAC-SHA256 over the request transcript |
+
+The request transcript is `method`, `path`, `sha256(body)`, peer ID, nonce and
+timestamp, each followed by a single LF, then UTF-8 encoded.
+
+A server MUST reject a nonce it has already accepted within the acceptance
+window, and any request whose timestamp is more than 60 seconds from its own
+clock. Both are constants, not configuration.
+
 ### Transcript encoding
 
-The HMAC transcript is the four fields `client_nonce`, `server_nonce`,
-`client_peer_id`, and `server_peer_id`, joined with one NUL byte (`\u0000`) in
-that order and then UTF-8 encoded.
+For both the handshake and the request proof, fields are joined with one NUL
+byte (`\u0000`) and then UTF-8 encoded.
 
 Field values MUST NOT contain `U+0000`, otherwise two distinct transcripts
 could encode to the same bytes; a receiver MUST reject a `peer_id` or nonce
@@ -66,6 +103,29 @@ that contains one.
 
 The `hmac` field is standard base64 (RFC 4648 section 4: 44 characters ending
 in one `=`), and `nonce` is the base64 encoding of 32 random bytes.
+
+## Session events and replay
+
+A session's durable entries are the canonical event stream. Each `Event`
+carries the **Pi entry ID** (a string) as its cursor; there is no numeric
+sequence.
+
+`session.read` accepts `since` as an entry ID and returns entries appended
+after it. `session.stream` emits newly appended entries in append order.
+
+Token-level streaming deltas are deliberately not part of v1: they carry
+neither a stable identifier nor a timestamp and cannot be resumed, so they
+could not participate in replay.
+
+## Task lifecycle
+
+Skills that answer immediately return an A2A `Message`. A `Task` is used only
+where work outlives the request, which in M1 means streaming.
+
+Tasks are held in memory and expire after 15 minutes. `tasks/get` for an
+unknown or expired task returns A2A's own `TaskNotFoundError` (`-32001`) —
+never a pi-mesh code (ADR 0005). Tasks do not survive an agent restart, and
+`tasks/cancel` on an expired task is `TaskNotFoundError`, not success.
 
 ## Handoff extension
 

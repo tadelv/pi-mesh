@@ -53,7 +53,10 @@ until milestone 0 is merged and CI is green.
   except for its credentials file and process map.
 - Do not implement GossipSub, ChromaDB, or shared memory yet. Those are
   milestone 3+.
-- Do not add authentication to the local A2A server that runs on
-  localhost. It is only reachable in-process.
+- Do not add an unauthenticated route to the LAN listener. Every peer
+  request carries its own proof (ADR 0007); the handshake is the only
+  exception. There is no unauthenticated local server in v1 — and "only
+  reachable in-process" is not a property loopback has, since any local
+  process can reach a loopback port. Bind to loopback if you want that.
 - Do not invent a new pairing protocol. Use the token + fingerprint
   flow in `docs/SECURITY.md`.

@@ -33,7 +33,7 @@ Evidence, verified in the Pi 0.85.1 install on hand:
 
 ## Decisions taken before coding
 
-Recorded as ADRs in this milestone, not improvised:
+Two decisions are load-bearing enough to be ADRs:
 
 - **ADR 0006 — one LAN listener, read-only exposure.** M1 exposes
   `session.list`, `session.read`, `session.stream` and `mesh.peers` to
@@ -50,11 +50,15 @@ Recorded as ADRs in this milestone, not improvised:
   derived from the swarm key, reusing the existing
   `computeHandshakeHmac`/`verifyHandshake` primitives. Confidentiality is
   still absent, exactly as `SECURITY.md` already states.
-- **ADR 0008 — durable entry IDs are the cursor.** `Event.seq: number`
-  becomes the Pi entry ID. `stream` tails newly appended session entries.
+
+Two more are protocol details rather than architecture choices, so they are
+settled in `docs/PROTOCOL.md` and their own issues instead of separate ADRs:
+
+- **Durable entry IDs are the cursor** (M1-3). `Event.seq: number` becomes
+  the Pi entry ID. `stream` tails newly appended session entries.
   Token-level `message_update` deltas are deferred; they carry neither an ID
   nor a timestamp and cannot be resumed.
-- **ADR 0009 — task lifecycle.** Synchronous skills return an immediate A2A
+- **Task lifecycle** (M1-4). Synchronous skills return an immediate A2A
   `Message`; in-memory `Task`s exist only for streaming, with a defined TTL.
   An expired or unknown task returns A2A's own `TaskNotFoundError`
   (`-32001`), never a pi-mesh code.
@@ -96,22 +100,22 @@ finish; reconnect requires a fresh request.
   describes the settled handshake and request-authentication flow; the swarm
   key never appears in a request or response body.
 
-### M1-3 — ADR 0008: session event model and replay cursor
+### M1-3 — Session event model: entry IDs are the cursor
 - `Event.seq: number` becomes the Pi entry ID (a string). Update
   `@pi-mesh/protocol` accordingly.
 - Define `since` semantics for replay, and what `stream` emits: durable
   entries only, in append order.
 - State explicitly that token-level deltas are not part of M1 and why
   (no stable identifier, not resumable).
-- **DoD:** ADR 0008 has Context, Decision, Consequences; no type in
-  `@pi-mesh/protocol` carries a numeric sequence; `ARCHITECTURE.md`'s
+- **DoD:** `docs/PROTOCOL.md` records the cursor and `since` semantics; no
+  type in `@pi-mesh/protocol` carries a numeric sequence; `ARCHITECTURE.md`'s
   "replay from the last cached sequence number" is reworded to the entry ID.
 
-### M1-4 — ADR 0009: A2A task lifecycle and retention
+### M1-4 — A2A task lifecycle and retention
 - When a skill returns a `Message` and when it returns a `Task`.
 - In-memory task store: TTL, what `tasks/get` on an expired task returns,
   cancellation semantics, and behaviour across an agent restart.
-- **DoD:** ADR 0009 has Context, Decision, Consequences; a test asserts that
+- **DoD:** `docs/PROTOCOL.md` records the lifecycle; a test asserts that
   an unknown or expired task yields A2A's `-32001`, proving ADR 0005's
   separation holds on the wire.
 
@@ -248,5 +252,5 @@ finish; reconnect requires a fresh request.
   `docs/DEMO.md` and extended to cover it.
 - A2A shapes validated against the pinned external source, not against our own
   types.
-- ADRs 0006, 0007, 0008 and 0009 written.
+- ADRs 0006 and 0007 written.
 - No open `TODO`s in `packages/`.

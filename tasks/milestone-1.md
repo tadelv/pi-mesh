@@ -135,16 +135,21 @@ finish; reconnect requires a fresh request.
 - Tail newly appended entries from the session file and emit them as `Event`s
   with entry-ID cursors.
 - A partially written trailing line must not be emitted as a record. Records
-  split on LF **only**: `U+2028`/`U+2029` are legal inside JSON strings and
-  Node's `readline` splits on them, so a session containing either would be
-  silently corrupted.
+  split on LF **only**: `U+2028`/`U+2029` are legal inside JSON strings, so a
+  decoder that treats them as boundaries corrupts a session containing one.
+  Pi's own docs warn against `node:readline` for this reason, but note the
+  behaviour is **Node-version dependent** — readline splits on `U+2028` on
+  Node 26 and keeps the record whole on Node 22, verified in CI. The
+  requirement is therefore about *our* decoder, and no test may assert what
+  readline does.
 - Session lifetime is independent of subscribers: a disconnecting subscriber
   must not affect the session.
 - **DoD:** a unit test whose payload contains `U+2028` inside a JSON string
-  is delivered as one record, and the same test fails against a
-  `readline`-based implementation; a half-written final line is withheld
-  until its terminating LF arrives; a read-to-stream race between an initial
-  `read` and a `stream` neither drops nor duplicates an entry.
+  is delivered as one record, and would fail against any decoder that splits
+  on it — asserting our behaviour, not a dependency's (see the Node-version
+  caveat above); a half-written final line is withheld until its terminating
+  LF arrives; a read-to-stream race between an initial `read` and a `stream`
+  neither drops nor duplicates an entry.
 
 ### M1-7 — A2A 1.0 pin, type reconciliation, and external conformance
 - Pin a concrete A2A 1.0 source (tag or commit) rather than the site's moving

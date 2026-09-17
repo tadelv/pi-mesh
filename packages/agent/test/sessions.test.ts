@@ -57,14 +57,16 @@ describe("Pi session parsing", () => {
   it("covers documented extra entry types and v1/v2 headers from synthetic fixtures", async () => {
     // These are synthetic fixtures; their fields are copied from Pi's
     // installed core/session-manager.d.ts declarations.
-    for (const name of [
-      "synthetic-extra-entry-types-v3.jsonl",
-      "synthetic-header-v1.jsonl",
-      "synthetic-header-v2.jsonl",
-    ]) {
+    for (const [name, version] of [
+      ["synthetic-extra-entry-types-v3.jsonl", 3],
+      ["synthetic-header-v1.jsonl", 1],
+      ["synthetic-header-v2.jsonl", 2],
+    ] as const) {
       const parsed = parseSession(await readFile(fixture(name)));
       expect(parsed.errors, name).toEqual([]);
-      expect(parsed.header).toBeDefined();
+      // Tolerating versions 1-3 is the criterion, so assert the version
+      // itself: toBeDefined() would still pass if version were dropped.
+      expect(parsed.header?.version, name).toBe(version);
     }
 
     const extra = parseSession(
@@ -80,8 +82,46 @@ describe("Pi session parsing", () => {
     const v1 = parseSession(
       await readFile(fixture("synthetic-header-v1.jsonl")),
     );
-    expect(v1.entries[0]?.id).toBe("v1-2");
-    expect(typeof v1.entries[0]?.parentId).toBe("object");
+    // v1 has no tree ids. The parser synthesises stable cursors and chains
+    // parents so `since` and append order work; Pi assigns RANDOM ids when it
+    // migrates v1 -> v2, so there is no Pi entry id to preserve here. That
+    // this is ours, and not Pi's, is documented in PROTOCOL.md.
+    expect(v1.entries.map((entry) => entry.id)).toEqual(["v1-2", "v1-3"]);
+    expect(v1.entries[0]?.parentId).toBeNull();
+    expect(v1.entries[1]?.parentId).toBe("v1-2");
+  });
+
+  it("encodes the session directory exactly as Pi does", () => {
+    // Regression: the helper used to replace "/" with "-" and keep the
+    // leading separator, producing ---Users-...--- instead of
+    // --Users-...--. Checked against directories that exist on this machine.
+    expect(
+      getSessionStorageDir("/Users/vid/development/repos/pi-mesh", "/root"),
+    ).toBe(join("/root", "--Users-vid-development-repos-pi-mesh--"));
+    expect(getSessionStorageDir("/private/tmp/pm-fixture", "/root")).toBe(
+      join("/root", "--private-tmp-pm-fixture--"),
+    );
+    // Pi also encodes backslash and colon, and strips exactly one leading
+    // separator. A colon and a backslash are adjacent in a Windows path, so
+    // the double dash is Pi's actual output, not a mistake here.
+    expect(getSessionStorageDir("C:\\Users\\me", "/root")).toBe(
+      join("/root", "--C--Users-me--"),
+    );
+  });
+
+  it("reads the latest session_info name and honours an explicit clear", async () => {
+    // Pi's getSessionName walks entries in REVERSE to find the latest
+    // session_info, and treats a later entry with no name as a clear. Using
+    // find() (first) reported a stale name and could honour neither a rename
+    // nor a clear - and no fixture had two session_info entries, so nothing
+    // caught it.
+    const root = await testRoot();
+    await installFixture(root, "synthetic-session-info-rename-v3.jsonl");
+    const store = new SessionStore({ sessionsRoot: root });
+
+    const [summary] = await store.list();
+    expect(summary?.name).toBeUndefined();
+    expect(summary).not.toHaveProperty("name");
   });
 
   it("skips and reports one malformed line while retaining later entries", async () => {

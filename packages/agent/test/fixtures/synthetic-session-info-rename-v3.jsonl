@@ -1,0 +1,4 @@
+{"type":"session","version":3,"id":"123e4567-e89b-42d3-a456-426614174010","timestamp":"2024-12-04T09:00:00.000Z","cwd":"/synthetic/renamed"}
+{"type":"session_info","id":"aaaa0001","parentId":null,"timestamp":"2024-12-04T09:00:01.000Z","name":"first-name"}
+{"type":"session_info","id":"aaaa0002","parentId":"aaaa0001","timestamp":"2024-12-04T09:00:02.000Z","name":"second-name"}
+{"type":"session_info","id":"aaaa0003","parentId":"aaaa0002","timestamp":"2024-12-04T09:00:03.000Z"}

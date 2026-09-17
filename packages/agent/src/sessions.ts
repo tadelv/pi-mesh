@@ -58,11 +58,19 @@ export function assertPlainUuid(id: string): void {
   }
 }
 
+/**
+ * Mirrors Pi's own session-directory encoding exactly. A leading separator is
+ * stripped and `/`, `\` and `:` are encoded, which is why
+ * /Users/me/repo becomes --Users-me-repo-- and not ---Users-me-repo--.
+ * docs/PROTOCOL.md's paraphrase ("`/` replaced by `-`") is what produced the
+ * extra dash; Pi's source is authoritative.
+ */
 export function getSessionStorageDir(
   cwd: string,
   sessionsRoot = join(homedir(), ".pi", "agent", "sessions"),
 ): string {
-  return join(sessionsRoot, `--${cwd.replaceAll("/", "-")}--`);
+  const encoded = cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-");
+  return join(sessionsRoot, `--${encoded}--`);
 }
 
 function record(value: unknown): Record<string, unknown> | undefined {
@@ -132,14 +140,14 @@ export function parseSession(
       }
       const id = stringField(value, "id");
       const timestamp = stringField(value, "timestamp");
-      const cwd = stringField(value, "cwd");
-      if (id === undefined || timestamp === undefined || cwd === undefined) {
-        report(
-          lineNumber,
-          "session header requires string id, timestamp, and cwd",
-        );
+      if (id === undefined || timestamp === undefined) {
+        report(lineNumber, "session header requires string id and timestamp");
         return;
       }
+      // Pi documents cwd as an empty string for old sessions and tolerates a
+      // non-string value. Requiring it here would make such sessions both
+      // invisible to list() and unaddressable by read().
+      const cwd = stringField(value, "cwd") ?? "";
       const version = value.version;
       if (version !== undefined && typeof version !== "number") {
         report(lineNumber, "session header version must be a number");
@@ -199,9 +207,18 @@ async function sessionFiles(sessionsRoot: string): Promise<string[]> {
 
   const files: string[] = [];
   for (const directory of directories) {
-    if (!directory.isDirectory()) continue;
+    // Pi accepts symlinked session directories, and a Dirent for a symlink is
+    // not a directory, so checking isDirectory() alone silently skips them.
+    if (!directory.isDirectory() && !directory.isSymbolicLink()) continue;
     const directoryPath = join(sessionsRoot, directory.name);
-    const children = await readdir(directoryPath, { withFileTypes: true });
+    // Pi guards this read: one unreadable directory must not cost the whole
+    // listing.
+    let children;
+    try {
+      children = await readdir(directoryPath, { withFileTypes: true });
+    } catch {
+      continue;
+    }
     for (const child of children) {
       if (child.isFile() && child.name.endsWith(".jsonl")) {
         files.push(join(directoryPath, child.name));
@@ -241,7 +258,19 @@ export class SessionStore {
     for (const path of await sessionFiles(this.sessionsRoot)) {
       const parsed = await this.parseFile(path);
       const header = parsed.header;
-      if (header === undefined || !isPlainUuid(header.id)) continue;
+      if (header === undefined) continue;
+      if (!isPlainUuid(header.id)) {
+        // Pi permits a caller-supplied non-UUID session id, so skipping one
+        // silently would hide a real session with no trace of why.
+        const error: SessionParseError = {
+          line: 1,
+          message: `session id is not a UUID and cannot be addressed: ${header.id}`,
+          path,
+        };
+        this.parseErrors.push(error);
+        this.onError?.(error);
+        continue;
+      }
 
       // No `status` or `ended_at`: Pi's session format records no lifecycle
       // state, so neither is derivable. Emitting "unknown" for every session
@@ -249,11 +278,14 @@ export class SessionStore {
       // the removed `fp` TXT key (ADR 0006). `updated_at` is last activity,
       // and is named accordingly rather than pretending to be an end time.
       const last = parsed.entries.at(-1);
-      const named = parsed.entries.find(
+      // Pi reads the LATEST session_info entry, and a later entry with no name
+      // is an explicit clear. `find` (first) would report a stale name and
+      // could honour neither a rename nor a clear.
+      const named = parsed.entries.findLast(
         (entry) => entry.type === "session_info",
       );
-      const sessionName =
-        typeof named?.name === "string" ? named.name : undefined;
+      const trimmed = typeof named?.name === "string" ? named.name.trim() : "";
+      const sessionName = trimmed === "" ? undefined : trimmed;
       summaries.push({
         id: header.id,
         project: header.cwd,

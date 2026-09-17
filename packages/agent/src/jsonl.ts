@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import { readFile } from "node:fs/promises";
-
 /** Incrementally splits JSONL records on LF, and only on LF. */
 export class JsonlDecoder {
   private buffer = "";
@@ -47,8 +45,4 @@ export function decodeJsonl(content: string | Uint8Array): string[] {
     records.push(...decoder.push("\n"));
   }
   return records;
-}
-
-export async function readJsonl(filePath: string): Promise<string[]> {
-  return decodeJsonl(await readFile(filePath));
 }

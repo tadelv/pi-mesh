@@ -104,27 +104,54 @@ that contains one.
 The `hmac` field is standard base64 (RFC 4648 section 4: 44 characters ending
 in one `=`), and `nonce` is the base64 encoding of 32 random bytes.
 
-## Session events and replay
+## Session listing and replay
 
-`session.list` returns one `SessionSummary` per session:
+`session.list` returns one `SessionSummary` per session, for **every**
+`*.jsonl` under `~/.pi/agent/sessions/--*--/`, across all projects — one
+summary per file, with no project filter.
 
 | Field | Meaning |
 |---|---|
 | `id` | The session-file header UUID |
-| `project` | The header's working directory |
-| `name` | Display name from a `session_info` entry, when the session has one |
+| `project` | The header's working directory (empty string for old sessions) |
+| `name` | Display name from the **latest** `session_info` entry, which is Pi's own rule |
 | `started_at` | Header timestamp |
 | `updated_at` | Last entry's timestamp — last activity, not an end time |
+
+`name` is omitted when the latest `session_info` entry carries no name, which
+Pi treats as an explicit clear; a rename therefore takes effect and a clear
+removes it. Omitted is not the same as empty.
+
+`updated_at` is the last *entry's* timestamp. Pi's own `/resume` ordering uses
+the latest **message** timestamp instead, so a session whose final entry is a
+label, custom or `session_info` entry can order differently here. Ours is
+defined above so a peer knows which it is sorting by.
+
+A session whose header `id` is not a UUID cannot be addressed and is not
+listed; that skip is reported rather than silent, because Pi permits a
+caller-supplied session id and such sessions are real.
 
 There is deliberately no `status` and no `ended_at`. Pi's session format
 records no lifecycle state, so neither is derivable; a field that is always
 `"unknown"` looks like data while carrying none, which is the same defect as
 the removed `fp` TXT key (ADR 0006). `updated_at` is named for what it is.
 
-A session's durable entries are the canonical event stream. Each `Event`
-carries the **Pi entry ID** (a string) as its cursor, in the field `entryId`
-to keep it distinct from a session ID; there is no numeric
+## Session events and replay
+
+A session's durable entries are the canonical event stream. `Event.data`
+carries the file's entry **unnormalised**: Pi applies migrations (v1 → v2 → v3)
+when it loads a session and this reader does not, so a v1 file's
+`hookMessage`-era entries or `firstKeptEntryIndex` reach a peer as written. The
+header's `version` is reported so a consumer can tell.
+
+Each `Event` carries the **Pi entry ID** (a string) as its cursor, in the field
+`entryId` to keep it distinct from a session ID; there is no numeric
 sequence.
+
+For v1 sessions there is no Pi entry ID at all: v1 predates the tree, and Pi
+assigns **random** ids when migrating. This reader instead synthesises stable
+ids of the form `v1-<line>` and chains parents, so that `since` and append
+order still work. For v1, `entryId` is this specification's, not Pi's.
 
 `session.read` accepts `since` as an entry ID and returns entries appended
 after it. `session.stream` emits newly appended entries in append order.

@@ -20,22 +20,17 @@ describe("JSONL decoder", () => {
 
   it("keeps U+2028 inside one JSON record", () => {
     const record = JSON.stringify({ text: "left\u2028right" });
-    const input = `${record}\n`;
 
-    expect(decodeJsonl(input)).toEqual([record]);
-
-    // Pi's format is LF-only. A splitter that also treats the Unicode line
-    // separators U+2028/U+2029 as boundaries - which naive line readers do, and
-    // which node:readline has done on some Node versions - breaks this record
-    // in two. Spelled out here rather than by calling readline, because
-    // readline's behaviour varies BY NODE VERSION: CI on Node 22 kept the
-    // record whole, so a test asserting readline splits it failed on the very
-    // version where readline is correct. The decoder's own behaviour is the
-    // thing under test; the failure mode is illustrative.
-    const unicodeAwareSplit = input
-      .split(/\r?\n|\u2028|\u2029/)
-      .filter(Boolean);
-    expect(unicodeAwareSplit).toHaveLength(2);
-    expect(unicodeAwareSplit).not.toEqual([record]);
+    // Pi's format is LF-only, so a decoder that also treats the Unicode line
+    // separators U+2028/U+2029 as boundaries would split this record. Any
+    // U+2028-splitting decoder fails this assertion, which is the whole point.
+    //
+    // It deliberately does NOT assert what node:readline does. readline's
+    // behaviour is Node-VERSION dependent: it splits on U+2028 on Node 26 and
+    // keeps the record whole on Node 22 (verified in CI), so asserting
+    // readline's behaviour fails on the very version where readline is
+    // correct. The decoder's own behaviour is the requirement; readline is not
+    // the contract. A comment describing the trap is not a test.
+    expect(decodeJsonl(`${record}\n`)).toEqual([record]);
   });
 });

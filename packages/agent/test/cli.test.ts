@@ -2,6 +2,7 @@
 
 import { describe, expect, it } from "vitest";
 import { run } from "../src/cli.js";
+import { PeerRegistry } from "../src/index.js";
 
 function output() {
   let stdout = "";
@@ -50,13 +51,36 @@ describe("agent CLI", () => {
     },
   );
 
-  it("prints an empty peer registry as JSON on stdout only", async () => {
+  it("prints the browsed peer registry as JSON on stdout only", async () => {
     const captured = output();
+    const registry = new PeerRegistry();
+    registry.add({
+      id: "peer-b",
+      name: "Peer B",
+      serviceType: "mesh",
+      host: "peer-b.local",
+      port: 7330,
+      txt: { id: "peer-b" },
+    });
 
-    await expect(run(["peers"], captured.io)).resolves.toBe(0);
+    await expect(
+      run(["peers", "--timeout", "0"], { ...captured.io, registry }),
+    ).resolves.toBe(0);
 
     const { stdout, stderr } = captured.read();
-    expect(JSON.parse(stdout)).toEqual([]);
+    expect(JSON.parse(stdout)).toHaveLength(1);
+    expect(JSON.parse(stdout)[0]).toMatchObject({ id: "peer-b" });
     expect(stderr).toBe("");
+  });
+
+  it("prints an empty registry when nothing is discovered", async () => {
+    const captured = output();
+
+    await expect(
+      run(["peers", "--timeout", "0", "--profile", "public"], captured.io),
+    ).resolves.toBe(0);
+
+    const { stdout } = captured.read();
+    expect(JSON.parse(stdout)).toEqual([]);
   });
 });

@@ -3,7 +3,7 @@
 
 import Bonjour from "bonjour-service";
 import { hostname } from "node:os";
-import { isDirectInvocation } from "@pi-mesh/shared";
+import { isDirectInvocation, sleep } from "@pi-mesh/shared";
 import {
   browsePeers,
   type BonjourLike,
@@ -22,7 +22,7 @@ export type CliIO = {
 
 const usage =
   "Usage: pi-mesh-agent keygen\n" +
-  "Usage: pi-mesh-agent peers [--profile lan|public]\n" +
+  "Usage: pi-mesh-agent peers [--profile lan|public] [--watch] [--timeout seconds]\n" +
   "Usage: pi-mesh-agent start [--profile lan|public]\n";
 
 export async function run(
@@ -40,10 +40,11 @@ export async function run(
     return 0;
   }
   if (parsed.command === "peers") {
-    const registry = io.registry ?? new PeerRegistry();
-    registry.prune();
-    io.stdout.write(`${JSON.stringify(registry.peers)}\n`);
-    return 0;
+    return peers(
+      parsed.profile,
+      { watch: parsed.watch, timeoutMs: parsed.timeoutMs },
+      io,
+    );
   }
   if (parsed.command !== "start") {
     io.stderr.write(usage);
@@ -51,6 +52,50 @@ export async function run(
   }
 
   return start(parsed.profile, io);
+}
+
+/**
+ * The registry is process-local, so a fresh invocation has nothing to print on
+ * its own: it has to browse before it can report anything. Without this,
+ * `pi-mesh-agent peers` printed an empty list unconditionally.
+ */
+async function peers(
+  profile: NetworkProfile,
+  options: { watch: boolean; timeoutMs: number },
+  io: CliIO,
+): Promise<number> {
+  const registry = io.registry ?? new PeerRegistry();
+  const bonjour =
+    profile === "public" ? undefined : (io.bonjour ?? new Bonjour());
+  const browser = browsePeers(registry, {
+    profile,
+    ...(bonjour === undefined ? {} : { bonjour }),
+  });
+
+  const emit = (): void => {
+    registry.prune();
+    io.stdout.write(`${JSON.stringify(registry.peers)}\n`);
+  };
+
+  try {
+    if (!options.watch) {
+      // Long enough for mDNS responses to arrive, per the M0-6 "within 5
+      // seconds" criterion.
+      await sleep(options.timeoutMs);
+      emit();
+      return 0;
+    }
+
+    emit();
+    const timer = setInterval(emit, Math.max(options.timeoutMs, 250));
+    await new Promise<void>((resolveExit) => {
+      process.once("SIGINT", () => resolveExit());
+    });
+    clearInterval(timer);
+    return 0;
+  } finally {
+    await browser.stop();
+  }
 }
 
 async function start(profile: NetworkProfile, io: CliIO): Promise<number> {
@@ -117,11 +162,19 @@ function configuredPort(): number {
     : 7330;
 }
 
-function parseArguments(
-  argv: string[],
-): { command: string | undefined; profile: NetworkProfile } | undefined {
+function parseArguments(argv: string[]):
+  | {
+      command: string | undefined;
+      profile: NetworkProfile;
+      watch: boolean;
+      timeoutMs: number;
+    }
+  | undefined {
   let profile: NetworkProfile = "lan";
+  let watch = false;
+  let timeoutMs = 5_000;
   const commands: string[] = [];
+
   for (let index = 0; index < argv.length; index += 1) {
     const argument = argv[index];
     if (argument === "--profile") {
@@ -131,11 +184,23 @@ function parseArguments(
       }
       profile = value;
       index += 1;
+    } else if (argument === "--watch") {
+      watch = true;
+    } else if (argument === "--timeout") {
+      const seconds = Number(argv[index + 1]);
+      if (!Number.isFinite(seconds) || seconds < 0) {
+        return undefined;
+      }
+      timeoutMs = seconds * 1_000;
+      index += 1;
     } else if (argument !== undefined) {
       commands.push(argument);
     }
   }
-  return commands.length === 1 ? { command: commands[0], profile } : undefined;
+
+  return commands.length === 1
+    ? { command: commands[0], profile, watch, timeoutMs }
+    : undefined;
 }
 
 function isMissingFileError(error: unknown): boolean {

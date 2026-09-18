@@ -101,7 +101,14 @@ Every other request carries:
 | `X-Pi-Mesh-Signature` | base64 HMAC-SHA256 over the request transcript |
 
 The request transcript is `method`, `path`, `sha256(body)`, peer ID, nonce and
-timestamp, each followed by a single LF, then UTF-8 encoded.
+timestamp **in that order**, joined per [Transcript encoding](#transcript-encoding)
+below.
+
+`sha256(body)` is the **lowercase hex** digest of the raw request body bytes
+(the bytes as received, before any parsing or re-serialisation), or the hex
+digest of the empty string when the request has no body. Hashing the received
+bytes rather than a re-encoded form means a signature covers exactly what was
+sent, and cannot be invalidated by a different but equivalent JSON encoding.
 
 A server MUST reject a nonce it has already accepted within the acceptance
 window, and any request whose timestamp is more than 60 seconds from its own
@@ -109,8 +116,12 @@ clock. Both are constants, not configuration.
 
 ### Transcript encoding
 
-For both the handshake and the request proof, fields are joined with one NUL
-byte (`\u0000`) and then UTF-8 encoded.
+For both the handshake and the request proof, fields are joined with exactly
+one NUL byte (`\u0000`), in the order given above, and the result is UTF-8
+encoded. There is no trailing separator. This is the only encoding: an
+earlier revision of this document described the request transcript as
+LF-separated, which contradicted this rule and would have produced a distinct
+signature for the same request.
 
 Field values MUST NOT contain `U+0000`, otherwise two distinct transcripts
 could encode to the same bytes; a receiver MUST reject a `peer_id` or nonce

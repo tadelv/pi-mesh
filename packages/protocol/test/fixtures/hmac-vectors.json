@@ -1,0 +1,80 @@
+{
+  "_provenance": [
+    "HARD-CODED ON PURPOSE. Every value here was computed OUTSIDE this repository",
+    "by a different implementation, so that a pi-mesh client and a pi-mesh server",
+    "agreeing with each other cannot make a test pass. Two implementations sharing",
+    "one mistaken reading of the transcript would produce identical wrong bytes.",
+    "",
+    "rfc4231[]: transcribed from RFC 4231 section 4 (published standard).",
+    "everything else: computed with Python's hmac/hashlib and independently",
+    "re-computed with `openssl dgst -sha256 -mac HMAC`; both agree. The RFC",
+    "vectors anchor the primitive, the others anchor the transcript layout.",
+    "",
+    "DO NOT regenerate these from the implementation under test. If a value",
+    "here is wrong, fix it from an external implementation, not from ours."
+  ],
+  "rfc4231": [
+    {
+      "source": "RFC 4231 section 4.2 (Test Case 1)",
+      "keyHex": "0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b0b",
+      "dataHex": "4869205468657265",
+      "hmacHex": "b0344c61d8db38535ca8afceaf0bf12b881dc200c9833da726e9376c2e32cff7"
+    },
+    {
+      "source": "RFC 4231 section 4.3 (Test Case 2)",
+      "keyHex": "4a656665",
+      "dataHex": "7768617420646f2079612077616e7420666f72206e6f7468696e673f",
+      "hmacHex": "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
+    },
+    {
+      "source": "RFC 4231 section 4.4 (Test Case 3)",
+      "keyHex": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "dataHex": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd",
+      "hmacHex": "773ea91e36800e46854db8ebd09181a72959098b3ef8c122d9635514ced565fe"
+    }
+  ],
+  "swarmKey": {
+    "keyBase64": "cGktbWVzaC12ZWN0b3Ita2V5LTAxMjM0NTY3ODlhYmM=",
+    "keyUtf8": "pi-mesh-vector-key-0123456789abc",
+    "_note": "32 raw bytes, base64-encoded, exactly as it appears on disk in ~/.pi-mesh/swarm.key"
+  },
+  "handshake": [
+    {
+      "_note": "transcript order is clientNonce, serverNonce, clientPeerId, serverPeerId, NUL-joined",
+      "clientNonce": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
+      "serverNonce": "ZGVmZ2hpamtsbW5vcHFyc3R1dnd4eXp7fH1+f4CBgoM=",
+      "clientPeerId": "peer-alpha",
+      "serverPeerId": "peer-beta",
+      "transcriptHex": "41414543417751464267634943516f4c4441304f4478415245684d554652595847426b61477877644868383d005a47566d5a326870616d7473625735766348467963335231646e6434655870376648312b66344342676f4d3d00706565722d616c70686100706565722d62657461",
+      "hmacBase64": "AzjUwTHfV1BKS2ed9jHMJUwOVRlEwsdOeP+kfy2m6Xw=",
+      "naiveJoinHmacBase64": "GtgWxVG4rJTVjbb0wvp0fcyMEKZiyl4IyXegVnom6qM=",
+      "_naiveJoin": "plain concatenation of the four fields with NO separator; must NOT equal hmacBase64, otherwise the NUL separator is not really being applied"
+    }
+  ],
+  "requestProof": [
+    {
+      "_note": "transcript order is method, path, sha256(body) hex, peer, nonce, timestamp, NUL-joined",
+      "method": "POST",
+      "path": "/",
+      "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tasks/get\",\"params\":{\"id\":\"x\"}}",
+      "bodySha256Hex": "aef558c523be9edcb338eed78baa0fdf47216494e5019d7222601b41fca39cca",
+      "peerId": "peer-alpha",
+      "nonce": "yMnKy8zNzs/Q0dLT1NXW19jZ2tvc3d7f4OHi4+Tl5uc=",
+      "timestamp": "2026-09-17T12:00:00Z",
+      "transcriptHex": "504f5354002f006165663535386335323362653965646362333338656564373862616130666466343732313634393465353031396437323232363031623431666361333963636100706565722d616c70686100794d6e4b79387a4e7a732f5130644c54314e585731396a5a3274766333643766344f4869342b546c3575633d00323032362d30392d31375431323a30303a30305a",
+      "signatureBase64": "K6+eHO3y6VFWGx9OTWpObZjB47ek54xCWKF/vdharxI=",
+      "signatureHex": "2baf9e1cedf2e951561b1f4e4d6a4e6d98c1e3b7a4e78c4258a17fbdd85aaf12"
+    },
+    {
+      "_note": "a bodyless request: sha256 of the EMPTY string, not of the string \"undefined\" or of nothing at all",
+      "method": "GET",
+      "path": "/.well-known/agent-card.json",
+      "body": "",
+      "bodySha256Hex": "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+      "peerId": "peer-alpha",
+      "nonce": "yMnKy8zNzs/Q0dLT1NXW19jZ2tvc3d7f4OHi4+Tl5uc=",
+      "timestamp": "2026-09-17T12:00:00Z",
+      "signatureBase64": "bY8tVhK6Nh42cZycwEXzj2RKFWFmq3D6A86yN3VpbOc="
+    }
+  ]
+}

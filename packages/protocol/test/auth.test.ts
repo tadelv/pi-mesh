@@ -3,9 +3,11 @@
 import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import {
+  acceptTimestamp,
   computeHandshakeHmac,
   encodeTranscript,
   isWithinClockSkew,
+  parseTimestamp,
   signRequest,
   verifyRequestSignature,
   type HandshakeTranscript,
@@ -28,6 +30,7 @@ type Vectors = {
     path: string;
     body: string;
     peerId: string;
+    recipientPeerId: string;
     nonce: string;
     timestamp: string;
     signatureBase64: string;
@@ -50,6 +53,7 @@ function requestFields(
     path: vector.path,
     body: vector.body,
     peerId: vector.peerId,
+    recipientPeerId: vector.recipientPeerId,
     nonce: vector.nonce,
     timestamp: vector.timestamp,
   };
@@ -129,5 +133,54 @@ describe("request authentication vectors", () => {
     expect(isWithinClockSkew("2026-09-17T12:00:59.999Z", now)).toBe(true);
     expect(isWithinClockSkew("2026-09-17T12:01:00.001Z", now)).toBe(false);
     expect(isWithinClockSkew("not-a-timestamp", now)).toBe(false);
+    // Exactly at the limit is inside it: the document says "more than 60
+    // seconds", so the boundary itself is accepted. Without this the pair above
+    // would still pass if the comparison flipped from <= to <.
+    expect(isWithinClockSkew("2026-09-17T12:01:00.000Z", now)).toBe(true);
+    expect(isWithinClockSkew("2026-09-17T11:59:00.000Z", now)).toBe(true);
+    expect(isWithinClockSkew("2026-09-17T11:58:59.999Z", now)).toBe(false);
+  });
+
+  it("accepts only the documented timestamp shape", () => {
+    // Date.parse on its own also swallows a bare date and a local-time string,
+    // reading the latter in the SERVER's zone. Signer and verifier would then
+    // disagree about the instant, and the failure would surface as a confusing
+    // auth rejection rather than an obviously malformed timestamp.
+    const now = new Date("2026-09-17T12:00:00.000Z");
+    expect(parseTimestamp("2026-09-17T12:00:00.000Z")).toBe(
+      Date.UTC(2026, 8, 17, 12),
+    );
+    expect(parseTimestamp("2026-09-17T12:00:00Z")).toBe(
+      Date.UTC(2026, 8, 17, 12),
+    );
+    expect(parseTimestamp("2026-09-17T14:00:00+02:00")).toBe(
+      Date.UTC(2026, 8, 17, 12),
+    );
+    for (const bad of [
+      "2026-09-17",
+      "09/17/2026",
+      "2026-09-17T12:00:00",
+      "2026-09-17 12:00:00Z",
+      "not-a-timestamp",
+    ]) {
+      expect(parseTimestamp(bad), bad).toBeUndefined();
+      expect(isWithinClockSkew(bad, now), bad).toBe(false);
+    }
+  });
+
+  it("returns the instant it admitted, so a cache lifetime can be derived from it", () => {
+    // The replay cache must stay populated for a future-dated request's whole
+    // acceptance window. Expiring at receipt-plus-window instead left a request
+    // dated 30s ahead replayable for ~30s after it stopped being acceptable, so
+    // the caller needs the accepted instant rather than a bare boolean.
+    const now = new Date("2026-09-17T12:00:00.000Z");
+    expect(acceptTimestamp("2026-09-17T12:00:30.000Z", now)).toBe(
+      Date.UTC(2026, 8, 17, 12, 0, 30),
+    );
+    // Later than now: the cache must outlive now + window.
+    const future = acceptTimestamp("2026-09-17T12:00:30.000Z", now) as number;
+    expect(future > now.getTime()).toBe(true);
+    expect(acceptTimestamp("2026-09-17T12:01:00.001Z", now)).toBeUndefined();
+    expect(acceptTimestamp("nonsense", now)).toBeUndefined();
   });
 });

@@ -83,15 +83,22 @@ without affecting mesh membership.
 ## What the swarm key protects against
 
 - Rogue peers joining the mesh.
-- Passive observers forging A2A messages. (This is why requests are
-  individually authenticated rather than carrying a bearer token: a captured
-  token would be replayable, which would break exactly this guarantee.)
+- Passive observers forging A2A messages, and replaying an observed request
+  against a *different* agent. (This is why requests are individually
+  authenticated rather than carrying a bearer token: a captured token would be
+  replayable, which would break exactly this guarantee. It is also why the
+  signed transcript names the recipient as well as the sender - replay state is
+  per process, so a request that did not name its addressee would be a fresh
+  nonce at every other member.)
 - Agents accidentally advertising on untrusted networks (public profile).
 
 ## What it does not protect against
 
 - Eavesdropping on session content (plaintext HTTP).
-- Malicious peers who already possess the swarm key.
+- Malicious peers who already possess the swarm key. Such a peer is fully
+  trusted: it can claim any peer ID (a claimed ID is a routing label, not an
+  authenticated identity - see ADR 0007), and it can replay a captured request
+  against the agent that request was addressed to.
 - Physical access to a device with the key on disk.
 
 ## Revocation

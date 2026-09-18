@@ -65,6 +65,7 @@ async function httpCallWith(
   const requestHeaders = signedHeaders(testKey, testIdentity, {
     method: "POST",
     path: "/",
+    recipientPeerId: testIdentity.peerId,
     body: JSON.stringify(body),
   });
   return new Promise((resolve, reject) => {
@@ -140,6 +141,7 @@ describe("A2A HTTP server", () => {
       port: 0,
       sessionsRoot: root,
       swarmKey: testKey,
+      identity: testIdentity,
     });
     const address = await server.start();
     try {
@@ -173,6 +175,7 @@ describe("A2A HTTP server", () => {
       port: 0,
       sessionsRoot: root,
       swarmKey: testKey,
+      identity: testIdentity,
     });
     const address = await server.start();
     try {
@@ -198,6 +201,7 @@ describe("A2A HTTP server", () => {
       port: 0,
       sessionsRoot: root,
       swarmKey: testKey,
+      identity: testIdentity,
     });
     const address = await server.start();
     try {
@@ -220,12 +224,17 @@ describe("A2A HTTP server", () => {
   });
 
   it("returns standard parse, method, and A2A task errors", async () => {
-    const server = createAgentServer({ port: 0, swarmKey: testKey });
+    const server = createAgentServer({
+      port: 0,
+      swarmKey: testKey,
+      identity: testIdentity,
+    });
     const address = await server.start();
     try {
       const malformedHeaders = signedHeaders(testKey, testIdentity, {
         method: "POST",
         path: "/",
+        recipientPeerId: testIdentity.peerId,
         body: "{",
       });
       const malformed = await new Promise<HttpResult>((resolve, reject) => {
@@ -302,6 +311,7 @@ describe("A2A HTTP server", () => {
       port: 0,
       sessionsRoot: root,
       swarmKey: testKey,
+      identity: testIdentity,
       stream: (request, options): SessionStream => {
         const stream = sessionStream(request, options);
         const stop = stream.stop.bind(stream);
@@ -321,6 +331,7 @@ describe("A2A HTTP server", () => {
       const streamHeaders = signedHeaders(testKey, testIdentity, {
         method: "POST",
         path: "/",
+        recipientPeerId: testIdentity.peerId,
         body: streamBody,
       });
       await new Promise<void>((resolve, reject) => {

@@ -38,30 +38,65 @@ neither stable nor verifiable.
    - `X-Pi-Mesh-Nonce` — unique per request, base64
    - `X-Pi-Mesh-Timestamp` — ISO 8601 UTC
    - `X-Pi-Mesh-Signature` — base64 HMAC-SHA256 over
-     `method \n path \n sha256(body) \n peer \n nonce \n timestamp`
+     `method \n path \n sha256(body) \n sender \n recipient \n nonce \n timestamp`
+
+   Fields are NUL-separated, in that order, not LF-separated: this ADR's first
+   draft wrote the transcript with `\n` between fields while `docs/PROTOCOL.md`
+   specified one NUL byte, and the two descriptions cannot both be right.
+   NUL wins because the handshake already encodes that way
+   (`encodeTranscript`) and because the document forbids `U+0000` inside a
+   field, which is what makes the separation unambiguous. The fixed vectors in
+   `packages/protocol/test/fixtures/hmac-vectors.json` are NUL-joined.
 
    The key is the raw swarm key bytes, reusing the existing
    `computeHandshakeHmac`/`verifyHandshake` primitives.
-4. **Replay protection is server-side and bounded.** A nonce seen within the
+4. **The transcript binds the recipient as well as the sender.** Replay state
+   is per process, so a request that does not name its addressee is a *fresh*
+   nonce at every other member: one request observed on the wire could be
+   executed once per agent, which contradicts this ADR's own premise that
+   there is nothing to capture and replay. It was demonstrated against two
+   live servers before being fixed. Binding the recipient also mirrors the
+   handshake, which already binds both peer IDs.
+5. **Replay protection is server-side and bounded.** A nonce seen within the
    acceptance window is rejected. Requests outside a ±60 s timestamp skew are
-   rejected. The window and the skew tolerance are constants, documented.
-5. **The handshake is outside the JSON-RPC endpoint**, so its failures are
-   HTTP status codes with a small JSON body (`401`, with a reason), not a
-   JSON-RPC error code. `-32100` therefore does not appear on the handshake
-   route.
-6. **Identity is persistent and random.** A peer ID is generated once into
-   `~/.pi-mesh/credentials.json`; the display name stays separate. The mDNS
-   TXT `id`, the handshake `peer_id`, and the agent card identity must all
-   agree, and the listener verifies that agreement rather than trusting one of
-   them.
-7. **`fp` is dropped** from TXT records until it has verification semantics
+   rejected, and a nonce is retained for the whole of its acceptance window,
+   so a request dated in the future is not replayable after the window closes.
+   The window and the skew tolerance are constants, documented. The cache is
+   capped: past the cap the entry closest to expiring is dropped, which needs
+   sustained authenticated traffic (i.e. a swarm key holder) and is the only
+   way the "seen within the window" rule can be exhausted.
+6. **The handshake is outside the JSON-RPC endpoint**, so its failures are
+   HTTP status codes with a small JSON body (`401`, with a reason; `503` when
+   the bounded pending-handshake table is full), not a JSON-RPC error code.
+   `-32100` therefore does not appear on the handshake route. The table is
+   bounded by *refusing* a new hello rather than evicting a pending one, since
+   that route carries no proof and an anonymous flood could otherwise displace
+   the handshake a legitimate peer is about to verify.
+7. **Identity is persistent and random.** A peer ID is generated once into
+   `~/.pi-mesh/credentials.json` (directory `0700`, file `0600`, written by
+   temp-file-plus-rename); the display name stays separate.
+
+   **A claimed `peer_id` is currently a routing label, not an authenticated
+   identity.** It is bound into the proof, so a third party cannot re-attribute
+   an existing proof to a different claimed id, but any swarm key holder can
+   mint a fresh proof for any id it likes, and nothing on the request path
+   cross-checks the claim against the mDNS TXT `id` or the agent card. The
+   agreement check this ADR originally specified therefore does not exist yet;
+   it belongs with the registry lookup that M1-10 introduces. Until then,
+   treat the sender's identity as "some member of the swarm".
+8. **`fp` is dropped** from TXT records until it has verification semantics
    (see ADR 0006).
 
 ## Consequences
 
 - The threat model in `docs/SECURITY.md` remains true as written: passive
-  observers cannot forge messages. They can still read everything, because
-  there is still no encryption.
+  observers cannot forge messages, and - because the transcript names both
+  peers - they cannot replay one against a different agent either. They can
+  still read everything, because there is still no encryption.
+- A swarm key holder is fully trusted. It can claim any peer ID, and it can
+  replay a request it captured against the agent that request was addressed
+  to. Neither is defended against, and neither is in scope: membership in the
+  swarm *is* the trust boundary.
 - No token means no expiry semantics: a stream is authorised when it is
   established and may run to completion. Reconnect requires a fresh, signed
   request. This removes an entire class of state-and-expiry questions.

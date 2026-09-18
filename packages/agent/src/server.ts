@@ -27,7 +27,7 @@ import {
   computeHandshakeHmac,
   createNonce,
   encodeTranscript,
-  isWithinClockSkew,
+  acceptTimestamp,
   verifyHandshake as verifyHandshakeHmac,
   verifyRequestSignature,
   type HandshakeTranscript,
@@ -61,7 +61,6 @@ export interface AgentServerOptions extends SkillRegistryOptions {
   description?: string;
   version?: string;
   agentUrl?: string;
-  authorize?: (request: IncomingMessage) => boolean;
   swarmKey?: Uint8Array;
   identity?: PeerIdentity;
   taskStore?: TaskStore;
@@ -359,17 +358,7 @@ export class HttpAgentServer implements AgentServer {
     }
 
     const rawBody = await readBody(request);
-    if (
-      this.options.authorize === undefined &&
-      !this.verifyRequest(request, rawBody)
-    ) {
-      this.unauthorized(response);
-      return;
-    }
-    if (
-      this.options.authorize !== undefined &&
-      !this.options.authorize(request)
-    ) {
+    if (!this.verifyRequest(request, rawBody)) {
       this.unauthorized(response);
       return;
     }
@@ -435,9 +424,14 @@ export class HttpAgentServer implements AgentServer {
     ) {
       return false;
     }
-    if (!isWithinClockSkew(timestamp, new Date())) return false;
+    const now = Date.now();
+    // Accept against the same value the replay lifetime is derived from, so the
+    // acceptance window and the cache entry cannot disagree.
+    const accepted = acceptTimestamp(timestamp, new Date(now));
+    if (accepted === undefined) return false;
     const key = this.swarmKey;
-    if (key === undefined || this.identity === undefined) return false;
+    const identity = this.identity;
+    if (key === undefined || identity === undefined) return false;
     if (
       !verifyRequestSignature(
         key,
@@ -446,6 +440,10 @@ export class HttpAgentServer implements AgentServer {
           path: request.url ?? "/",
           body,
           peerId,
+          // Verifying against our OWN peer id is what makes a captured request
+          // useless elsewhere: a signature made out to another agent does not
+          // verify here, so it cannot be replayed against every member.
+          recipientPeerId: identity.peerId,
           nonce,
           timestamp,
         },
@@ -454,15 +452,21 @@ export class HttpAgentServer implements AgentServer {
     ) {
       return false;
     }
-    this.pruneReplay(Date.now());
+    this.pruneReplay(now);
     const replayKey = `${peerId}\u0000${nonce}`;
     if (this.replay.has(replayKey)) return false;
     // Hard cap: discard the oldest nonce so an input flood cannot grow memory.
+    // Insertion order equals expiry order, so the entry dropped is also the
+    // nearest to expiring and cannot be chosen by the caller.
     if (this.replay.size >= MAX_REPLAY_ENTRIES) {
       const oldest = this.replay.keys().next().value;
       if (oldest !== undefined) this.replay.delete(oldest);
     }
-    this.replay.set(replayKey, Date.now() + REPLAY_WINDOW_MS);
+    // Expire relative to whichever is LATER. A request may legitimately be dated
+    // up to the skew tolerance in the future and stays acceptable until that
+    // instant plus the window; expiring at receipt-plus-window would leave it
+    // replayable after its documented acceptance window had already closed.
+    this.replay.set(replayKey, Math.max(accepted, now) + REPLAY_WINDOW_MS);
     return true;
   }
 
@@ -494,7 +498,8 @@ export class HttpAgentServer implements AgentServer {
       handshakeFailure(response, "unavailable");
       return;
     }
-    this.pruneHandshakes(Date.now());
+    const now = Date.now();
+    this.pruneHandshakes(now);
     const serverNonce = createNonce();
     const transcript: HandshakeTranscript = {
       clientPeerId: body.peer_id,
@@ -508,13 +513,17 @@ export class HttpAgentServer implements AgentServer {
     // pending entries sharing one client nonce, and resolving that ambiguity by
     // scanning for the oldest entry made the server validate a proof against a
     // superseded transcript while rejecting the current one.
+    // Refuse rather than evict. This route carries no proof, so evicting the
+    // oldest pending hello would let an unauthenticated flood displace the one a
+    // legitimate peer is about to verify. Nothing is issued either way, so a
+    // refusal is cheap to retry.
     if (this.pendingHandshakes.size >= MAX_PENDING_HANDSHAKES) {
-      const oldest = this.pendingHandshakes.keys().next().value;
-      if (oldest !== undefined) this.pendingHandshakes.delete(oldest);
+      handshakeFailure(response, "too_many_pending_handshakes", 503);
+      return;
     }
     this.pendingHandshakes.set(handshakeKey(body.peer_id, serverNonce), {
       transcript,
-      expiresAt: Date.now() + REPLAY_WINDOW_MS,
+      expiresAt: now + REPLAY_WINDOW_MS,
     });
     writeJson(response, 200, {
       peer_id: identity.peerId,
@@ -736,8 +745,12 @@ function handshakeKey(peerId: string, nonce: string): string {
   return `${peerId}\u0000${nonce}`;
 }
 
-function handshakeFailure(response: ServerResponse, reason: string): void {
-  writeJson(response, 401, { error: reason });
+function handshakeFailure(
+  response: ServerResponse,
+  reason: string,
+  status = 401,
+): void {
+  writeJson(response, status, { error: reason });
 }
 
 function header(request: IncomingMessage, name: string): string | undefined {

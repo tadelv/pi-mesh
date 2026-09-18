@@ -11,7 +11,13 @@ import type { PeerIdentity } from "./identity.js";
 export function signedHeaders(
   key: Uint8Array,
   identity: PeerIdentity,
-  request: { method: string; path: string; body: Uint8Array | string },
+  request: {
+    method: string;
+    path: string;
+    body: Uint8Array | string;
+    /** Peer id of the agent being called, as the handshake or mDNS reports it. */
+    recipientPeerId: string;
+  },
 ): Record<string, string> {
   const fields: RequestTranscriptFields = {
     ...request,

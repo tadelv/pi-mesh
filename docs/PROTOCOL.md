@@ -93,9 +93,11 @@ timeout) leaves several pending handshakes that share one client nonce, so that
 lookup is ambiguous, and resolving it by choosing one of them means verifying a
 transcript the client may never have meant to send.
 
-A failed handshake is `401` with `{"error": "<reason>"}`. Pending handshakes
-expire, and a proof naming an expired or unknown nonce is refused like any
-other.
+A failed handshake is `401` with `{"error": "<reason>"}`, except when the
+bounded pending-handshake table is full, which is `503`: that route carries no
+proof, so an anonymous flood must not be able to displace the handshake a
+legitimate peer is about to verify. Pending handshakes expire, and a proof
+naming an expired or unknown nonce is refused like any other.
 
 The swarm key is never transmitted. Both sides derive the HMAC key from
 the raw swarm key bytes.
@@ -104,6 +106,15 @@ The handshake sits outside the JSON-RPC endpoint, so its failures are HTTP
 status codes (`401`) with a small JSON body, never a JSON-RPC error code.
 
 ### Request proof
+
+Which routes are unauthenticated, and why
+
+Exactly two routes are reachable without a proof: `POST /handshake` and
+`POST /handshake/verify` (below), and `GET /.well-known/agent-card.json`. The
+card is public by necessity - a peer cannot sign a request for an agent whose
+identity and transport it has not yet discovered - and it discloses the agent's
+name (the hostname, unless `PI_MESH_NAME` says otherwise), version and skill
+list to anyone on the LAN. Everything else requires a proof.
 
 Every other request carries:
 
@@ -114,15 +125,28 @@ Every other request carries:
 | `X-Pi-Mesh-Timestamp` | ISO 8601 UTC |
 | `X-Pi-Mesh-Signature` | base64 HMAC-SHA256 over the request transcript |
 
-The request transcript is `method`, `path`, `sha256(body)`, peer ID, nonce and
-timestamp **in that order**, joined per [Transcript encoding](#transcript-encoding)
-below.
+The request transcript is `method`, `path`, `sha256(body)`, sender peer ID,
+**recipient peer ID**, nonce and timestamp **in that order**, joined per
+[Transcript encoding](#transcript-encoding) below.
+
+The recipient is the peer ID of the agent being called, which a peer learns
+from the mDNS TXT `id` record or from the handshake, and the server verifies it
+by substituting its **own** peer ID: a signature addressed to a different agent
+does not verify. This is required because replay state is per process, so
+without it a request observed on the wire would be a fresh nonce at every other
+member and could be executed once per agent.
 
 `sha256(body)` is the **lowercase hex** digest of the raw request body bytes
 (the bytes as received, before any parsing or re-serialisation), or the hex
 digest of the empty string when the request has no body. Hashing the received
 bytes rather than a re-encoded form means a signature covers exactly what was
 sent, and cannot be invalidated by a different but equivalent JSON encoding.
+
+`path` is the request target exactly as sent, including any query string.
+`timestamp` MUST be an ISO 8601 instant carrying an explicit UTC designator
+(`Z` or a numeric offset). A bare date or a local-time string is rejected
+rather than interpreted, because the two sides could resolve it to different
+instants and report an authentication failure instead of a malformed request.
 
 A server MUST reject a nonce it has already accepted within the acceptance
 window, and any request whose timestamp is more than 60 seconds from its own

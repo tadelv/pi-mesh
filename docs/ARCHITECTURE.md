@@ -28,8 +28,12 @@ with extra skills.
 - **A2A JSON-RPC over HTTP** between peers.
 - Each agent runs **one** HTTP listener, LAN-facing, on a configurable port
   (`PI_MESH_PORT`, default 7330) which it advertises via mDNS TXT. Only the
-  handshake is reachable unauthenticated; every other route requires a
-  per-request proof (ADR 0006, ADR 0007).
+  handshake (`POST /handshake`, `POST /handshake/verify`) and the agent card
+  (`GET /.well-known/agent-card.json`) are reachable unauthenticated; every
+  other route requires a per-request proof (ADR 0006, ADR 0007). The card must
+  be public, since a peer cannot sign a request for an agent it has not yet
+  discovered, and it discloses the agent's name, version and skill list - the
+  name defaults to the hostname.
 - Streaming uses SSE (`message/stream`).
 - The control plane connects to agents the same way any peer does —
   there is no privileged channel.

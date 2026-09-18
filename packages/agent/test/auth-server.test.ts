@@ -79,6 +79,7 @@ describe("authenticated agent requests", () => {
         ...signedHeaders(key, clientIdentity, {
           method: "POST",
           path: "/",
+          recipientPeerId: identity.peerId,
           body,
         }),
         "A2A-Version": "1.0",
@@ -101,6 +102,7 @@ describe("authenticated agent requests", () => {
       const staleFields = {
         method: "POST",
         path: "/",
+        recipientPeerId: identity.peerId,
         body,
         peerId: clientIdentity.peerId,
         nonce: createNonce(),
@@ -123,6 +125,7 @@ describe("authenticated agent requests", () => {
         ...signedHeaders(key, clientIdentity, {
           method: "POST",
           path: "/",
+          recipientPeerId: identity.peerId,
           body,
         }),
         "A2A-Version": "1.0",
@@ -265,6 +268,88 @@ describe("authenticated agent requests", () => {
       expect((await verify(second.nonce, proofFor(second.nonce))).status).toBe(
         200,
       );
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("refuses a request captured on the wire when replayed to a different agent", async () => {
+    // The replay cache is per process, so the transcript has to bind the
+    // RECIPIENT or a captured request is simply a fresh nonce at every other
+    // member: one observed payload executed once per agent. This was a real
+    // hole, demonstrated against two live servers, and it matters more as the
+    // mesh gains side effects (M2's process.spawn would make it a captured
+    // command with mesh-wide effect).
+    const other: PeerIdentity = {
+      peerId: "33333333-3333-4333-8333-333333333333",
+      name: "other",
+    };
+    const first = createAgentServer({ port: 0, swarmKey: key, identity });
+    const second = createAgentServer({
+      port: 0,
+      swarmKey: key,
+      identity: other,
+    });
+    const firstAddress = await first.start();
+    const secondAddress = await second.start();
+    try {
+      const body = JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tasks/get",
+        params: { id: "00000000-0000-4000-8000-000000000000" },
+      });
+      const headers = {
+        ...signedHeaders(key, clientIdentity, {
+          method: "POST",
+          path: "/",
+          body,
+          recipientPeerId: identity.peerId,
+        }),
+        "A2A-Version": "1.0",
+      };
+      // Addressed to the first agent, so it authenticates there...
+      expect(
+        JSON.parse((await call(firstAddress.port, body, headers)).body).error
+          .code,
+      ).toBe(-32001);
+      // ...and must not authenticate anywhere else, even though the key is the
+      // same and this agent has never seen the nonce before.
+      expect(
+        JSON.parse((await call(secondAddress.port, body, headers)).body).error
+          .code,
+      ).toBe(-32100);
+    } finally {
+      await first.stop();
+      await second.stop();
+    }
+  });
+
+  it("refuses a request with no proof and one signed by a wrong key", async () => {
+    // "rejects unsigned ... requests" is the first requirement of M1-9, and the
+    // wrong-key case is the other half of it.
+    const server = createAgentServer({ port: 0, swarmKey: key, identity });
+    const address = await server.start();
+    try {
+      const body = JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "tasks/get",
+        params: { id: "00000000-0000-4000-8000-000000000000" },
+      });
+      const unsigned = await call(address.port, body, { "A2A-Version": "1.0" });
+      expect(JSON.parse(unsigned.body).error.code).toBe(-32100);
+
+      const wrongKey = await call(address.port, body, {
+        ...signedHeaders(Buffer.alloc(32, 7), clientIdentity, {
+          method: "POST",
+          path: "/",
+          body,
+          recipientPeerId: identity.peerId,
+        }),
+        "A2A-Version": "1.0",
+      });
+      expect(JSON.parse(wrongKey.body).error.code).toBe(-32100);
     } finally {
       await server.stop();
     }

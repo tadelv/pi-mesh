@@ -13,11 +13,30 @@ export const MAX_CLOCK_SKEW_MS = 60_000;
 export const REPLAY_WINDOW_MS = 60_000;
 export const REQUEST_NONCE_BYTES = 32;
 
+/**
+ * The timestamp shape this protocol accepts: an ISO 8601 instant carrying an
+ * explicit UTC designator. `Date.parse` alone also accepts a bare date
+ * ("2026-09-17") and a local-time string ("2026-09-17T12:00:00", read in the
+ * SERVER's zone). Those are not what the document specifies and would be
+ * interpreted differently by signer and verifier, so they are rejected here
+ * rather than silently admitted and then failing the skew check.
+ */
+const TIMESTAMP_PATTERN =
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
+
 export type RequestTranscriptFields = {
   method: string;
   path: string;
   body: Uint8Array | string;
   peerId: string;
+  /**
+   * The peer this request is addressed to. Binding the recipient is what stops
+   * one request captured on the wire from being replayed against a different
+   * mesh member: the replay cache is per process, so without this a verbatim
+   * copy is fresh at every other agent. A key holder observing the LAN could
+   * otherwise execute one observed request once per member.
+   */
+  recipientPeerId: string;
   nonce: string;
   timestamp: string;
 };
@@ -34,6 +53,7 @@ export function encodeRequestTranscript(
     fields.path,
     sha256Hex(fields.body),
     fields.peerId,
+    fields.recipientPeerId,
     fields.nonce,
     fields.timestamp,
   ];
@@ -76,8 +96,30 @@ export function verifyRequestSignature(
   return timingSafeEqual(expected, remote);
 }
 
-export function isWithinClockSkew(timestamp: string, now: Date): boolean {
+export function parseTimestamp(timestamp: string): number | undefined {
+  if (!TIMESTAMP_PATTERN.test(timestamp)) return undefined;
   const parsed = Date.parse(timestamp);
-  if (!Number.isFinite(parsed) || !Number.isFinite(now.getTime())) return false;
-  return Math.abs(now.getTime() - parsed) <= MAX_CLOCK_SKEW_MS;
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+/**
+ * The acceptance rule for a request timestamp: the parsed instant when the
+ * timestamp is inside the window, otherwise undefined. Returning the parsed
+ * value rather than a bare boolean lets the caller size its replay cache from
+ * the same number it just admitted, so the acceptance window and the cache
+ * lifetime cannot drift apart.
+ */
+export function acceptTimestamp(
+  timestamp: string,
+  now: Date,
+): number | undefined {
+  const parsed = parseTimestamp(timestamp);
+  if (parsed === undefined || !Number.isFinite(now.getTime())) return undefined;
+  return Math.abs(now.getTime() - parsed) <= MAX_CLOCK_SKEW_MS
+    ? parsed
+    : undefined;
+}
+
+export function isWithinClockSkew(timestamp: string, now: Date): boolean {
+  return acceptTimestamp(timestamp, now) !== undefined;
 }

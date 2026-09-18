@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import Bonjour from "bonjour-service";
-import { hostname } from "node:os";
 import { isDirectInvocation, sleep } from "@pi-mesh/shared";
 import {
   browsePeers,
@@ -12,6 +11,7 @@ import {
 } from "./mdns.js";
 import { PeerRegistry, type PeerRecord } from "./registry.js";
 import { generateSwarmKey, loadSwarmKey } from "./swarm-key.js";
+import { loadOrCreateIdentity } from "./identity.js";
 
 export type CliIO = {
   stdout: Pick<NodeJS.WritableStream, "write">;
@@ -116,10 +116,17 @@ async function start(profile: NetworkProfile, io: CliIO): Promise<number> {
   const bonjour =
     profile === "public" ? undefined : (io.bonjour ?? new Bonjour());
   try {
+    // Advertise the SAME peer id the listener authenticates as. The
+    // advertisement used to publish hostname() while the server substituted its
+    // credentials UUID as the request recipient, so a peer that learned the
+    // recipient from mDNS - the documented primary source - signed a value the
+    // server would never accept and failed every request with no diagnostic.
+    // The display name stays separate.
+    const identity = await loadOrCreateIdentity();
     await publishAgent(
       {
-        id: process.env.PI_MESH_ID ?? hostname(),
-        name: process.env.PI_MESH_NAME ?? hostname(),
+        id: process.env.PI_MESH_ID ?? identity.peerId,
+        name: process.env.PI_MESH_NAME ?? identity.name,
         version: process.env.PI_MESH_VERSION ?? "0.0.0",
         agentVersion: process.env.PI_MESH_AGENT_VERSION ?? "0.0.0",
         port: configuredPort(),

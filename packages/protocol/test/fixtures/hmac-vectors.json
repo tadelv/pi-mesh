@@ -53,7 +53,7 @@
   ],
   "requestProof": [
     {
-      "_note": "transcript order is method, path, sha256(body) hex, peer, nonce, timestamp, NUL-joined",
+      "_note": "transcript order is method, path, sha256(body) hex, sender peer id, RECIPIENT peer id, nonce, timestamp, NUL-joined",
       "method": "POST",
       "path": "/",
       "body": "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"tasks/get\",\"params\":{\"id\":\"x\"}}",
@@ -67,7 +67,7 @@
       "signatureHex": "4dc3075a11a64c449e8a5053f4531163763165b22d971a75d92d3dbf0b7458e4"
     },
     {
-      "_note": "a bodyless request: sha256 of the EMPTY string, not of the string \"undefined\" or of nothing at all",
+      "_note": "a bodyless request: sha256 of the EMPTY string, not of the string \"undefined\" or of nothing at all; the same seven fields, recipient included",
       "method": "GET",
       "path": "/.well-known/agent-card.json",
       "body": "",

@@ -354,4 +354,64 @@ describe("authenticated agent requests", () => {
       await server.stop();
     }
   });
+
+  it("refuses a new handshake instead of displacing a pending one", async () => {
+    // The hello route carries no proof at all, so if the bounded table evicted
+    // its oldest entry an anonymous flood could knock out the handshake a
+    // legitimate peer is about to verify. It refuses instead. The cap is an
+    // option precisely so this needs three requests rather than 1,025.
+    const server = createAgentServer({
+      port: 0,
+      swarmKey: key,
+      identity,
+      maxPendingHandshakes: 2,
+    });
+    const address = await server.start();
+    try {
+      const hello = (nonce: string) =>
+        call(
+          address.port,
+          JSON.stringify({ peer_id: clientIdentity.peerId, nonce }),
+          {},
+          "/handshake",
+        );
+      const clientNonce = createNonce();
+      const first = JSON.parse((await hello(clientNonce)).body) as {
+        nonce: string;
+      };
+      expect((await hello(createNonce())).status).toBe(200);
+
+      const refused = await hello(createNonce());
+      expect(refused.status).toBe(503);
+      expect(JSON.parse(refused.body).error).toBe(
+        "too_many_pending_handshakes",
+      );
+
+      // The refusal must not have displaced the pending handshake: its proof
+      // still verifies, which is the whole point of refusing rather than
+      // evicting.
+      const proof = computeHandshakeHmac(
+        key,
+        encodeTranscript({
+          clientPeerId: clientIdentity.peerId,
+          clientNonce,
+          serverPeerId: identity.peerId,
+          serverNonce: first.nonce,
+        }),
+      );
+      const verified = await call(
+        address.port,
+        JSON.stringify({
+          peer_id: clientIdentity.peerId,
+          nonce: first.nonce,
+          hmac: proof,
+        }),
+        {},
+        "/handshake/verify",
+      );
+      expect(verified.status).toBe(200);
+    } finally {
+      await server.stop();
+    }
+  });
 });

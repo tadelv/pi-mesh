@@ -93,25 +93,26 @@ timeout) leaves several pending handshakes that share one client nonce, so that
 lookup is ambiguous, and resolving it by choosing one of them means verifying a
 transcript the client may never have meant to send.
 
-A failed handshake is `401` with `{"error": "<reason>"}`, except when the
-bounded pending-handshake table is full, which is `503`: that route carries no
-proof, so an anonymous flood must not be able to displace the handshake a
-legitimate peer is about to verify. Pending handshakes expire, and a proof
-naming an expired or unknown nonce is refused like any other.
+A failed handshake is `401` with `{"error": "<reason>"}`, or `503` when the
+bounded pending-handshake table is full: that route carries no proof, so an
+anonymous flood must not be able to displace the handshake a legitimate peer is
+about to verify. Pending handshakes expire, and a proof naming an expired or
+unknown nonce is refused like any other.
 
 The swarm key is never transmitted. Both sides derive the HMAC key from
 the raw swarm key bytes.
 
 The handshake sits outside the JSON-RPC endpoint, so its failures are HTTP
-status codes (`401`) with a small JSON body, never a JSON-RPC error code.
+status codes (`401`, or `503` when the pending-handshake table is full), never
+a JSON-RPC error code.
 
 ### Request proof
 
 Which routes are unauthenticated, and why
 
-Exactly two routes are reachable without a proof: `POST /handshake` and
-`POST /handshake/verify` (below), and `GET /.well-known/agent-card.json`. The
-card is public by necessity - a peer cannot sign a request for an agent whose
+Exactly three routes are reachable without a proof: `POST /handshake`,
+`POST /handshake/verify` (both below), and `GET /.well-known/agent-card.json`.
+The card is public by necessity - a peer cannot sign a request for an agent whose
 identity and transport it has not yet discovered - and it discloses the agent's
 name (the hostname, unless `PI_MESH_NAME` says otherwise), version and skill
 list to anyone on the LAN. Everything else requires a proof.

@@ -22,7 +22,7 @@ export const REQUEST_NONCE_BYTES = 32;
  * rather than silently admitted and then failing the skew check.
  */
 const TIMESTAMP_PATTERN =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?(Z|[+-]\d{2}:\d{2})$/;
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?(Z|[+-]\d{2}:?\d{2})$/;
 
 export type RequestTranscriptFields = {
   method: string;

@@ -5,9 +5,11 @@ import { describe, expect, it } from "vitest";
 import {
   acceptTimestamp,
   computeHandshakeHmac,
+  encodeRequestTranscript,
   encodeTranscript,
   isWithinClockSkew,
   parseTimestamp,
+  sha256Hex,
   signRequest,
   verifyRequestSignature,
   type HandshakeTranscript,
@@ -34,6 +36,9 @@ type Vectors = {
     nonce: string;
     timestamp: string;
     signatureBase64: string;
+    transcriptHex: string;
+    bodySha256Hex: string;
+    signatureHex: string;
   }>;
 };
 
@@ -113,18 +118,49 @@ describe("request authentication vectors", () => {
 
   it("covers every request transcript field", () => {
     const original = requestFields(vectors.requestProof[0]!);
+    // Every field, including the recipient. Omitting it here would let the
+    // recipient be dropped from the transcript while this test stayed green,
+    // which is exactly the cross-server replay the recipient prevents.
     for (const field of [
       "method",
       "path",
       "body",
       "peerId",
+      "recipientPeerId",
       "nonce",
       "timestamp",
     ] as const) {
       const tampered = { ...original, [field]: `${original[field]}x` };
       expect(
         verifyRequestSignature(key, tampered, signRequest(key, original)),
+        field,
       ).toBe(false);
+    }
+    // And the field count itself: a dropped field must not silently shorten the
+    // transcript into one that still matches some other vector.
+    expect(Object.keys(original)).toHaveLength(7);
+  });
+
+  it("asserts the fixture's derived values, not just its signatures", () => {
+    // transcriptHex, bodySha256Hex and signatureHex are the parts of the
+    // fixture a human reads to check the layout by eye. Nothing asserted them,
+    // so they could drift out of agreement with the values that are used.
+    for (const vector of vectors.requestProof) {
+      const fields = requestFields(vector);
+      const transcript = encodeRequestTranscript(fields);
+      expect(Buffer.from(transcript).toString("hex"), vector.method).toBe(
+        vector.transcriptHex,
+      );
+      // Seven fields means exactly six NUL separators, no trailing separator.
+      expect(
+        transcript.filter((byte) => byte === 0).length + 1,
+        vector.method,
+      ).toBe(7);
+      expect(sha256Hex(vector.body), vector.method).toBe(vector.bodySha256Hex);
+      expect(
+        Buffer.from(vector.signatureBase64, "base64").toString("hex"),
+        vector.method,
+      ).toBe(vector.signatureHex);
     }
   });
 
@@ -154,6 +190,13 @@ describe("request authentication vectors", () => {
       Date.UTC(2026, 8, 17, 12),
     );
     expect(parseTimestamp("2026-09-17T14:00:00+02:00")).toBe(
+      Date.UTC(2026, 8, 17, 12),
+    );
+    // Deliberately wider than "exactly .sss and Z": an ISO 8601 instant may
+    // carry any number of fractional digits, or a colon-less offset, and
+    // rejecting those would be undocumented strictness on a wire field.
+    expect(parseTimestamp("2026-09-17T12:00:00.123456Z")).toBeDefined();
+    expect(parseTimestamp("2026-09-17T14:00:00+0200")).toBe(
       Date.UTC(2026, 8, 17, 12),
     );
     for (const bad of [

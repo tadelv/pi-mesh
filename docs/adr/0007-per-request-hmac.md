@@ -37,16 +37,18 @@ neither stable nor verifiable.
    - `X-Pi-Mesh-Peer` — the sender's peer ID
    - `X-Pi-Mesh-Nonce` — unique per request, base64
    - `X-Pi-Mesh-Timestamp` — ISO 8601 UTC
-   - `X-Pi-Mesh-Signature` — base64 HMAC-SHA256 over
-     `method \n path \n sha256(body) \n sender \n recipient \n nonce \n timestamp`
+   - `X-Pi-Mesh-Signature` — base64 HMAC-SHA256 over the transcript
+     `method`, `sha256(body)`, sender, recipient, nonce, timestamp — NUL
+     separated, in that order, the same encoding the handshake uses.
 
-   Fields are NUL-separated, in that order, not LF-separated: this ADR's first
-   draft wrote the transcript with `\n` between fields while `docs/PROTOCOL.md`
-   specified one NUL byte, and the two descriptions cannot both be right.
-   NUL wins because the handshake already encodes that way
-   (`encodeTranscript`) and because the document forbids `U+0000` inside a
-   field, which is what makes the separation unambiguous. The fixed vectors in
-   `packages/protocol/test/fixtures/hmac-vectors.json` are NUL-joined.
+   (This bullet previously wrote those fields with `\n` between them while
+   `docs/PROTOCOL.md` specified one NUL byte. Two descriptions of the same
+   bytes cannot both be right, and a client written from the wrong one fails
+   every request with no diagnostic. NUL wins because `encodeTranscript`
+   already encodes the handshake that way, and because the document forbids
+   `U+0000` inside a field, which is what makes the separator unambiguous. The
+   fixed vectors in `packages/protocol/test/fixtures/hmac-vectors.json` are
+   NUL-joined: do not restate this transcript with a visible separator.)
 
    The key is the raw swarm key bytes, reusing the existing
    `computeHandshakeHmac`/`verifyHandshake` primitives.
@@ -62,16 +64,23 @@ neither stable nor verifiable.
    rejected, and a nonce is retained for the whole of its acceptance window,
    so a request dated in the future is not replayable after the window closes.
    The window and the skew tolerance are constants, documented. The cache is
-   capped: past the cap the entry closest to expiring is dropped, which needs
-   sustained authenticated traffic (i.e. a swarm key holder) and is the only
-   way the "seen within the window" rule can be exhausted.
+   capped, and past the cap the **oldest inserted** entry is dropped — not the
+   one nearest to expiring, because a request dated in the future is retained
+   longer than one dated in the past, so insertion order and expiry order are
+   not the same thing. Reaching the cap needs sustained authenticated traffic
+   (i.e. a swarm key holder), and it is the only way the "seen within the
+   window" rule can be exhausted.
 6. **The handshake is outside the JSON-RPC endpoint**, so its failures are
    HTTP status codes with a small JSON body (`401`, with a reason; `503` when
    the bounded pending-handshake table is full), not a JSON-RPC error code.
    `-32100` therefore does not appear on the handshake route. The table is
    bounded by *refusing* a new hello rather than evicting a pending one, since
    that route carries no proof and an anonymous flood could otherwise displace
-   the handshake a legitimate peer is about to verify.
+   the handshake a legitimate peer is about to verify. The trade is explicit:
+   a sustained flood can instead *delay* new handshakes. That is acceptable
+   because a handshake is not required to make requests — every request is
+   authenticated on its own — so the worst case is a stalled mutual
+   confirmation, not a denial of service.
 7. **Identity is persistent and random.** A peer ID is generated once into
    `~/.pi-mesh/credentials.json` (directory `0700`, file `0600`, written by
    temp-file-plus-rename); the display name stays separate.

@@ -64,6 +64,12 @@ export interface AgentServerOptions extends SkillRegistryOptions {
   swarmKey?: Uint8Array;
   identity?: PeerIdentity;
   taskStore?: TaskStore;
+  /**
+   * Bounded state limits, exposed so a test can exercise the bounds without
+   * issuing 10,000 requests. Defaults are the documented constants.
+   */
+  maxReplayEntries?: number;
+  maxPendingHandshakes?: number;
   stream?: (
     request: SessionReadRequest,
     options: SessionStreamOptions,
@@ -237,6 +243,8 @@ export class HttpAgentServer implements AgentServer {
   private swarmKey: Uint8Array | undefined;
   private identity: PeerIdentity | undefined;
   private readonly replay = new Map<string, number>();
+  private readonly maxReplayEntries: number;
+  private readonly maxPendingHandshakes: number;
   private readonly pendingHandshakes = new Map<
     string,
     { transcript: HandshakeTranscript; expiresAt: number }
@@ -247,6 +255,9 @@ export class HttpAgentServer implements AgentServer {
     this.port = configuredPort(options.port);
     this.host = options.host ?? "0.0.0.0";
     this.tasks = options.taskStore ?? new TaskStore();
+    this.maxReplayEntries = options.maxReplayEntries ?? MAX_REPLAY_ENTRIES;
+    this.maxPendingHandshakes =
+      options.maxPendingHandshakes ?? MAX_PENDING_HANDSHAKES;
     this.skills = options.skillRegistry ?? createSkillRegistry(options);
     this.server = createServer((request, response) => {
       void this.route(request, response).catch((error: unknown) => {
@@ -455,10 +466,12 @@ export class HttpAgentServer implements AgentServer {
     this.pruneReplay(now);
     const replayKey = `${peerId}\u0000${nonce}`;
     if (this.replay.has(replayKey)) return false;
-    // Hard cap: discard the oldest nonce so an input flood cannot grow memory.
-    // Insertion order equals expiry order, so the entry dropped is also the
-    // nearest to expiring and cannot be chosen by the caller.
-    if (this.replay.size >= MAX_REPLAY_ENTRIES) {
+    // Hard cap: discard the OLDEST INSERTED nonce so an input flood cannot grow
+    // memory. That is deliberately not "the entry nearest to expiring": a
+    // request dated in the future is retained for longer than one dated in the
+    // past, so insertion order and expiry order are not the same. The choice is
+    // deterministic and not caller-controlled either way.
+    if (this.replay.size >= this.maxReplayEntries) {
       const oldest = this.replay.keys().next().value;
       if (oldest !== undefined) this.replay.delete(oldest);
     }
@@ -517,7 +530,7 @@ export class HttpAgentServer implements AgentServer {
     // oldest pending hello would let an unauthenticated flood displace the one a
     // legitimate peer is about to verify. Nothing is issued either way, so a
     // refusal is cheap to retry.
-    if (this.pendingHandshakes.size >= MAX_PENDING_HANDSHAKES) {
+    if (this.pendingHandshakes.size >= this.maxPendingHandshakes) {
       handshakeFailure(response, "too_many_pending_handshakes", 503);
       return;
     }

@@ -9,11 +9,17 @@ import { A2A_FIELDS } from "@pi-mesh/protocol";
 import {
   createAgentServer,
   getSessionStorageDir,
+  signedHeaders,
   sessionStream,
   type SessionStream,
 } from "../src/index.js";
 
 const sessionId = "123e4567-e89b-42d3-a456-426614174099";
+const testIdentity = {
+  peerId: "22222222-2222-4222-8222-222222222222",
+  name: "test",
+};
+const testKey = Buffer.from("pi-mesh-vector-key-0123456789abc");
 
 type HttpResult = {
   status: number;
@@ -22,21 +28,16 @@ type HttpResult = {
 };
 
 function httpCall(port: number, body?: unknown): Promise<HttpResult> {
+  if (body !== undefined) {
+    return httpCallWith(port, body, { "A2A-Version": "1.0" });
+  }
   return new Promise((resolve, reject) => {
     const client = request(
       {
         host: "127.0.0.1",
         port,
-        method: body === undefined ? "GET" : "POST",
-        path: body === undefined ? "/.well-known/agent-card.json" : "/",
-        headers:
-          body === undefined
-            ? {}
-            : {
-                "A2A-Version": "1.0",
-                "content-type": "application/json",
-                connection: "close",
-              },
+        method: "GET",
+        path: "/.well-known/agent-card.json",
       },
       (response) => {
         let text = "";
@@ -52,8 +53,7 @@ function httpCall(port: number, body?: unknown): Promise<HttpResult> {
       },
     );
     client.on("error", reject);
-    if (body === undefined) client.end();
-    else client.end(JSON.stringify(body));
+    client.end();
   });
 }
 
@@ -62,6 +62,11 @@ async function httpCallWith(
   body: unknown,
   headers: Record<string, string>,
 ): Promise<HttpResult> {
+  const requestHeaders = signedHeaders(testKey, testIdentity, {
+    method: "POST",
+    path: "/",
+    body: JSON.stringify(body),
+  });
   return new Promise((resolve, reject) => {
     const client = request(
       {
@@ -72,6 +77,7 @@ async function httpCallWith(
         headers: {
           "content-type": "application/json",
           connection: "close",
+          ...requestHeaders,
           ...headers,
         },
       },
@@ -130,7 +136,11 @@ describe("A2A HTTP server", () => {
     // malformed when the request was fine and only the version was not. A peer
     // routes on the code, so that is not a cosmetic difference.
     const root = await fixtureRoot();
-    const server = createAgentServer({ port: 0, sessionsRoot: root });
+    const server = createAgentServer({
+      port: 0,
+      sessionsRoot: root,
+      swarmKey: testKey,
+    });
     const address = await server.start();
     try {
       for (const version of [undefined, "0.3", "2.0"]) {
@@ -159,7 +169,11 @@ describe("A2A HTTP server", () => {
     // ever overlapped again, a peer would read a missing task as an
     // authentication failure - silently, since both sides trust the number.
     const root = await fixtureRoot();
-    const server = createAgentServer({ port: 0, sessionsRoot: root });
+    const server = createAgentServer({
+      port: 0,
+      sessionsRoot: root,
+      swarmKey: testKey,
+    });
     const address = await server.start();
     try {
       const response = await httpCall(address.port, {
@@ -180,7 +194,11 @@ describe("A2A HTTP server", () => {
 
   it("serves the card and a real session.list result", async () => {
     const root = await fixtureRoot();
-    const server = createAgentServer({ port: 0, sessionsRoot: root });
+    const server = createAgentServer({
+      port: 0,
+      sessionsRoot: root,
+      swarmKey: testKey,
+    });
     const address = await server.start();
     try {
       const card = await httpCall(address.port);
@@ -202,9 +220,14 @@ describe("A2A HTTP server", () => {
   });
 
   it("returns standard parse, method, and A2A task errors", async () => {
-    const server = createAgentServer({ port: 0 });
+    const server = createAgentServer({ port: 0, swarmKey: testKey });
     const address = await server.start();
     try {
+      const malformedHeaders = signedHeaders(testKey, testIdentity, {
+        method: "POST",
+        path: "/",
+        body: "{",
+      });
       const malformed = await new Promise<HttpResult>((resolve, reject) => {
         const client = request(
           {
@@ -212,7 +235,11 @@ describe("A2A HTTP server", () => {
             port: address.port,
             method: "POST",
             path: "/",
-            headers: { "A2A-Version": "1.0", connection: "close" },
+            headers: {
+              "A2A-Version": "1.0",
+              connection: "close",
+              ...malformedHeaders,
+            },
           },
           (response) => {
             let body = "";
@@ -274,6 +301,7 @@ describe("A2A HTTP server", () => {
     const server = createAgentServer({
       port: 0,
       sessionsRoot: root,
+      swarmKey: testKey,
       stream: (request, options): SessionStream => {
         const stream = sessionStream(request, options);
         const stop = stream.stop.bind(stream);
@@ -286,6 +314,15 @@ describe("A2A HTTP server", () => {
     });
     const address = await server.start();
     try {
+      const streamBody = JSON.stringify({
+        ...call("session.stream", { id: sessionId }),
+        method: "message/stream",
+      });
+      const streamHeaders = signedHeaders(testKey, testIdentity, {
+        method: "POST",
+        path: "/",
+        body: streamBody,
+      });
       await new Promise<void>((resolve, reject) => {
         const client = request(
           {
@@ -297,6 +334,7 @@ describe("A2A HTTP server", () => {
               "A2A-Version": "1.0",
               "content-type": "application/json",
               connection: "close",
+              ...streamHeaders,
             },
           },
           (response) => {
@@ -309,12 +347,7 @@ describe("A2A HTTP server", () => {
         client.on("error", (error) =>
           error.message === "socket hang up" ? resolve() : reject(error),
         );
-        client.end(
-          JSON.stringify({
-            ...call("session.stream", { id: sessionId }),
-            method: "message/stream",
-          }),
-        );
+        client.end(streamBody);
       });
       await stopped;
     } finally {

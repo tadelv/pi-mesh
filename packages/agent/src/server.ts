@@ -22,6 +22,15 @@ import {
   A2A_PROTOCOL_VERSION,
   A2A_VERSION_HEADER,
   AGENT_CARD_ROUTE,
+  PI_MESH_HEADERS,
+  REPLAY_WINDOW_MS,
+  computeHandshakeHmac,
+  createNonce,
+  encodeTranscript,
+  isWithinClockSkew,
+  verifyHandshake as verifyHandshakeHmac,
+  verifyRequestSignature,
+  type HandshakeTranscript,
 } from "@pi-mesh/protocol";
 import { ErrorCode, PiMeshError } from "@pi-mesh/shared";
 import {
@@ -37,8 +46,12 @@ import {
 } from "./stream.js";
 import type { SessionReadRequest } from "./sessions.js";
 import { TaskStore } from "./tasks.js";
+import { loadOrCreateIdentity, type PeerIdentity } from "./identity.js";
+import { loadSwarmKey } from "./swarm-key.js";
 
 const DEFAULT_PORT = 7330;
+const MAX_REPLAY_ENTRIES = 10_000;
+const MAX_PENDING_HANDSHAKES = 1_024;
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
 
 export interface AgentServerOptions extends SkillRegistryOptions {
@@ -49,6 +62,8 @@ export interface AgentServerOptions extends SkillRegistryOptions {
   version?: string;
   agentUrl?: string;
   authorize?: (request: IncomingMessage) => boolean;
+  swarmKey?: Uint8Array;
+  identity?: PeerIdentity;
   taskStore?: TaskStore;
   stream?: (
     request: SessionReadRequest,
@@ -220,6 +235,13 @@ export class HttpAgentServer implements AgentServer {
   private readonly skills: SkillRegistry;
   private listening = false;
   private actualPort: number | undefined;
+  private swarmKey: Uint8Array | undefined;
+  private identity: PeerIdentity | undefined;
+  private readonly replay = new Map<string, number>();
+  private readonly pendingHandshakes = new Map<
+    string,
+    { transcript: HandshakeTranscript; expiresAt: number }
+  >();
 
   constructor(options: AgentServerOptions = {}) {
     this.options = options;
@@ -242,6 +264,11 @@ export class HttpAgentServer implements AgentServer {
     if (this.listening && this.actualPort !== undefined) {
       return { address: this.host, port: this.actualPort };
     }
+    this.swarmKey = this.options.swarmKey ?? (await loadSwarmKey());
+    if (this.swarmKey.byteLength === 0) {
+      throw new Error("A swarm key is required to start the agent");
+    }
+    this.identity = this.options.identity ?? (await loadOrCreateIdentity());
     await new Promise<void>((resolve, reject) => {
       const onError = (error: Error): void => {
         this.server.off("listening", onListening);
@@ -278,7 +305,7 @@ export class HttpAgentServer implements AgentServer {
     const port = this.actualPort ?? this.port;
     const baseUrl = this.options.agentUrl ?? `http://127.0.0.1:${port}`;
     return {
-      name: this.options.name ?? "pi-mesh agent",
+      name: this.options.name ?? this.identity?.name ?? "pi-mesh agent",
       description:
         this.options.description ?? "Read-only Pi session mesh agent",
       supportedInterfaces: [
@@ -312,33 +339,38 @@ export class HttpAgentServer implements AgentServer {
     request: IncomingMessage,
     response: ServerResponse,
   ): Promise<void> {
+    // The card stays unauthenticated because a peer cannot sign a request
+    // before it knows anything about this agent.
     if (request.method === "GET" && request.url === AGENT_CARD_ROUTE) {
-      if (
-        this.options.authorize !== undefined &&
-        !this.options.authorize(request)
-      ) {
-        response.writeHead(401).end();
-        return;
-      }
       writeJson(response, 200, this.agentCard());
+      return;
+    }
+    if (request.method === "POST" && request.url === "/handshake") {
+      await this.handshake(request, response);
+      return;
+    }
+    if (request.method === "POST" && request.url === "/handshake/verify") {
+      await this.verifyHandshake(request, response);
       return;
     }
     if (request.method !== "POST" || request.url !== "/") {
       response.writeHead(404).end();
       return;
     }
+
+    const rawBody = await readBody(request);
+    if (
+      this.options.authorize === undefined &&
+      !this.verifyRequest(request, rawBody)
+    ) {
+      this.unauthorized(response);
+      return;
+    }
     if (
       this.options.authorize !== undefined &&
       !this.options.authorize(request)
     ) {
-      writeJson(
-        response,
-        200,
-        errorResponse(
-          null,
-          new PiMeshError(ErrorCode.Unauthorized, "Unauthorized"),
-        ),
-      );
+      this.unauthorized(response);
       return;
     }
 
@@ -358,7 +390,7 @@ export class HttpAgentServer implements AgentServer {
     }
     let body: unknown;
     try {
-      body = JSON.parse(await readBody(request)) as unknown;
+      body = JSON.parse(rawBody.toString("utf8")) as unknown;
     } catch {
       writeJson(response, 200, rpcError(null, -32700, "Parse error"));
       return;
@@ -376,6 +408,160 @@ export class HttpAgentServer implements AgentServer {
       writeJson(response, 200, { jsonrpc: "2.0", id: body.id, result });
     } catch (error) {
       writeJson(response, 200, errorResponse(body.id, error));
+    }
+  }
+
+  private unauthorized(response: ServerResponse): void {
+    writeJson(
+      response,
+      200,
+      errorResponse(
+        null,
+        new PiMeshError(ErrorCode.Unauthorized, "Unauthorized"),
+      ),
+    );
+  }
+
+  private verifyRequest(request: IncomingMessage, body: Uint8Array): boolean {
+    const peerId = header(request, PI_MESH_HEADERS.peer);
+    const nonce = header(request, PI_MESH_HEADERS.nonce);
+    const timestamp = header(request, PI_MESH_HEADERS.timestamp);
+    const signature = header(request, PI_MESH_HEADERS.signature);
+    if (
+      peerId === undefined ||
+      nonce === undefined ||
+      timestamp === undefined ||
+      signature === undefined
+    ) {
+      return false;
+    }
+    if (!isWithinClockSkew(timestamp, new Date())) return false;
+    const key = this.swarmKey;
+    if (key === undefined || this.identity === undefined) return false;
+    if (
+      !verifyRequestSignature(
+        key,
+        {
+          method: request.method ?? "",
+          path: request.url ?? "/",
+          body,
+          peerId,
+          nonce,
+          timestamp,
+        },
+        signature,
+      )
+    ) {
+      return false;
+    }
+    this.pruneReplay(Date.now());
+    const replayKey = `${peerId}\u0000${nonce}`;
+    if (this.replay.has(replayKey)) return false;
+    // Hard cap: discard the oldest nonce so an input flood cannot grow memory.
+    if (this.replay.size >= MAX_REPLAY_ENTRIES) {
+      const oldest = this.replay.keys().next().value;
+      if (oldest !== undefined) this.replay.delete(oldest);
+    }
+    this.replay.set(replayKey, Date.now() + REPLAY_WINDOW_MS);
+    return true;
+  }
+
+  private pruneReplay(now: number): void {
+    for (const [key, expiresAt] of this.replay) {
+      if (expiresAt <= now) this.replay.delete(key);
+    }
+  }
+
+  private async handshake(
+    request: IncomingMessage,
+    response: ServerResponse,
+  ): Promise<void> {
+    let value: unknown;
+    try {
+      value = JSON.parse((await readBody(request)).toString("utf8")) as unknown;
+    } catch {
+      handshakeFailure(response, "invalid_json");
+      return;
+    }
+    const body = handshakeObject(value);
+    if (body === undefined) {
+      handshakeFailure(response, "invalid_hello");
+      return;
+    }
+    const identity = this.identity;
+    const key = this.swarmKey;
+    if (identity === undefined || key === undefined) {
+      handshakeFailure(response, "unavailable");
+      return;
+    }
+    this.pruneHandshakes(Date.now());
+    const serverNonce = createNonce();
+    const transcript: HandshakeTranscript = {
+      clientPeerId: body.peer_id,
+      clientNonce: body.nonce,
+      serverPeerId: identity.peerId,
+      serverNonce,
+    };
+    // Keyed by the SERVER nonce, which the verify POST echoes back, so the
+    // lookup below is exact and needs no search. The client nonce must NOT also
+    // be accepted as a lookup key: a client that repeats a hello leaves several
+    // pending entries sharing one client nonce, and resolving that ambiguity by
+    // scanning for the oldest entry made the server validate a proof against a
+    // superseded transcript while rejecting the current one.
+    if (this.pendingHandshakes.size >= MAX_PENDING_HANDSHAKES) {
+      const oldest = this.pendingHandshakes.keys().next().value;
+      if (oldest !== undefined) this.pendingHandshakes.delete(oldest);
+    }
+    this.pendingHandshakes.set(handshakeKey(body.peer_id, serverNonce), {
+      transcript,
+      expiresAt: Date.now() + REPLAY_WINDOW_MS,
+    });
+    writeJson(response, 200, {
+      peer_id: identity.peerId,
+      nonce: serverNonce,
+      hmac: computeHandshakeHmac(key, encodeTranscript(transcript)),
+    });
+  }
+
+  private async verifyHandshake(
+    request: IncomingMessage,
+    response: ServerResponse,
+  ): Promise<void> {
+    let value: unknown;
+    try {
+      value = JSON.parse((await readBody(request)).toString("utf8")) as unknown;
+    } catch {
+      handshakeFailure(response, "invalid_json");
+      return;
+    }
+    const body = handshakeObject(value);
+    const identity = this.identity;
+    const key = this.swarmKey;
+    if (body === undefined || identity === undefined || key === undefined) {
+      handshakeFailure(response, "invalid_proof");
+      return;
+    }
+    this.pruneHandshakes(Date.now());
+    // Exact lookup, no scan. The client nonce is deliberately not accepted
+    // here: it cannot identify a single pending handshake once a client repeats
+    // a hello, and the scan that used to paper over that matched whichever
+    // entry came first. Echo the SERVER nonce instead.
+    const pendingKey = handshakeKey(body.peer_id, body.nonce);
+    const pending = this.pendingHandshakes.get(pendingKey);
+    if (
+      pending === undefined ||
+      !verifyHandshakeHmac(key, body.hmac, encodeTranscript(pending.transcript))
+    ) {
+      handshakeFailure(response, "invalid_proof");
+      return;
+    }
+    this.pendingHandshakes.delete(pendingKey);
+    writeJson(response, 200, { ok: true });
+  }
+
+  private pruneHandshakes(now: number): void {
+    for (const [key, pending] of this.pendingHandshakes) {
+      if (pending.expiresAt <= now) this.pendingHandshakes.delete(key);
     }
   }
 
@@ -499,7 +685,7 @@ function isRequest(value: unknown): value is JsonRpcRequest {
   );
 }
 
-function readBody(request: IncomingMessage): Promise<string> {
+function readBody(request: IncomingMessage): Promise<Buffer> {
   return new Promise((resolve, reject) => {
     let size = 0;
     const chunks: Buffer[] = [];
@@ -513,9 +699,50 @@ function readBody(request: IncomingMessage): Promise<string> {
       }
       chunks.push(buffer);
     });
-    request.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+    request.on("end", () => resolve(Buffer.concat(chunks)));
     request.on("error", reject);
   });
+}
+
+type HandshakeBody = {
+  peer_id: string;
+  nonce: string;
+  hmac?: unknown;
+};
+
+function handshakeObject(value: unknown): HandshakeBody | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  const body = value as Record<string, unknown>;
+  if (
+    typeof body.peer_id !== "string" ||
+    typeof body.nonce !== "string" ||
+    body.peer_id.length === 0 ||
+    body.nonce.length === 0 ||
+    body.peer_id.includes("\u0000") ||
+    body.nonce.includes("\u0000")
+  ) {
+    return undefined;
+  }
+  return {
+    peer_id: body.peer_id,
+    nonce: body.nonce,
+    ...("hmac" in body ? { hmac: body.hmac } : {}),
+  };
+}
+
+function handshakeKey(peerId: string, nonce: string): string {
+  return `${peerId}\u0000${nonce}`;
+}
+
+function handshakeFailure(response: ServerResponse, reason: string): void {
+  writeJson(response, 401, { error: reason });
+}
+
+function header(request: IncomingMessage, name: string): string | undefined {
+  const value = request.headers[name.toLowerCase()];
+  return typeof value === "string" && value.length > 0 ? value : undefined;
 }
 
 function writeJson(

@@ -76,12 +76,26 @@ authenticated, so there is nothing to capture and replay (ADR 0007).
 
 Two POSTs, because a `GET` with a JSON body is an interop hazard:
 
-1. Client `POST /handshake` with `{ peer_id, nonce }`.
-2. Server responds `{ peer_id, nonce, hmac }` where
+1. Client `POST /handshake` with `{ peer_id, nonce }`, where `nonce` is the
+   client nonce.
+2. Server responds `{ peer_id, nonce, hmac }`, where `nonce` is a freshly
+   generated **server** nonce and
    `hmac = HMAC-SHA256(swarm_key, client_nonce || server_nonce || peer_ids)`.
-3. Client `POST /handshake/verify` with its own HMAC over the same transcript.
-4. On success both sides have verified the other. Nothing is issued: the
+3. Client `POST /handshake/verify` with `{ peer_id, nonce, hmac }`, echoing the
+   **server** nonce from step 2 and its own HMAC over the same transcript.
+4. On success the server responds `200 {"ok":true}`. Nothing is issued: the
    handshake proves the key, it does not establish a session.
+
+The verify step identifies the pending handshake by the echoed server nonce,
+which is unique per hello. It MUST NOT accept the client nonce as an
+alternative lookup key: a client that repeats a hello (a retry after a
+timeout) leaves several pending handshakes that share one client nonce, so that
+lookup is ambiguous, and resolving it by choosing one of them means verifying a
+transcript the client may never have meant to send.
+
+A failed handshake is `401` with `{"error": "<reason>"}`. Pending handshakes
+expire, and a proof naming an expired or unknown nonce is refused like any
+other.
 
 The swarm key is never transmitted. Both sides derive the HMAC key from
 the raw swarm key bytes.

@@ -22,8 +22,18 @@ losing visibility into what each instance is doing. pi-mesh gives you:
 On each device that runs Pi:
 
     npm install -g @pi-mesh/agent
-    (umask 077 && pi-mesh-agent keygen > ~/.pi-mesh/swarm.key)
+    pi-mesh-agent keygen > ~/.pi-mesh/swarm.key
+    chmod 600 ~/.pi-mesh/swarm.key
     pi-mesh-agent start
+
+Peers are found over mDNS. On a network that blocks multicast — corporate
+Wi-Fi, guest networks, most cloud VMs — dial one directly instead:
+
+    pi-mesh-agent sessions --peer-host other-box:7330
+
+The peer's identity is learned from the authenticated handshake, so the direct
+path is exactly as trustworthy as discovery and works with no multicast at
+all. See [docs/SECURITY.md](docs/SECURITY.md).
 
 Deploy the control plane (optional but recommended):
 

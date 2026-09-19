@@ -115,3 +115,25 @@ neither stable nor verifiable.
   That is a real operational constraint and is documented rather than assumed.
 - A peer whose credentials file is lost gets a new identity. That is
   intentional: identity is not a secret, and nothing is derived from it.
+
+## Amendment — dialing an address directly (milestone 1 close-out)
+
+Resolving a peer ID required mDNS, so on a network that blocks multicast a
+peer could not be reached at all: the client had an address to dial but no way
+to name the recipient, and every signed request binds the recipient into its
+transcript. Dropping that binding for a directly dialed address was never an
+option — it is precisely the binding that stops one captured request
+authenticating at every other agent.
+
+The ID therefore comes from the handshake. The challenge is an HMAC over a
+transcript that includes the server's `peer_id`, so a peer able to produce a
+valid challenge has proven swarm membership for the ID it claims. A client
+dialing `host:port` learns the ID there and proceeds unchanged; an impostor
+holding a different key fails the challenge check and the request is never
+sent.
+
+This does not weaken the routing-label argument above. A claimed ID was never
+an authenticated identity — but on this exchange it *is* proven membership,
+which is strictly more than mDNS ever offered. What remains true is that the
+swarm key is the trust boundary: any holder can answer for any address, so
+`--peer-host` proves membership, not that the machine is the one you meant.

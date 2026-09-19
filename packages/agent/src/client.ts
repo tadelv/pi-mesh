@@ -151,6 +151,49 @@ export async function handshake(
   peer: PeerRecord,
   options: A2AClientOptions,
 ): Promise<string> {
+  return authenticate(peer, options, peer.id);
+}
+
+/**
+ * Learn a peer's identity by dialing it directly, bypassing mDNS discovery.
+ *
+ * Peer ids are resolvable through discovery only, so on a network that blocks
+ * multicast - corporate wifi, guest networks, most cloud VMs - a peer cannot
+ * be reached at all. Dialing an address directly still needs the id, because
+ * every signed request binds the recipient into its transcript; that binding
+ * is what stops one captured request authenticating at every other agent, so
+ * it cannot simply be dropped for this path. The id therefore comes from the
+ * peer itself: the handshake challenge is HMAC'd over a transcript that names
+ * the server, so a peer able to produce a valid challenge has proven swarm
+ * membership for the id it claims. That is at least as trustworthy as the
+ * mDNS TXT record, which carries no proof whatsoever - and an impostor
+ * without the swarm key fails the challenge check below and is refused.
+ */
+export async function resolvePeerByAddress(
+  host: string,
+  port: number,
+  options: A2AClientOptions,
+): Promise<PeerRecord> {
+  // The provisional id is a label for error messages only; it is overwritten
+  // by the id the handshake proves before this function returns.
+  const provisional: PeerRecord = {
+    id: `direct:${host}:${port}`,
+    name: `direct:${host}:${port}`,
+    serviceType: "mesh",
+    host,
+    port,
+    txt: {},
+    lastSeen: Date.now(),
+  };
+  const id = await authenticate(provisional, options, undefined);
+  return { ...provisional, id, name: id };
+}
+
+async function authenticate(
+  peer: PeerRecord,
+  options: A2AClientOptions,
+  expectedPeerId: string | undefined,
+): Promise<string> {
   const key = optionsKey(options);
   const timeout = timeoutMs(options);
   const clientNonce = createNonce();
@@ -191,8 +234,11 @@ export async function handshake(
       "Handshake challenge authentication failed",
     );
   }
-  if (challenge.peer_id !== peer.id) {
-    throw new PeerIdentityMismatchError(peer.id, challenge.peer_id);
+  // An undefined expectation means the caller does not know the id yet and is
+  // learning it here (a directly dialed address); there is nothing to compare
+  // against, and the challenge HMAC verified above already covers the claim.
+  if (expectedPeerId !== undefined && challenge.peer_id !== expectedPeerId) {
+    throw new PeerIdentityMismatchError(expectedPeerId, challenge.peer_id);
   }
   const proof = await postJson(
     peer,

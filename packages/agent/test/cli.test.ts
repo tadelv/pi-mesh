@@ -226,6 +226,78 @@ describe("agent CLI", () => {
     expect(captured.read().stderr).toContain("sessions takes no arguments");
   });
 
+  it("refuses a directly dialed peer that cannot prove swarm membership", async () => {
+    // Dialing an address skips mDNS, so the peer's claimed id is the only
+    // identity on offer. It is accepted only because the handshake challenge
+    // is HMAC'd over a transcript naming that id. A peer holding a different
+    // swarm key cannot produce such a challenge, so it must be refused rather
+    // than trusted - this is what stops --peer-host being a downgrade.
+    const sessionsRoot = await mkdtemp(join(tmpdir(), "pi-mesh-cli-direct-"));
+    const server = createAgentServer({
+      host: "127.0.0.1",
+      port: 0,
+      swarmKey: Buffer.alloc(32, 9),
+      identity: {
+        peerId: "44444444-4444-4444-8444-444444444444",
+        name: "impostor",
+      },
+      sessionsRoot,
+    });
+    const listening = await server.start();
+    const captured = output();
+    try {
+      await expect(
+        run(
+          [
+            "sessions",
+            "--peer-host",
+            `127.0.0.1:${listening.port}`,
+            "--timeout",
+            "1",
+          ],
+          {
+            ...captured.io,
+            identity: {
+              peerId: "33333333-3333-4333-8333-333333333333",
+              name: "peer-a",
+            },
+            swarmKey: Buffer.alloc(32, 3),
+          },
+        ),
+      ).resolves.toBe(11);
+      expect(captured.read().stderr).toContain(
+        "Handshake challenge authentication failed",
+      );
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("rejects malformed --peer-host values", async () => {
+    const captured = output();
+    for (const address of ["host:0", "host:70000", ":7330", "host:"]) {
+      await expect(
+        run(["sessions", "--peer-host", address], captured.io),
+      ).resolves.toBe(2);
+    }
+  });
+
+  it("rejects supplying both --peer and --peer-host to call", async () => {
+    const captured = output();
+    await expect(
+      run(
+        [
+          "call",
+          "11111111-1111-4111-8111-111111111111",
+          "session.list",
+          "--peer-host",
+          "127.0.0.1:7330",
+        ],
+        captured.io,
+      ),
+    ).resolves.toBe(2);
+  });
+
   it("contacts the requested real peer with pure JSON and SSE stdout", async () => {
     const home = await mkdtemp(join(tmpdir(), "pi-mesh-cli-home-"));
     const sessionsRoot = await mkdtemp(join(tmpdir(), "pi-mesh-cli-sessions-"));
@@ -284,6 +356,47 @@ describe("agent CLI", () => {
       };
       expect(listed.sessions[0]?.project).toBe("/peer-b");
       expect(captured.read().stderr).toBe("");
+
+      // Direct dialing: the peer id is learned from the authenticated
+      // handshake rather than from mDNS, so it works where multicast is
+      // blocked. It must return the same data for the same server.
+      const direct = output();
+      await expect(
+        run(
+          [
+            "sessions",
+            "--peer-host",
+            `127.0.0.1:${listening.port}`,
+            "--timeout",
+            "1",
+          ],
+          { ...io, ...direct.io },
+        ),
+      ).resolves.toBe(0);
+      expect(JSON.parse(direct.read().stdout).sessions[0].project).toBe(
+        "/peer-b",
+      );
+      expect(direct.read().stderr).toBe("");
+
+      // With --peer-host the positionals shift: the first is the skill, since
+      // the peer id is no longer something the caller has to know.
+      const directCall = output();
+      await expect(
+        run(
+          [
+            "call",
+            "session.list",
+            "--peer-host",
+            `127.0.0.1:${listening.port}`,
+            "--timeout",
+            "1",
+          ],
+          { ...io, ...directCall.io },
+        ),
+      ).resolves.toBe(0);
+      expect(JSON.parse(directCall.read().stdout).sessions[0].project).toBe(
+        "/peer-b",
+      );
 
       captured.read();
       const callOutput = output();

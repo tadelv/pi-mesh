@@ -22,6 +22,7 @@ import {
   ClientProtocolError,
   PeerIdentityMismatchError,
   PeerUnreachableError,
+  resolvePeerByAddress,
   sendSkill,
   streamSkill,
 } from "./client.js";
@@ -48,9 +49,10 @@ const usage =
   "Usage: pi-mesh-agent keygen\n" +
   "Usage: pi-mesh-agent peers [--profile lan|public] [--watch] [--timeout seconds]\n" +
   "Usage: pi-mesh-agent start [--profile lan|public]\n" +
-  "Usage: pi-mesh-agent sessions [--peer id] [--timeout seconds]\n" +
-  "Usage: pi-mesh-agent stream <session> [--peer id] [--timeout seconds]\n" +
+  "Usage: pi-mesh-agent sessions [--peer id | --peer-host host[:port]] [--timeout seconds]\n" +
+  "Usage: pi-mesh-agent stream <session> [--peer id | --peer-host host[:port]] [--timeout seconds]\n" +
   "Usage: pi-mesh-agent call <peer> <skill> [json] [--timeout seconds]\n" +
+  "       pi-mesh-agent call <skill> [json] --peer-host host[:port]\n" +
   "Usage: pi-mesh-agent doctor\n";
 
 export async function run(
@@ -101,23 +103,26 @@ export async function run(
     if (parsed.command === "sessions") {
       if (parsed.args.length > 0)
         throw new CliUsageError("sessions takes no arguments");
-      return await sessions(parsed.peer, parsed.timeoutMs, io);
+      return await sessions(parsed.peer, parsed.peerHost, parsed.timeoutMs, io);
     }
     if (parsed.command === "stream") {
       if (parsed.args.length !== 1)
         throw new CliUsageError("stream requires a session id");
-      return await stream(parsed.args[0]!, parsed.peer, parsed.timeoutMs, io);
+      return await stream(
+        parsed.args[0]!,
+        parsed.peer,
+        parsed.peerHost,
+        parsed.timeoutMs,
+        io,
+      );
     }
     if (parsed.command === "call") {
-      if (parsed.args.length < 2 || parsed.args.length > 3) {
-        throw new CliUsageError(
-          "call requires a peer, skill, and optional JSON input",
-        );
-      }
+      const target = callTarget(parsed);
       return await callSkill(
-        parsed.args[0]!,
-        parsed.args[1]!,
-        parsed.args[2],
+        target.peerId,
+        target.peerHost,
+        target.args[0]!,
+        target.args[1],
         parsed.timeoutMs,
         io,
       );
@@ -271,10 +276,11 @@ async function start(profile: NetworkProfile, io: CliIO): Promise<number> {
 
 async function sessions(
   peerId: string | undefined,
+  peerHost: string | undefined,
   timeoutMs: number,
   io: CliIO,
 ): Promise<number> {
-  if (peerId === undefined) {
+  if (peerId === undefined && peerHost === undefined) {
     const store = new SessionStore({
       ...(io.sessionsRoot === undefined
         ? {}
@@ -285,7 +291,7 @@ async function sessions(
     io.stdout.write(`${JSON.stringify({ sessions: await store.list() })}\n`);
     return 0;
   }
-  const peer = await discover(peerId, timeoutMs, io);
+  const peer = await resolveRemote(peerId, peerHost, timeoutMs, io);
   if (peer === undefined) return 1;
   const result = await sendSkill(
     peer,
@@ -298,7 +304,8 @@ async function sessions(
 }
 
 async function callSkill(
-  peerId: string,
+  peerId: string | undefined,
+  peerHost: string | undefined,
   skill: string,
   encodedInput: string | undefined,
   timeoutMs: number,
@@ -315,7 +322,7 @@ async function callSkill(
       );
     }
   }
-  const peer = await discover(peerId, timeoutMs, io);
+  const peer = await resolveRemote(peerId, peerHost, timeoutMs, io);
   if (peer === undefined) return 1;
   const result = await sendSkill(
     peer,
@@ -330,6 +337,7 @@ async function callSkill(
 async function stream(
   sessionId: string,
   peerId: string | undefined,
+  peerHost: string | undefined,
   timeoutMs: number,
   io: CliIO,
 ): Promise<number> {
@@ -341,7 +349,7 @@ async function stream(
   };
   process.once("SIGINT", onSignal);
   try {
-    if (peerId === undefined) {
+    if (peerId === undefined && peerHost === undefined) {
       const iterator = sessionStream(
         { id: sessionId },
         io.sessionsRoot === undefined ? {} : { sessionsRoot: io.sessionsRoot },
@@ -360,7 +368,13 @@ async function stream(
       }
     }
 
-    const peer = await discover(peerId, timeoutMs, io, abort.signal);
+    const peer = await resolveRemote(
+      peerId,
+      peerHost,
+      timeoutMs,
+      io,
+      abort.signal,
+    );
     if (peer === undefined) return 1;
     const events = streamSkill(
       peer,
@@ -389,6 +403,103 @@ function localStreamMessage(value: unknown): StreamResponse["message"] {
 
 function writeSse(io: CliIO, value: unknown): void {
   io.stdout.write(`data: ${JSON.stringify(value)}\n\n`);
+}
+
+/**
+ * Resolve the peer a command should talk to.
+ *
+ * `--peer` discovers over mDNS. `--peer-host` dials an address directly and
+ * learns the peer's id from the authenticated handshake, which is the only
+ * way to reach a peer on a network that blocks multicast. Returning undefined
+ * means the caller asked for no peer at all, which for `sessions` and `stream`
+ * means "read this machine's own sessions".
+ */
+async function resolveRemote(
+  peerId: string | undefined,
+  peerHost: string | undefined,
+  timeoutMs: number,
+  io: CliIO,
+  signal?: AbortSignal,
+): Promise<PeerRecord | undefined> {
+  if (peerHost !== undefined) {
+    const { host, port } = parsePeerAddress(peerHost);
+    return await resolvePeerByAddress(
+      host,
+      port,
+      await clientOptions(io, timeoutMs),
+    );
+  }
+  if (peerId === undefined) return undefined;
+  return await discover(peerId, timeoutMs, io, signal);
+}
+
+/**
+ * Accept `host`, `host:port` or `[v6]:port`. A bare IPv6 literal has more than
+ * one colon and no brackets, so it cannot be confused with a port.
+ */
+function parsePeerAddress(value: string): { host: string; port: number } {
+  const bracketed = /^\[([^\]]+)\](?::(\d+))?$/.exec(value);
+  const colons = value.split(":").length - 1;
+  let host = value;
+  let portText: string | undefined;
+  if (bracketed !== null) {
+    host = bracketed[1]!;
+    portText = bracketed[2];
+  } else if (colons === 1) {
+    const parts = value.split(":");
+    host = parts[0]!;
+    portText = parts[1];
+  }
+  const port = portText === undefined ? configuredPort() : Number(portText);
+  if (
+    host.length === 0 ||
+    !Number.isInteger(port) ||
+    port < 1 ||
+    port > 65535
+  ) {
+    throw new CliUsageError(`Invalid peer address: ${value}`);
+  }
+  return { host, port };
+}
+
+/**
+ * `call` takes the peer as a positional, so with `--peer-host` the positionals
+ * shift left and the first one is the skill instead.
+ */
+function callTarget(parsed: {
+  args: string[];
+  peer: string | undefined;
+  peerHost: string | undefined;
+}): {
+  peerId: string | undefined;
+  peerHost: string | undefined;
+  args: string[];
+} {
+  if (parsed.peerHost !== undefined) {
+    if (parsed.peer !== undefined) {
+      throw new CliUsageError("call takes either --peer or --peer-host");
+    }
+    if (parsed.args.length < 1 || parsed.args.length > 2) {
+      throw new CliUsageError(
+        "call with --peer-host requires a skill and optional JSON input",
+      );
+    }
+    return {
+      peerId: undefined,
+      peerHost: parsed.peerHost,
+      args: parsed.args,
+    };
+  }
+  if (parsed.args.length < 2 || parsed.args.length > 3) {
+    throw new CliUsageError(
+      "call requires a peer, skill, and optional JSON input",
+    );
+  }
+  return {
+    peerId: parsed.args[0],
+    peerHost: undefined,
+    args: parsed.args.slice(1),
+  };
 }
 
 async function discover(
@@ -608,6 +719,7 @@ function parseArguments(argv: string[]):
       command: string | undefined;
       args: string[];
       peer: string | undefined;
+      peerHost: string | undefined;
       profile: NetworkProfile;
       watch: boolean;
       timeoutMs: number;
@@ -617,6 +729,7 @@ function parseArguments(argv: string[]):
   let watch = false;
   let timeoutMs = 5_000;
   let peer: string | undefined;
+  let peerHost: string | undefined;
   const commands: string[] = [];
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -638,6 +751,11 @@ function parseArguments(argv: string[]):
       if (value === undefined || value.startsWith("--")) return undefined;
       peer = value;
       index += 1;
+    } else if (argument === "--peer-host") {
+      const value = argv[index + 1];
+      if (value === undefined || value.startsWith("--")) return undefined;
+      peerHost = value;
+      index += 1;
     } else if (argument !== undefined && !argument.startsWith("--")) {
       commands.push(argument);
     } else {
@@ -650,6 +768,7 @@ function parseArguments(argv: string[]):
         command: commands[0],
         args: commands.slice(1),
         peer,
+        peerHost,
         profile,
         watch,
         timeoutMs,

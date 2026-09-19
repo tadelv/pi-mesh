@@ -114,6 +114,15 @@ unknown nonce is refused like any other.
 The swarm key is never transmitted. Both sides derive the HMAC key from
 the raw swarm key bytes.
 
+The challenge in step 2 is what makes a peer's `peer_id` provable rather than
+merely claimed: the HMAC covers a transcript naming the server, so a peer that
+produces a valid challenge has proven swarm membership for the `peer_id` it
+sent. A client that dials an address directly (`--peer-host`) relies on
+exactly this to learn a peer's identity without discovery. It cannot be
+skipped on that path: every signed request binds the recipient into its
+transcript, so an unproven identity would let a response addressed to one
+agent authenticate at another (see ADR 0007).
+
 The handshake sits outside the JSON-RPC endpoint, so its failures are HTTP
 status codes (`401`, or `503` when the pending-handshake table is full), never
 a JSON-RPC error code.

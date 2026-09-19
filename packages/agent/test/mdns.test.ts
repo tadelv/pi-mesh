@@ -171,6 +171,51 @@ describe("agent mDNS", () => {
     expect(SERVICE_TYPE_CONTROL).toBe("_pi-mesh-control._tcp");
   });
 
+  it("dials a discovered service by address, not by its unresolvable SRV hostname", async () => {
+    // A DNS-SD SRV host is relative to the `.local` domain, so bonjour reports
+    // it as a bare label like "artemis", which does not resolve on its own.
+    // The record also carries usable addresses, and preferring the hostname
+    // meant every discovered peer was described correctly and then failed to
+    // connect with ENOTFOUND - on the one path that matters, reaching an agent
+    // on another machine. Every existing test used an already-dotted
+    // "agent.local", which is why this survived from M0 through M1-11.
+    const registry = new PeerRegistry();
+    const bonjour = new FakeBonjour();
+    const handle = browsePeers(registry, { bonjour });
+    const up = bonjour.finds[0]?.onup;
+    const base = {
+      name: "B",
+      port: 7330,
+      txt: { id: "b", name: "B", port: "7330" },
+    };
+
+    // An address needs no name resolution, so it wins over the SRV hostname.
+    up?.({
+      ...base,
+      host: "artemis",
+      addresses: ["192.168.12.100", "fe80::1"],
+    });
+    expect(registry.get("mesh", "b")?.host).toBe("192.168.12.100");
+
+    // With no address, a bare label is a `.local` name and must be completed.
+    up?.({ ...base, host: "artemis", addresses: [] });
+    expect(registry.get("mesh", "b")?.host).toBe("artemis.local");
+
+    // An already-qualified name is left alone.
+    up?.({ ...base, host: "agent.local", addresses: [] });
+    expect(registry.get("mesh", "b")?.host).toBe("agent.local");
+
+    // The responder's address is the next best thing to a service address.
+    up?.({
+      ...base,
+      addresses: [],
+      referer: { address: "10.0.0.5" },
+    });
+    expect(registry.get("mesh", "b")?.host).toBe("10.0.0.5");
+
+    await handle.stop();
+  });
+
   it("refreshes a live peer on re-query and ages out a silent one", () => {
     // The regression: lastSeen used to be written only on the discovery
     // callback, and a responder does not re-announce an unchanged record, so a

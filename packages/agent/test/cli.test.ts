@@ -1,11 +1,51 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import { mkdtemp, readdir } from "node:fs/promises";
+import { mkdtemp, readdir, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { run } from "../src/cli.js";
-import { PeerRegistry, servedSkills, type BonjourLike } from "../src/index.js";
+import {
+  createAgentServer,
+  PeerRegistry,
+  servedSkills,
+  type BonjourLike,
+} from "../src/index.js";
+
+class PeerBonjour implements BonjourLike {
+  destroyed = false;
+
+  constructor(
+    private readonly peer: {
+      id: string;
+      port: number;
+    },
+  ) {}
+
+  publish(): void {}
+
+  find(
+    options: { type: string },
+    onup?: (service: {
+      host: string;
+      port: number;
+      txt: Record<string, string>;
+    }) => void,
+  ): { stop(): void } {
+    if (options.type === "pi-mesh") {
+      onup?.({
+        host: "127.0.0.1",
+        port: this.peer.port,
+        txt: { id: this.peer.id, name: "peer-b", port: String(this.peer.port) },
+      });
+    }
+    return { stop: () => undefined };
+  }
+
+  destroy(): void {
+    this.destroyed = true;
+  }
+}
 
 class FakeBonjour implements BonjourLike {
   readonly published: { txt: Record<string, string>; port: number }[] = [];
@@ -102,6 +142,142 @@ describe("agent CLI", () => {
 
     const { stdout } = captured.read();
     expect(JSON.parse(stdout)).toEqual([]);
+  });
+
+  it("contacts the requested real peer with pure JSON and SSE stdout", async () => {
+    const home = await mkdtemp(join(tmpdir(), "pi-mesh-cli-home-"));
+    const sessionsRoot = await mkdtemp(join(tmpdir(), "pi-mesh-cli-sessions-"));
+    const directory = join(sessionsRoot, "--peer-b--");
+    await mkdir(directory);
+    const sessionId = "11111111-1111-4111-8111-111111111111";
+    await writeFile(
+      join(directory, `${sessionId}.jsonl`),
+      `${JSON.stringify({
+        type: "session",
+        version: 3,
+        id: sessionId,
+        timestamp: "2025-01-01T00:00:00.000Z",
+        cwd: "/peer-b",
+      })}\n${JSON.stringify({
+        type: "message",
+        id: "only-peer-b",
+        parentId: null,
+        timestamp: "2025-01-01T00:00:01.000Z",
+        text: "only peer B can produce this",
+      })}\n`,
+    );
+    const swarmKey = Buffer.alloc(32, 3);
+    const peerIdentity = {
+      peerId: "22222222-2222-4222-8222-222222222222",
+      name: "peer-b",
+    };
+    const server = createAgentServer({
+      host: "127.0.0.1",
+      port: 0,
+      swarmKey,
+      identity: peerIdentity,
+      sessionsRoot,
+    });
+    const listening = await server.start();
+    const captured = output();
+    const io = {
+      ...captured.io,
+      bonjour: new PeerBonjour({
+        id: peerIdentity.peerId,
+        port: listening.port,
+      }),
+      identity: {
+        peerId: "33333333-3333-4333-8333-333333333333",
+        name: "peer-a",
+      },
+      swarmKey,
+      sessionsRoot: home,
+    };
+    try {
+      await expect(
+        run(["sessions", "--peer", peerIdentity.peerId, "--timeout", "1"], io),
+      ).resolves.toBe(0);
+      const listed = JSON.parse(captured.read().stdout) as {
+        sessions: { project: string }[];
+      };
+      expect(listed.sessions[0]?.project).toBe("/peer-b");
+      expect(captured.read().stderr).toBe("");
+
+      captured.read();
+      const callOutput = output();
+      await expect(
+        run(
+          [
+            "call",
+            peerIdentity.peerId,
+            "session.read",
+            JSON.stringify({ id: sessionId }),
+            "--timeout",
+            "1",
+          ],
+          { ...io, ...callOutput.io },
+        ),
+      ).resolves.toBe(0);
+      expect(JSON.parse(callOutput.read().stdout).entries[0].data.text).toBe(
+        "only peer B can produce this",
+      );
+      expect(callOutput.read().stdout).not.toMatch(/peer-a|log|progress/i);
+
+      const streamOutput = output();
+      const streamRun = run(
+        ["stream", sessionId, "--peer", peerIdentity.peerId, "--timeout", "1"],
+        { ...io, ...streamOutput.io },
+      );
+      setTimeout(() => process.emit("SIGINT"), 50);
+      await expect(streamRun).resolves.toBe(0);
+      const streamText = streamOutput.read().stdout;
+      expect(streamText).toContain('"only-peer-b"');
+      for (const record of streamText.trim().split("\n\n")) {
+        expect(record.startsWith("data: ")).toBe(true);
+        expect(() => JSON.parse(record.slice("data: ".length))).not.toThrow();
+      }
+      expect(streamOutput.read().stderr).toBe("");
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("reports doctor data without Pi or credential filesystem access", async () => {
+    const home = await mkdtemp(join(tmpdir(), "pi-mesh-doctor-home-"));
+    const captured = output();
+    const oldHome = process.env.HOME;
+    const oldPath = process.env.PATH;
+    process.env.HOME = home;
+    process.env.PATH = "";
+    try {
+      await expect(
+        run(["doctor"], {
+          ...captured.io,
+          identity: {
+            peerId: "44444444-4444-4444-8444-444444444444",
+            name: "doctor-agent",
+          },
+        }),
+      ).resolves.toBe(0);
+      const report = JSON.parse(captured.read().stdout) as Record<
+        string,
+        unknown
+      >;
+      expect(report).toMatchObject({
+        peerId: "44444444-4444-4444-8444-444444444444",
+        name: "doctor-agent",
+        swarmKeyPresent: false,
+        piVersionFloor: "0.85.1",
+        piVersion: null,
+      });
+      expect(captured.read().stderr).toBe("");
+      await expect(readdir(home)).resolves.toEqual([]);
+    } finally {
+      if (oldHome === undefined) delete process.env.HOME;
+      else process.env.HOME = oldHome;
+      if (oldPath === undefined) delete process.env.PATH;
+      else process.env.PATH = oldPath;
+    }
   });
 
   it("starts the listener and advertises exactly its served skills", async () => {

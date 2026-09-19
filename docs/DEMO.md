@@ -101,7 +101,46 @@ Expect both agents within 5 seconds, `agent-a` (self) and `agent-b`:
 `peers` exits 0 and writes JSON to stdout only; the logger writes to stderr,
 so `peers | jq` works.
 
-## 5. Verify TTL pruning
+## 5. Verify an authenticated cross-machine call and stream
+
+This step needs a real Pi session on machine B. The agent does not start Pi in
+milestone 1, so create or continue a session with the Pi install on B and let
+it append at least one event while the commands below are running.
+
+On machine B, list sessions and copy the `id` of a session that is active:
+
+```sh
+node packages/agent/dist/cli.js sessions | jq .sessions
+```
+
+On machine A, use B's mDNS `id` from step 4 (not its display name):
+
+```sh
+PEER_B=artemis
+node packages/agent/dist/cli.js sessions --peer "$PEER_B" | jq .sessions
+node packages/agent/dist/cli.js call "$PEER_B" session.read \
+  '{"id":"SESSION_ID_FROM_MACHINE_B"}' | jq .entries
+```
+
+The second command is an authenticated A2A call: its result must contain the
+session summary and entries belonging to machine B, not A. To observe a live
+event, start the stream on A, then send a message in the selected Pi session
+on B:
+
+```sh
+node packages/agent/dist/cli.js stream SESSION_ID_FROM_MACHINE_B \
+  --peer "$PEER_B" > stream.sse
+# send a message in the live Pi session on machine B, then press Ctrl-C on A
+cat stream.sse | jq -R 'select(startswith("data: ")) | sub("^data: "; "") | fromjson'
+```
+
+The stream is authenticated and emits SSE `data:` records on stdout only;
+Ctrl-C ends the client cleanly. The runbook can prove discovery, handshake,
+remote session data, and a live event only when two machines share a LAN and
+machine B has a real Pi session. It cannot prove those network or Pi
+conditions from one machine.
+
+## 6. Verify TTL pruning
 
 ```sh
 node packages/agent/dist/cli.js peers --watch

@@ -227,11 +227,36 @@ function discoveredPeer(
     id,
     name,
     serviceType,
-    host:
-      service.host ?? service.addresses?.[0] ?? service.referer?.address ?? "",
+    host: connectHost(service),
     port,
     txt,
   };
+}
+
+/**
+ * The host to actually dial for a discovered service.
+ *
+ * A DNS-SD SRV record carries a hostname RELATIVE to the `.local` domain, so
+ * `service.host` comes back as something like `artemis` - which does not
+ * resolve on its own (`ENOTFOUND`); only `artemis.local` does. Preferring it,
+ * as this did, meant every discovered peer was reported correctly and then
+ * failed to connect, on the one path that matters most: calling a peer on
+ * another machine. Confirmed against a live browse, where the service carried
+ * a perfectly good `192.168.12.100` that was ignored in favour of the
+ * unresolvable name.
+ *
+ * An address needs no name resolution at all, so IPv4 wins; IPv6 link-local
+ * addresses carry a zone that this record has nowhere to keep. The hostname is
+ * the fallback, with the `.local` suffix restored when it is a bare label.
+ */
+function connectHost(service: BonjourDiscoveredService): string {
+  const ipv4 = service.addresses?.find((address) =>
+    /^\d{1,3}(\.\d{1,3}){3}$/.test(address),
+  );
+  if (ipv4 !== undefined) return ipv4;
+  if (service.referer?.address !== undefined) return service.referer.address;
+  const host = service.host ?? service.addresses?.[0] ?? "";
+  return host.length > 0 && !host.includes(".") ? `${host}.local` : host;
 }
 
 function normalizeTxt(

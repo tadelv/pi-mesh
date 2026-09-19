@@ -1,6 +1,10 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import { request as httpRequest, type IncomingHttpHeaders } from "node:http";
+import {
+  request as httpRequest,
+  type IncomingHttpHeaders,
+  type IncomingMessage,
+} from "node:http";
 import { randomUUID } from "node:crypto";
 import {
   A2A_PROTOCOL_VERSION,
@@ -423,6 +427,202 @@ async function postJson(
       finish(() => reject(new PeerUnreachableError(peer.id, url, error)));
     }
   });
+}
+
+/** Stream the documented A2A message/stream skill convention. */
+export async function* streamSkill(
+  peer: PeerRecord,
+  skill: string,
+  input: unknown,
+  options: A2AClientOptions,
+  signal?: AbortSignal,
+): AsyncGenerator<unknown> {
+  if (signal?.aborted) return;
+  await handshake(peer, options);
+  if (signal?.aborted) return;
+
+  const request: JsonRpcRequest = {
+    jsonrpc: "2.0",
+    id: randomUUID(),
+    method: "message/stream",
+    params: {
+      message: {
+        messageId: randomUUID(),
+        role: "ROLE_USER",
+        parts: [{ data: { skill, input } }],
+      },
+    },
+  };
+  const bodyText = JSON.stringify(request);
+  const headers = signedHeaders(optionsKey(options), options.identity, {
+    method: "POST",
+    path: "/",
+    body: bodyText,
+    recipientPeerId: peer.id,
+  });
+  const body = Buffer.from(bodyText, "utf8");
+  let url: string;
+  try {
+    url = `${baseUrl(peer)}/`;
+  } catch (error) {
+    throw new PeerUnreachableError(String(peer.id), "", error);
+  }
+
+  let response: IncomingMessage;
+  let client: ReturnType<typeof httpRequest> | undefined;
+  try {
+    response = await new Promise<IncomingMessage>((resolve, reject) => {
+      let settled = false;
+      const timer = setTimeout(() => {
+        client?.destroy(
+          new Error(`Request timed out after ${timeoutMs(options)}ms`),
+        );
+      }, timeoutMs(options));
+      const finish = (callback: () => void): void => {
+        if (settled) return;
+        settled = true;
+        clearTimeout(timer);
+        callback();
+      };
+      try {
+        client = httpRequest(
+          {
+            hostname: peer.host,
+            port: peer.port,
+            method: "POST",
+            path: "/",
+            headers: {
+              ...headers,
+              "content-type": "application/json",
+              "content-length": body.byteLength,
+              "A2A-Version": A2A_PROTOCOL_VERSION,
+              connection: "keep-alive",
+            },
+          },
+          (incoming) => finish(() => resolve(incoming)),
+        );
+        client.on("error", (error) =>
+          finish(() => reject(new PeerUnreachableError(peer.id, url, error))),
+        );
+        if (signal !== undefined) {
+          signal.addEventListener("abort", () => client?.destroy(), {
+            once: true,
+          });
+        }
+        client.end(body);
+      } catch (error) {
+        finish(() => reject(new PeerUnreachableError(peer.id, url, error)));
+      }
+    });
+  } catch (error) {
+    if (signal?.aborted) return;
+    throw error;
+  }
+
+  if (response.statusCode === 401 || response.statusCode === 403) {
+    response.destroy();
+    throw new PiMeshError(
+      ErrorCode.Unauthorized,
+      `JSON-RPC stream failed with HTTP ${response.statusCode}`,
+    );
+  }
+  if (response.statusCode !== 200) {
+    const chunks: Buffer[] = [];
+    for await (const chunk of response) {
+      chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
+    }
+    const value = parseJson(
+      {
+        status: response.statusCode ?? 0,
+        headers: response.headers,
+        body: Buffer.concat(chunks),
+      },
+      "JSON-RPC stream",
+    );
+    rpcResponse(value, request, response.statusCode ?? 0);
+    throw new ClientProtocolError("Peer returned an empty stream response", {
+      ...(response.statusCode === undefined
+        ? {}
+        : { status: response.statusCode }),
+    });
+  }
+
+  const decoder = new TextDecoder();
+  let buffer = "";
+  let dataLines: string[] = [];
+  let emitted = false;
+  const rawChunks: Buffer[] = [];
+  const emit = (): unknown | undefined => {
+    if (dataLines.length === 0) return undefined;
+    const text = dataLines.join("\n");
+    dataLines = [];
+    let value: unknown;
+    try {
+      value = JSON.parse(text) as unknown;
+    } catch (error) {
+      throw new ClientProtocolError("Peer returned invalid SSE JSON", {
+        cause: error,
+        ...(response.statusCode === undefined
+          ? {}
+          : { status: response.statusCode }),
+      });
+    }
+    emitted = true;
+    return value;
+  };
+
+  try {
+    for await (const chunk of response) {
+      const chunkBuffer =
+        typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+      rawChunks.push(chunkBuffer);
+      buffer += decoder.decode(chunkBuffer, { stream: true });
+      let newline = buffer.indexOf("\n");
+      while (newline !== -1) {
+        let line = buffer.slice(0, newline);
+        buffer = buffer.slice(newline + 1);
+        if (line.endsWith("\r")) line = line.slice(0, -1);
+        if (line === "") {
+          const value = emit();
+          if (value !== undefined) yield value;
+        } else if (line.startsWith("data:")) {
+          dataLines.push(line.slice(5).trimStart());
+        }
+        newline = buffer.indexOf("\n");
+      }
+    }
+    buffer += decoder.decode();
+    if (buffer.length > 0) {
+      if (buffer.startsWith("data:"))
+        dataLines.push(buffer.slice(5).trimStart());
+    }
+    const value = emit();
+    if (value !== undefined) yield value;
+    if (!emitted) {
+      const value = parseJson(
+        {
+          status: response.statusCode ?? 0,
+          headers: response.headers,
+          body: Buffer.concat(rawChunks),
+        },
+        "JSON-RPC stream",
+      );
+      rpcResponse(value, request, response.statusCode ?? 0);
+      throw new ClientProtocolError("Peer returned an empty stream response", {
+        ...(response.statusCode === undefined
+          ? {}
+          : { status: response.statusCode }),
+      });
+    }
+  } catch (error) {
+    if (signal?.aborted) return;
+    if (error instanceof ClientProtocolError || error instanceof PiMeshError) {
+      throw error;
+    }
+    throw new PeerUnreachableError(peer.id, url, error);
+  } finally {
+    response.destroy();
+  }
 }
 
 /** Invoke the documented A2A message/send skill convention. */

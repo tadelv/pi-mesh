@@ -71,8 +71,9 @@ session event.
 
 ### Client
 
-The agent package exports `handshake`, `call`, and `sendSkill`. Failures are
-classified as `PeerUnreachableError` for transport failures,
+The agent package exports `handshake`, `call`, `sendSkill`, and `streamSkill`.
+`streamSkill` consumes the authenticated `message/stream` SSE response. Failures
+are classified as `PeerUnreachableError` for transport failures,
 `PeerIdentityMismatchError` when discovery and handshake identities differ,
 and `ClientProtocolError` for malformed or unsupported peer responses.
 `ClientProtocolError.status` carries an HTTP status when one was received;

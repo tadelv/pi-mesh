@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import { createServer, type Server } from "node:http";
+import { computeHandshakeHmac, encodeTranscript } from "@pi-mesh/protocol";
 import { describe, expect, it } from "vitest";
 import { ErrorCode, PiMeshError } from "@pi-mesh/shared";
 import {
@@ -8,6 +9,7 @@ import {
   handshake,
   call,
   sendSkill,
+  ClientProtocolError,
   PeerIdentityMismatchError,
   PeerUnreachableError,
   type PeerRecord,
@@ -143,8 +145,6 @@ describe("A2A client", () => {
         expect(error).toBeInstanceOf(PiMeshError);
         expect(error).not.toBeInstanceOf(PeerUnreachableError);
         expect(error).toHaveProperty("code", ErrorCode.Unauthorized);
-        expect(error).not.toEqual(undefined);
-        expect(error).not.toEqual({});
         return true;
       });
     } finally {
@@ -198,6 +198,286 @@ describe("A2A client", () => {
     try {
       await expect(handshake(peer(port), options())).rejects.toMatchObject({
         code: ErrorCode.Unauthorized,
+      });
+    } finally {
+      await close(server);
+    }
+  });
+
+  it("rejects message/stream because the client cannot read SSE", async () => {
+    await expect(
+      call(
+        peer(1),
+        { jsonrpc: "2.0", id: 1, method: "message/stream", params: {} },
+        options(),
+      ),
+    ).rejects.toSatisfy((error: unknown) => {
+      expect(error).toBeInstanceOf(ClientProtocolError);
+      expect(error).toHaveProperty("message", expect.stringContaining("SSE"));
+      expect(error).not.toBeInstanceOf(PeerUnreachableError);
+      return true;
+    });
+  });
+
+  it("maps an HTTP 401 before parsing an invalid response body", async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(401, { "content-type": "text/plain" });
+      response.end("not json");
+    });
+    const port = await listen(server);
+    try {
+      await expect(
+        call(
+          peer(port),
+          { jsonrpc: "2.0", id: 1, method: "tasks/get", params: {} },
+          options(),
+        ),
+      ).rejects.toSatisfy((error: unknown) => {
+        expect(error).toBeInstanceOf(PiMeshError);
+        expect(error).toHaveProperty("code", ErrorCode.Unauthorized);
+        expect(error).not.toBeInstanceOf(ClientProtocolError);
+        return true;
+      });
+    } finally {
+      await close(server);
+    }
+  });
+
+  it("classifies malformed JSON-RPC responses and accepts a null result", async () => {
+    const responses = [
+      "not json",
+      "{}",
+      JSON.stringify({ jsonrpc: "2.0", id: 999, result: true }),
+      JSON.stringify({ jsonrpc: "2.0", id: 1 }),
+      JSON.stringify({ jsonrpc: "2.0", id: 1, result: null }),
+    ];
+    let index = 0;
+    const server = createServer((_request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(responses[index++] ?? "");
+    });
+    const port = await listen(server);
+    try {
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        await expect(
+          call(
+            peer(port),
+            { jsonrpc: "2.0", id: 1, method: "tasks/get", params: {} },
+            options(),
+          ),
+        ).rejects.toSatisfy((error: unknown) => {
+          expect(error).toBeInstanceOf(ClientProtocolError);
+          expect(error).toHaveProperty("status", 200);
+          return true;
+        });
+      }
+      await expect(
+        call(
+          peer(port),
+          { jsonrpc: "2.0", id: 1, method: "tasks/get", params: {} },
+          options(),
+        ),
+      ).resolves.toBeNull();
+    } finally {
+      await close(server);
+    }
+  });
+
+  it("unwraps SendMessageResponse and rejects a bare message", async () => {
+    let responseNumber = 0;
+    const server = createServer((request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      request.on("data", (chunk) => (body += chunk));
+      request.on("end", () => {
+        response.setHeader("content-type", "application/json");
+        const message = {
+          messageId: "message-1",
+          role: "ROLE_AGENT",
+          parts: [{ data: { result: { ok: true } } }],
+        };
+        const result =
+          responseNumber++ === 0
+            ? message
+            : responseNumber === 2
+              ? { message }
+              : {
+                  task: {
+                    id: "task-1",
+                    status: { state: "TASK_STATE_WORKING" },
+                  },
+                };
+        response.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: (JSON.parse(body) as { id: string }).id,
+            result,
+          }),
+        );
+      });
+    });
+    const port = await listen(server);
+    try {
+      await expect(
+        sendSkill(peer(port), "session.list", {}, options()),
+      ).rejects.toSatisfy((error: unknown) => {
+        expect(error).toBeInstanceOf(ClientProtocolError);
+        expect(error).toHaveProperty(
+          "message",
+          expect.stringContaining("bare"),
+        );
+        return true;
+      });
+      await expect(
+        sendSkill(peer(port), "session.list", {}, options()),
+      ).resolves.toEqual({ ok: true });
+      await expect(
+        sendSkill(peer(port), "session.list", {}, options()),
+      ).resolves.toEqual({
+        id: "task-1",
+        status: { state: "TASK_STATE_WORKING" },
+      });
+    } finally {
+      await close(server);
+    }
+  });
+
+  it("reports a retryable handshake overload as a protocol error with status", async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(503, { "content-type": "application/json" });
+      response.end(JSON.stringify({ error: "too_many_pending_handshakes" }));
+    });
+    const port = await listen(server);
+    try {
+      await expect(handshake(peer(port), options())).rejects.toSatisfy(
+        (error: unknown) => {
+          expect(error).toBeInstanceOf(ClientProtocolError);
+          expect(error).toHaveProperty("status", 503);
+          expect(error).toHaveProperty(
+            "message",
+            "too_many_pending_handshakes",
+          );
+          expect(error).not.toBeInstanceOf(PiMeshError);
+          return true;
+        },
+      );
+    } finally {
+      await close(server);
+    }
+  });
+
+  it("maps an invalid-body 401 from both handshake routes to Unauthorized", async () => {
+    const helloServer = createServer((_request, response) => {
+      response.writeHead(401, { "content-type": "text/plain" });
+      response.end("not json");
+    });
+    const helloPort = await listen(helloServer);
+    try {
+      await expect(handshake(peer(helloPort), options())).rejects.toMatchObject(
+        {
+          code: ErrorCode.Unauthorized,
+        },
+      );
+    } finally {
+      await close(helloServer);
+    }
+
+    const verifyServer = createServer((request, response) => {
+      if (request.url === "/handshake") {
+        let body = "";
+        request.setEncoding("utf8");
+        request.on("data", (chunk) => (body += chunk));
+        request.on("end", () => {
+          const hello = JSON.parse(body) as { peer_id: string; nonce: string };
+          const serverNonce = "server-nonce";
+          const transcript = encodeTranscript({
+            clientPeerId: hello.peer_id,
+            clientNonce: hello.nonce,
+            serverPeerId: serverIdentity.peerId,
+            serverNonce,
+          });
+          response.setHeader("content-type", "application/json");
+          response.end(
+            JSON.stringify({
+              peer_id: serverIdentity.peerId,
+              nonce: serverNonce,
+              hmac: computeHandshakeHmac(key, transcript),
+            }),
+          );
+        });
+        return;
+      }
+      response.writeHead(401, { "content-type": "text/plain" });
+      response.end("not json");
+    });
+    const verifyPort = await listen(verifyServer);
+    try {
+      await expect(
+        handshake(peer(verifyPort), options()),
+      ).rejects.toMatchObject({
+        code: ErrorCode.Unauthorized,
+      });
+    } finally {
+      await close(verifyServer);
+    }
+  });
+
+  it("rejects a response body larger than the client cap", async () => {
+    const server = createServer((_request, response) => {
+      response.writeHead(200, { "content-type": "application/json" });
+      const chunk = Buffer.alloc(1024 * 1024, 65);
+      for (let count = 0; count < 11; count += 1) response.write(chunk);
+      response.end();
+    });
+    const port = await listen(server);
+    try {
+      await expect(
+        call(
+          peer(port),
+          { jsonrpc: "2.0", id: 1, method: "tasks/get", params: {} },
+          options(),
+        ),
+      ).rejects.toSatisfy((error: unknown) => {
+        expect(error).toBeInstanceOf(ClientProtocolError);
+        expect(error).toHaveProperty("status", 200);
+        expect(error).toHaveProperty(
+          "message",
+          "Peer response body is too large",
+        );
+        return true;
+      });
+    } finally {
+      await close(server);
+    }
+  });
+
+  it("classifies malformed peer records as unreachable", async () => {
+    const malformed = peer(7330);
+    (malformed as unknown as { host: unknown }).host = 123;
+    await expect(
+      call(
+        malformed as PeerRecord,
+        { jsonrpc: "2.0", id: 1, method: "tasks/get", params: {} },
+        options(),
+      ),
+    ).rejects.toBeInstanceOf(PeerUnreachableError);
+  });
+
+  it("rejects an empty peer id in a handshake challenge", async () => {
+    const server = createServer((_request, response) => {
+      response.setHeader("content-type", "application/json");
+      response.end(
+        JSON.stringify({
+          peer_id: "",
+          nonce: "server-nonce",
+          hmac: Buffer.alloc(32).toString("base64"),
+        }),
+      );
+    });
+    const port = await listen(server);
+    try {
+      await expect(handshake(peer(port), options())).rejects.toMatchObject({
+        name: "ClientProtocolError",
       });
     } finally {
       await close(server);

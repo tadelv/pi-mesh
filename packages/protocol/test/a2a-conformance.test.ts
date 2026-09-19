@@ -12,6 +12,7 @@ import {
   type Artifact,
   type Message,
   type MessageSendParams,
+  type MessageSendResult,
   type Part,
   type SendMessageConfiguration,
   type StreamResponse,
@@ -75,6 +76,12 @@ const sendConfigurationKeys: Assert<
     (typeof A2A_FIELDS.SendMessageConfiguration)[number]
   >
 > = true;
+const sendResponseKeys: Assert<
+  Equal<
+    keyof MessageSendResult,
+    (typeof A2A_FIELDS.SendMessageResponse)[number]
+  >
+> = true;
 
 void [
   agentInterfaceKeys,
@@ -90,6 +97,7 @@ void [
   streamKeys,
   sendParamsKeys,
   sendConfigurationKeys,
+  sendResponseKeys,
 ];
 
 function skipTrivia(source: string, offset: number): number {

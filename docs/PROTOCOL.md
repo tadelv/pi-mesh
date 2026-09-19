@@ -62,10 +62,21 @@ A skill call uses the standard A2A `message/send` method. The request's
 `Message` has `role: "ROLE_USER"` and one data part containing
 `{ "skill": "session.list", "input": { ... } }`; the skill name is not a
 custom JSON-RPC method or top-level field. A synchronous result is returned as
-an agent `Message` (`role: "ROLE_AGENT"`) whose data part contains
+the A2A `SendMessageResponse` oneof wrapper: `{ "message": <Message> }` (or
+`{ "task": <Task> }` for an asynchronous task). For a message response, the
+agent `Message` has `role: "ROLE_AGENT"` and its data part contains
 `{ "result": ... }`. Streaming calls use `message/stream` and return
 `StreamResponse` objects over SSE, with the same result message shape for each
 session event.
+
+### Client
+
+The agent package exports `handshake`, `call`, and `sendSkill`. Failures are
+classified as `PeerUnreachableError` for transport failures,
+`PeerIdentityMismatchError` when discovery and handshake identities differ,
+and `ClientProtocolError` for malformed or unsupported peer responses.
+`ClientProtocolError.status` carries an HTTP status when one was received;
+HTTP 503 handshake failures are therefore distinguishable and retryable.
 
 ## Peer authentication
 

@@ -591,7 +591,7 @@ export class HttpAgentServer implements AgentServer {
     if (request.method === "message/send") {
       const call = invocation(objectParams(request.params).message);
       const result = await this.skills.invoke(call.skill, call.input);
-      return messageFrom(result, call.contextId);
+      return { message: messageFrom(result, call.contextId) };
     }
     if (request.method === "tasks/get") {
       const params = objectParams(request.params);

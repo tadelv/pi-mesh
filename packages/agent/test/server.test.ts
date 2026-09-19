@@ -216,7 +216,7 @@ describe("A2A HTTP server", () => {
 
       const result = await httpCall(address.port, call("session.list"));
       expect(
-        JSON.parse(result.body).result.parts[0].data.result.sessions,
+        JSON.parse(result.body).result.message.parts[0].data.result.sessions,
       ).toHaveLength(1);
     } finally {
       await server.stop();

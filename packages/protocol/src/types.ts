@@ -281,7 +281,10 @@ export interface MessageSendParams {
   metadata?: Record<string, unknown>;
 }
 
-export type MessageSendResult = Task | Message;
+export interface MessageSendResult {
+  task?: Task;
+  message?: Message;
+}
 
 export type MessageSendRequest = JsonRpcRequest<
   "message/send",

@@ -7,10 +7,12 @@ import {
   computeHandshakeHmac,
   createNonce,
   encodeTranscript,
+  verifyHandshake,
+} from "@pi-mesh/protocol";
+import type {
   HandshakeResponse,
   JsonRpcRequest,
   JsonRpcResponse,
-  verifyHandshake,
 } from "@pi-mesh/protocol";
 import { ErrorCode, PiMeshError } from "@pi-mesh/shared";
 import { signedHeaders } from "./auth.js";
@@ -21,9 +23,8 @@ import type { PeerRecord } from "./registry.js";
 export const DEFAULT_CLIENT_TIMEOUT_MS = 10_000;
 
 export interface A2AClientOptions {
-  /** Raw swarm key bytes. `key` is accepted as a short alias. */
+  /** Raw swarm key bytes. */
   swarmKey?: Uint8Array;
-  key?: Uint8Array;
   identity: PeerIdentity;
   timeoutMs?: number;
 }
@@ -55,9 +56,12 @@ export class PeerIdentityMismatchError extends Error {
 }
 
 export class ClientProtocolError extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
+  readonly status: number | undefined;
+
+  constructor(message: string, options?: { cause?: unknown; status?: number }) {
     super(message, options);
     this.name = "ClientProtocolError";
+    this.status = options?.status;
   }
 }
 
@@ -76,7 +80,7 @@ function baseUrl(peer: PeerRecord): string {
 }
 
 function optionsKey(options: A2AClientOptions): Uint8Array {
-  const key = options.swarmKey ?? options.key;
+  const key = options.swarmKey;
   if (key === undefined || key.byteLength === 0) {
     throw new TypeError("A non-empty swarmKey is required");
   }
@@ -97,25 +101,35 @@ function parseJson(result: HttpResult, context: string): unknown {
   } catch (error) {
     throw new ClientProtocolError(`${context} returned invalid JSON`, {
       cause: error,
+      status: result.status,
     });
   }
 }
 
-function handshakeResponse(value: unknown): HandshakeResponse {
+function handshakeResponse(value: unknown, status: number): HandshakeResponse {
   if (
     typeof value !== "object" ||
     value === null ||
     Array.isArray(value) ||
     typeof (value as Record<string, unknown>).peer_id !== "string" ||
+    ((value as Record<string, unknown>).peer_id as string).length === 0 ||
     typeof (value as Record<string, unknown>).nonce !== "string" ||
     typeof (value as Record<string, unknown>).hmac !== "string"
   ) {
-    throw new ClientProtocolError("Handshake returned an invalid challenge");
+    throw new ClientProtocolError("Handshake returned an invalid challenge", {
+      status,
+    });
   }
   return value as HandshakeResponse;
 }
 
 function handshakeFailure(result: HttpResult, context: string): never {
+  if (result.status === 401 || result.status === 403) {
+    throw new PiMeshError(
+      ErrorCode.Unauthorized,
+      `${context} failed with HTTP ${result.status}`,
+    );
+  }
   const value = parseJson(result, context);
   const reason: string =
     typeof value === "object" &&
@@ -124,10 +138,7 @@ function handshakeFailure(result: HttpResult, context: string): never {
     typeof (value as Record<string, unknown>).error === "string"
       ? String((value as Record<string, unknown>).error)
       : `${context} failed with HTTP ${result.status}`;
-  if (result.status === 401) {
-    throw new PiMeshError(ErrorCode.Unauthorized, reason, { data: value });
-  }
-  throw new ClientProtocolError(reason);
+  throw new ClientProtocolError(reason, { status: result.status });
 }
 
 /** Perform and mutually verify the two-POST handshake, returning the verified peer ID. */
@@ -151,7 +162,10 @@ export async function handshake(
   if (hello.status < 200 || hello.status >= 300) {
     handshakeFailure(hello, "Handshake hello");
   }
-  const challenge = handshakeResponse(parseJson(hello, "Handshake hello"));
+  const challenge = handshakeResponse(
+    parseJson(hello, "Handshake hello"),
+    hello.status,
+  );
   let transcript;
   try {
     transcript = encodeTranscript({
@@ -163,6 +177,7 @@ export async function handshake(
   } catch (error) {
     throw new ClientProtocolError("Handshake returned invalid fields", {
       cause: error,
+      status: hello.status,
     });
   }
   if (!verifyHandshake(key, challenge.hmac, transcript)) {
@@ -198,19 +213,29 @@ export async function handshake(
   ) {
     throw new ClientProtocolError(
       "Handshake verification returned an invalid response",
+      { status: proof.status },
     );
   }
   return challenge.peer_id;
 }
 
-function rpcResponse(value: unknown, request: JsonRpcRequest): JsonRpcResponse {
+function rpcResponse(
+  value: unknown,
+  request: JsonRpcRequest,
+  status: number,
+): JsonRpcResponse {
   if (
     typeof value !== "object" ||
     value === null ||
     Array.isArray(value) ||
     (value as Record<string, unknown>).jsonrpc !== "2.0"
   ) {
-    throw new ClientProtocolError("Peer returned an invalid JSON-RPC response");
+    throw new ClientProtocolError(
+      "Peer returned an invalid JSON-RPC response",
+      {
+        status,
+      },
+    );
   }
   const response = value as Record<string, unknown>;
   const hasResult = "result" in response;
@@ -224,11 +249,13 @@ function rpcResponse(value: unknown, request: JsonRpcRequest): JsonRpcResponse {
   if (hasResult === hasError) {
     throw new ClientProtocolError(
       "Peer returned neither a result nor an error",
+      { status },
     );
   }
   if (response.id !== request.id && !(hasError && response.id === null)) {
     throw new ClientProtocolError(
       "Peer returned a response for another request",
+      { status },
     );
   }
   if (hasError) {
@@ -246,6 +273,11 @@ export async function call(
   request: JsonRpcRequest,
   options: A2AClientOptions,
 ): Promise<unknown> {
+  if (request.method === "message/stream") {
+    throw new ClientProtocolError(
+      "message/stream is unsupported by this client because it cannot read SSE responses",
+    );
+  }
   const key = optionsKey(options);
   const timeout = timeoutMs(options);
   const body = JSON.stringify(request);
@@ -256,8 +288,15 @@ export async function call(
     recipientPeerId: peer.id,
   });
   const response = await postJson(peer, "/", body, headers, timeout);
+  if (response.status === 401 || response.status === 403) {
+    throw new PiMeshError(
+      ErrorCode.Unauthorized,
+      `JSON-RPC request failed with HTTP ${response.status}`,
+    );
+  }
   const value = parseJson(response, "JSON-RPC request");
-  return (rpcResponse(value, request) as { result: unknown }).result;
+  return (rpcResponse(value, request, response.status) as { result: unknown })
+    .result;
 }
 
 /**
@@ -265,7 +304,7 @@ export async function call(
  * included. There used to be two near-identical copies, which is how one of
  * them ends up missing a later fix to timeouts or abort handling.
  */
-function postJson(
+async function postJson(
   peer: PeerRecord,
   path: string,
   bodyText: string,
@@ -273,7 +312,25 @@ function postJson(
   timeout: number,
 ): Promise<HttpResult> {
   const body = Buffer.from(bodyText, "utf8");
-  const url = `${baseUrl(peer)}${path}`;
+  let url: string;
+  try {
+    if (
+      typeof peer.host !== "string" ||
+      peer.host.length === 0 ||
+      !Number.isInteger(peer.port) ||
+      peer.port < 1 ||
+      peer.port > 65535
+    ) {
+      throw new TypeError("Peer record has an invalid host or port");
+    }
+    url = `${baseUrl(peer)}${path}`;
+  } catch (error) {
+    throw new PeerUnreachableError(
+      String(peer.id),
+      `http://${String(peer.host)}:${String(peer.port)}${path}`,
+      error,
+    );
+  }
   return new Promise((resolve, reject) => {
     let settled = false;
     let client: ReturnType<typeof httpRequest>;
@@ -302,10 +359,37 @@ function postJson(
           },
         },
         (response) => {
+          if (response.statusCode === 401 || response.statusCode === 403) {
+            finish(() =>
+              reject(
+                new PiMeshError(
+                  ErrorCode.Unauthorized,
+                  `Peer returned HTTP ${response.statusCode}`,
+                ),
+              ),
+            );
+            response.destroy();
+            return;
+          }
           const chunks: Buffer[] = [];
-          response.on("data", (chunk: Buffer | string) =>
-            chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk),
-          );
+          let size = 0;
+          response.on("data", (chunk: Buffer | string) => {
+            const buffer =
+              typeof chunk === "string" ? Buffer.from(chunk) : chunk;
+            size += buffer.byteLength;
+            if (size > 10 * 1024 * 1024) {
+              finish(() =>
+                reject(
+                  new ClientProtocolError("Peer response body is too large", {
+                    status: response.statusCode ?? 0,
+                  }),
+                ),
+              );
+              response.destroy();
+              return;
+            }
+            chunks.push(buffer);
+          });
           response.on("error", (error) =>
             finish(() => reject(new PeerUnreachableError(peer.id, url, error))),
           );
@@ -331,14 +415,13 @@ function postJson(
           );
         },
       );
+      client.on("error", (error) =>
+        finish(() => reject(new PeerUnreachableError(peer.id, url, error))),
+      );
+      client.end(body);
     } catch (error) {
       finish(() => reject(new PeerUnreachableError(peer.id, url, error)));
-      return;
     }
-    client.on("error", (error) =>
-      finish(() => reject(new PeerUnreachableError(peer.id, url, error))),
-    );
-    client.end(body);
   });
 }
 
@@ -368,12 +451,51 @@ export async function sendSkill(
   if (
     typeof response !== "object" ||
     response === null ||
-    Array.isArray(response) ||
-    !Array.isArray((response as { parts?: unknown }).parts)
+    Array.isArray(response)
   ) {
-    throw new ClientProtocolError("Skill response was not an A2A message");
+    throw new ClientProtocolError(
+      "Skill response was not an A2A response envelope",
+    );
   }
-  const part = (response as { parts: unknown[] }).parts.find(
+  const envelope = response as {
+    message?: unknown;
+    task?: unknown;
+    parts?: unknown;
+  };
+  if ("parts" in envelope) {
+    throw new ClientProtocolError(
+      "Skill response used a bare message; expected an A2A response envelope",
+    );
+  }
+  const hasMessage = envelope.message !== undefined;
+  const hasTask = envelope.task !== undefined;
+  if (hasMessage && hasTask) {
+    throw new ClientProtocolError(
+      "Skill response contained both message and task payloads",
+    );
+  }
+  if (hasTask) {
+    if (
+      typeof envelope.task !== "object" ||
+      envelope.task === null ||
+      Array.isArray(envelope.task)
+    ) {
+      throw new ClientProtocolError("Skill response contained an invalid task");
+    }
+    return envelope.task;
+  }
+  const message = envelope.message;
+  if (
+    typeof message !== "object" ||
+    message === null ||
+    Array.isArray(message) ||
+    !Array.isArray((message as { parts?: unknown }).parts)
+  ) {
+    throw new ClientProtocolError(
+      "Skill response did not contain a message with parts",
+    );
+  }
+  const part = (message as { parts: unknown[] }).parts.find(
     (value) =>
       typeof value === "object" &&
       value !== null &&

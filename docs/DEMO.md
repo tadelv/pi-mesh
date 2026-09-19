@@ -87,15 +87,21 @@ On machine A, in a second terminal:
 node packages/agent/dist/cli.js peers --timeout 6
 ```
 
-Expect both agents within 5 seconds, `agent-a` (self) and `agent-b`:
+Expect both agents within 5 seconds, `agent-a` (self) and `agent-b`. The
+`id` is the peer's **persistent credentials UUID**, not its hostname or
+display name - the advertisement publishes the same id the listener
+authenticates as, and `--peer` matches on it. `host` is the address to dial,
+which is what a call actually connects to:
 
 ```json
-[{"id":"phobos.local","name":"agent-a","serviceType":"mesh","host":"phobos.local","port":7330,
-  "txt":{"id":"phobos.local","name":"agent-a","version":"0.0.0","agent_version":"0.0.0",
-  "port":"7330","fp":"unpaired"},"lastSeen":1789659594836},
- {"id":"artemis","name":"agent-b","serviceType":"mesh","host":"artemis","port":7330,
-  "txt":{"id":"artemis","name":"agent-b","version":"0.0.0","agent_version":"0.0.0",
-  "port":"7330","fp":"unpaired"},"lastSeen":1789659594876}]
+[{"id":"9f2c1b84-...","name":"agent-a","serviceType":"mesh","host":"192.168.1.11","port":7330,
+  "txt":{"id":"9f2c1b84-...","name":"agent-a","version":"0.0.0","agent_version":"0.0.0",
+  "port":"7330","fp":"unpaired","caps":"mesh.peers,session.list,session.read,session.stream"},
+  "lastSeen":1789659594836},
+ {"id":"70faf7ea-...","name":"agent-b","serviceType":"mesh","host":"192.168.1.12","port":7330,
+  "txt":{"id":"70faf7ea-...","name":"agent-b","version":"0.0.0","agent_version":"0.0.0",
+  "port":"7330","fp":"unpaired","caps":"mesh.peers,session.list,session.read,session.stream"},
+  "lastSeen":1789659594876}]
 ```
 
 `peers` exits 0 and writes JSON to stdout only; the logger writes to stderr,
@@ -113,10 +119,12 @@ On machine B, list sessions and copy the `id` of a session that is active:
 node packages/agent/dist/cli.js sessions | jq .sessions
 ```
 
-On machine A, use B's mDNS `id` from step 4 (not its display name):
+On machine A, use B's mDNS `id` from step 4 - the UUID, since that is what
+the listener authenticates as and what `--peer` matches (its display name
+will not match):
 
 ```sh
-PEER_B=artemis
+PEER_B=70faf7ea-...   # the id agent-b advertised
 node packages/agent/dist/cli.js sessions --peer "$PEER_B" | jq .sessions
 node packages/agent/dist/cli.js call "$PEER_B" session.read \
   '{"id":"SESSION_ID_FROM_MACHINE_B"}' | jq .entries

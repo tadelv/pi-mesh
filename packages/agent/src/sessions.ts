@@ -320,7 +320,20 @@ export class SessionStore {
     sessionId: string,
   ): Promise<{ path: string; parsed: SessionParseResult } | undefined> {
     for (const path of await sessionFiles(this.sessionsRoot)) {
-      const parsed = await this.parseFile(path);
+      let parsed: SessionParseResult;
+      try {
+        parsed = await this.parseFile(path);
+      } catch (error) {
+        if (!isMissing(error)) throw error;
+        const warning: SessionParseError = {
+          line: 0,
+          message: `session file disappeared before it could be read: ${path} (ENOENT)`,
+          path,
+        };
+        this.parseErrors.push(warning);
+        this.onError?.(warning);
+        continue;
+      }
       if (parsed.header?.id === sessionId) return { path, parsed };
     }
     return undefined;

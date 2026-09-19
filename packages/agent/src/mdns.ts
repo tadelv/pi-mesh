@@ -221,11 +221,15 @@ function discoveredPeer(
     return undefined;
   }
 
+  const host = connectHost(service);
+  if (host === "") {
+    return undefined;
+  }
   return {
     id,
     name,
     serviceType,
-    host: connectHost(service),
+    host,
     port,
     txt,
   };
@@ -248,15 +252,25 @@ function discoveredPeer(
  * the fallback, with the `.local` suffix restored when it is a bare label.
  */
 function connectHost(service: BonjourDiscoveredService): string {
-  const ipv4 = service.addresses?.find((address) => isIPv4(address));
-  if (ipv4 !== undefined) return ipv4;
+  const usable = (address: string | undefined): string | undefined => {
+    if (!isIPv4(address ?? "")) return undefined;
+    const octets = address!.split(".").map(Number);
+    if (octets[0] === 0 || octets[0] === 127) return undefined;
+    if (octets[0] === 169 && octets[1] === 254) return undefined;
+    return address;
+  };
 
-  const refererAddress = service.referer?.address;
-  if (refererAddress !== undefined && isIPv4(refererAddress)) {
-    return refererAddress;
+  const refererAddress = usable(service.referer?.address);
+  if (refererAddress !== undefined) return refererAddress;
+  const ipv4 = service.addresses?.find(
+    (address) => usable(address) !== undefined,
+  );
+  if (ipv4 !== undefined) return usable(ipv4)!;
+
+  let host = (service.host ?? "").replace(/\.$/, "");
+  if (host.includes(":")) {
+    host = host.split("%", 1)[0]!;
   }
-
-  const host = (service.host ?? "").replace(/\.$/, "");
   return host.length > 0 && !host.includes(".") && !host.includes(":")
     ? `${host}.local`
     : host;

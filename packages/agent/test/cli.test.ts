@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import { mkdtemp, readdir, mkdir, writeFile } from "node:fs/promises";
+import { chmod, mkdtemp, readdir, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
@@ -145,13 +145,79 @@ describe("agent CLI", () => {
   });
 
   it("rejects public-profile commands without trusted control-plane discovery", async () => {
-    const captured = output();
-
-    await expect(
-      run(["sessions", "--profile", "public"], captured.io),
-    ).resolves.toBe(2);
-    expect(captured.read().stderr).toMatch(/public profile/);
+    for (const argv of [
+      ["start", "--profile", "public"],
+      ["sessions", "--profile", "public"],
+      ["stream", "session", "--profile", "public"],
+      ["call", "peer", "skill", "--profile", "public"],
+      ["doctor", "--profile", "public"],
+    ]) {
+      const captured = output();
+      await expect(run(argv, captured.io)).resolves.toBe(2);
+      expect(captured.read().stderr).toMatch(/public profile/);
+    }
   });
+
+  it("reports malformed credentials as a doctor failure", async () => {
+    const home = await mkdtemp(join(tmpdir(), "pi-mesh-doctor-bad-home-"));
+    await mkdir(join(home, ".pi-mesh"));
+    await writeFile(join(home, ".pi-mesh", "credentials.json"), "not json");
+    const captured = output();
+    const oldHome = process.env.HOME;
+    const oldPath = process.env.PATH;
+    process.env.HOME = home;
+    process.env.PATH = "";
+    try {
+      await expect(run(["doctor"], captured.io)).resolves.toBe(1);
+      const report = JSON.parse(captured.read().stdout) as Record<
+        string,
+        unknown
+      >;
+      expect(report.peerId).toBeNull();
+      expect(report.credentialsError).toMatch(/Malformed identity credentials/);
+      expect(captured.read().stderr).toBe("");
+    } finally {
+      if (oldHome === undefined) delete process.env.HOME;
+      else process.env.HOME = oldHome;
+      if (oldPath === undefined) delete process.env.PATH;
+      else process.env.PATH = oldPath;
+    }
+  });
+
+  it("reports an unusable swarm key as a doctor failure", async () => {
+    const home = await mkdtemp(join(tmpdir(), "pi-mesh-doctor-bad-key-"));
+    const directory = join(home, ".pi-mesh");
+    await mkdir(directory);
+    await writeFile(join(directory, "swarm.key"), "not base64");
+    await chmod(join(directory, "swarm.key"), 0o600);
+    const captured = output();
+    const oldHome = process.env.HOME;
+    const oldPath = process.env.PATH;
+    process.env.HOME = home;
+    process.env.PATH = "";
+    try {
+      await expect(run(["doctor"], captured.io)).resolves.toBe(1);
+      const report = JSON.parse(captured.read().stdout) as Record<
+        string,
+        unknown
+      >;
+      expect(report.swarmKeyPresent).toBe(false);
+      expect(report.swarmKeyError).toMatch(/Invalid swarm key/);
+    } finally {
+      if (oldHome === undefined) delete process.env.HOME;
+      else process.env.HOME = oldHome;
+      if (oldPath === undefined) delete process.env.PATH;
+      else process.env.PATH = oldPath;
+    }
+  });
+
+  it.each([["keygen"], ["start"], ["peers"]])(
+    "rejects extra positionals for %s",
+    async (command) => {
+      const captured = output();
+      await expect(run([command, "junk"], captured.io)).resolves.toBe(2);
+    },
+  );
 
   it("uses the usage exit code for command argument errors", async () => {
     const captured = output();
@@ -263,8 +329,10 @@ describe("agent CLI", () => {
     const captured = output();
     const oldHome = process.env.HOME;
     const oldPath = process.env.PATH;
+    const oldPort = process.env.PI_MESH_PORT;
     process.env.HOME = home;
     process.env.PATH = "";
+    process.env.PI_MESH_PORT = " ";
     try {
       await expect(run(["doctor"], captured.io)).resolves.toBe(0);
       const report = JSON.parse(captured.read().stdout) as Record<
@@ -274,6 +342,7 @@ describe("agent CLI", () => {
       expect(report).toMatchObject({
         peerId: null,
         swarmKeyPresent: false,
+        configuredPort: 7330,
         piVersionFloor: "0.85.1",
         piVersion: null,
       });
@@ -284,6 +353,8 @@ describe("agent CLI", () => {
       else process.env.HOME = oldHome;
       if (oldPath === undefined) delete process.env.PATH;
       else process.env.PATH = oldPath;
+      if (oldPort === undefined) delete process.env.PI_MESH_PORT;
+      else process.env.PI_MESH_PORT = oldPort;
     }
   });
 

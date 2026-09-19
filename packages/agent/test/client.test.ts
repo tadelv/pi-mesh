@@ -13,6 +13,7 @@ import {
   handshake,
   call,
   sendSkill,
+  streamSkill,
   PeerRegistry,
   ClientProtocolError,
   PeerIdentityMismatchError,
@@ -264,6 +265,114 @@ describe("A2A client", () => {
     try {
       await expect(handshake(peer(port), options())).rejects.toMatchObject({
         code: ErrorCode.Unauthorized,
+      });
+    } finally {
+      await close(server);
+    }
+  });
+
+  it("parses chunk-split SSE streamSkill responses", async () => {
+    const server = createServer(async (request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      for await (const chunk of request) body += chunk;
+      if (request.url === "/handshake") {
+        const hello = JSON.parse(body) as { peer_id: string; nonce: string };
+        const nonce = "server-nonce";
+        const transcript = encodeTranscript({
+          clientPeerId: hello.peer_id,
+          clientNonce: hello.nonce,
+          serverPeerId: serverIdentity.peerId,
+          serverNonce: nonce,
+        });
+        response.end(
+          JSON.stringify({
+            peer_id: serverIdentity.peerId,
+            nonce,
+            hmac: computeHandshakeHmac(key, transcript),
+          }),
+        );
+        return;
+      }
+      if (request.url === "/handshake/verify") {
+        response.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.write('data: {"value":');
+      response.write('"split"}\n');
+      response.end("\n");
+    });
+    const port = await listen(server);
+    try {
+      await expect(
+        (async () => {
+          const values: unknown[] = [];
+          for await (const value of streamSkill(
+            peer(port),
+            "session.stream",
+            {},
+            options(),
+          )) {
+            values.push(value);
+          }
+          return values;
+        })(),
+      ).resolves.toEqual([{ value: "split" }]);
+    } finally {
+      await close(server);
+    }
+  });
+
+  it("caps a non-SSE stream fallback body", async () => {
+    const server = createServer(async (request, response) => {
+      let body = "";
+      request.setEncoding("utf8");
+      for await (const chunk of request) body += chunk;
+      if (request.url === "/handshake") {
+        const hello = JSON.parse(body) as { peer_id: string; nonce: string };
+        const nonce = "server-nonce";
+        const transcript = encodeTranscript({
+          clientPeerId: hello.peer_id,
+          clientNonce: hello.nonce,
+          serverPeerId: serverIdentity.peerId,
+          serverNonce: nonce,
+        });
+        response.end(
+          JSON.stringify({
+            peer_id: serverIdentity.peerId,
+            nonce,
+            hmac: computeHandshakeHmac(key, transcript),
+          }),
+        );
+        return;
+      }
+      if (request.url === "/handshake/verify") {
+        response.end(JSON.stringify({ ok: true }));
+        return;
+      }
+      response.writeHead(200, { "content-type": "application/json" });
+      const chunk = Buffer.alloc(1024 * 1024, 65);
+      for (let count = 0; count < 11; count += 1) response.write(chunk);
+      response.end();
+    });
+    const port = await listen(server);
+    try {
+      await expect(
+        (async () => {
+          for await (const value of streamSkill(
+            peer(port),
+            "session.stream",
+            {},
+            options(),
+          )) {
+            // The body is deliberately not SSE.
+            void value;
+          }
+        })(),
+      ).rejects.toMatchObject({
+        name: "ClientProtocolError",
+        message: "Peer response body is too large",
       });
     } finally {
       await close(server);

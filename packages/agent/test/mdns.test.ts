@@ -208,33 +208,62 @@ describe("agent mDNS", () => {
     });
     expect(registry.get("mesh", "b")?.host).toBe("artemis.local");
 
-    // IPv6 literals are never suffixed or selected as direct addresses.
-    up?.({ ...base, host: "fe80::1", addresses: ["fe80::1"] });
+    // IPv6 literals are never selected as direct addresses; the hostname is
+    // used instead. This makes the assertion distinguish the selected value.
+    up?.({ ...base, host: "artemis", addresses: ["fe80::1"] });
+    expect(registry.get("mesh", "b")?.host).toBe("artemis.local");
+
+    // A zone suffix cannot be carried inside a bracketed URL host.
+    up?.({ ...base, host: "fe80::1%en0", addresses: ["fe80::1"] });
     expect(registry.get("mesh", "b")?.host).toBe("fe80::1");
 
     // A fully-qualified SRV name can carry a trailing root label.
     up?.({ ...base, host: "artemis.", addresses: [] });
     expect(registry.get("mesh", "b")?.host).toBe("artemis.local");
 
-    // An out-of-range IPv4 must not bypass hostname resolution.
+    // Loopback, APIPA, and other junk IPv4 values must not bypass hostname
+    // resolution, and a junk address must not beat a usable one.
+    for (const address of ["127.0.0.1", "169.254.1.2", "999.999.999.999"]) {
+      up?.({ ...base, host: "artemis", addresses: [address] });
+      expect(registry.get("mesh", "b")?.host).toBe("artemis.local");
+    }
     up?.({
       ...base,
       host: "artemis",
-      addresses: ["999.999.999.999"],
+      addresses: ["127.0.0.1", "192.168.12.101"],
     });
-    expect(registry.get("mesh", "b")?.host).toBe("artemis.local");
+    expect(registry.get("mesh", "b")?.host).toBe("192.168.12.101");
 
     // An already-qualified name is left alone.
     up?.({ ...base, host: "agent.local", addresses: [] });
     expect(registry.get("mesh", "b")?.host).toBe("agent.local");
 
-    // The responder's IPv4 address is safe to use as a fallback.
+    // A usable referer wins even when addresses also contain a usable value.
     up?.({
       ...base,
-      addresses: [],
+      host: "artemis",
+      addresses: ["192.168.12.101"],
       referer: { address: "10.0.0.5" },
     });
     expect(registry.get("mesh", "b")?.host).toBe("10.0.0.5");
+
+    // No dialable address or hostname means the peer is omitted entirely.
+    up?.({
+      ...base,
+      host: "",
+      addresses: ["127.0.0.1", "169.254.1.2"],
+      txt: { id: "c", name: "C", port: "7330" },
+    });
+    expect(registry.get("mesh", "c")).toBeUndefined();
+
+    // Multi-label SRV names are already qualified and must not gain a second
+    // suffix; a usable address remains preferred when present.
+    up?.({
+      ...base,
+      host: "macbook.lan",
+      addresses: [],
+    });
+    expect(registry.get("mesh", "b")?.host).toBe("macbook.lan");
 
     await handle.stop();
   });

@@ -25,6 +25,7 @@ import type { PeerRecord } from "./registry.js";
 
 /** The default deadline for each individual HTTP request, including handshakes. */
 export const DEFAULT_CLIENT_TIMEOUT_MS = 10_000;
+const MAX_RESPONSE_BYTES = 10 * 1024 * 1024;
 
 export interface A2AClientOptions {
   /** Raw swarm key bytes. */
@@ -381,7 +382,7 @@ async function postJson(
             const buffer =
               typeof chunk === "string" ? Buffer.from(chunk) : chunk;
             size += buffer.byteLength;
-            if (size > 10 * 1024 * 1024) {
+            if (size > MAX_RESPONSE_BYTES) {
               finish(() =>
                 reject(
                   new ClientProtocolError("Peer response body is too large", {
@@ -551,6 +552,7 @@ export async function* streamSkill(
   let buffer = "";
   let dataLines: string[] = [];
   let emitted = false;
+  let rawSize = 0;
   const rawChunks: Buffer[] = [];
   const emit = (): unknown | undefined => {
     if (dataLines.length === 0) return undefined;
@@ -579,8 +581,16 @@ export async function* streamSkill(
       // !emitted fallback below, so retaining chunks an open-ended stream keeps
       // producing would grow without bound for the life of the session - the
       // server replays a session from the start, so a large session is a large
-      // leak. postJson caps a unary body at 10 MiB; this path had no cap at all.
-      if (!emitted) rawChunks.push(chunkBuffer);
+      // leak. Keep the fallback bounded like postJson's unary body.
+      if (!emitted) {
+        rawSize += chunkBuffer.byteLength;
+        if (rawSize > MAX_RESPONSE_BYTES) {
+          throw new ClientProtocolError("Peer response body is too large", {
+            status: response.statusCode ?? 0,
+          });
+        }
+        rawChunks.push(chunkBuffer);
+      }
       buffer += decoder.decode(chunkBuffer, { stream: true });
       let newline = buffer.indexOf("\n");
       while (newline !== -1) {
@@ -604,11 +614,22 @@ export async function* streamSkill(
     const value = emit();
     if (value !== undefined) yield value;
     if (!emitted) {
+      const fallbackBody = Buffer.concat(rawChunks);
+      if (fallbackBody.toString("utf8").trim() === "") {
+        throw new ClientProtocolError(
+          "Peer returned an empty stream response",
+          {
+            ...(response.statusCode === undefined
+              ? {}
+              : { status: response.statusCode }),
+          },
+        );
+      }
       const value = parseJson(
         {
           status: response.statusCode ?? 0,
           headers: response.headers,
-          body: Buffer.concat(rawChunks),
+          body: fallbackBody,
         },
         "JSON-RPC stream",
       );

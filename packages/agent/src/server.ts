@@ -32,7 +32,7 @@ import {
   verifyRequestSignature,
   type HandshakeTranscript,
 } from "@pi-mesh/protocol";
-import { ErrorCode, PiMeshError } from "@pi-mesh/shared";
+import { configuredMeshPort, ErrorCode, PiMeshError } from "@pi-mesh/shared";
 import {
   createSkillRegistry,
   servedSkills,
@@ -49,7 +49,6 @@ import { TaskStore } from "./tasks.js";
 import { loadOrCreateIdentity, type PeerIdentity } from "./identity.js";
 import { loadSwarmKey } from "./swarm-key.js";
 
-const DEFAULT_PORT = 7330;
 const MAX_REPLAY_ENTRIES = 10_000;
 const MAX_PENDING_HANDSHAKES = 1_024;
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
@@ -83,15 +82,6 @@ export interface AgentServer {
   start(): Promise<{ address: string; port: number }>;
   stop(): Promise<void>;
   agentCard(): AgentCard;
-}
-
-function configuredPort(value: number | undefined): number {
-  const port = value ?? Number(process.env.PI_MESH_PORT ?? DEFAULT_PORT);
-  if (!Number.isInteger(port) || port < 0 || port > 65535) {
-    if (value === undefined) return DEFAULT_PORT;
-    throw new RangeError("port must be an integer between 0 and 65535");
-  }
-  return port;
 }
 
 function isId(value: unknown): value is JsonRpcId {
@@ -253,7 +243,7 @@ export class HttpAgentServer implements AgentServer {
 
   constructor(options: AgentServerOptions = {}) {
     this.options = options;
-    this.port = configuredPort(options.port);
+    this.port = configuredMeshPort(options.port);
     this.host = options.host ?? "0.0.0.0";
     this.tasks = options.taskStore ?? new TaskStore();
     this.maxReplayEntries = options.maxReplayEntries ?? MAX_REPLAY_ENTRIES;

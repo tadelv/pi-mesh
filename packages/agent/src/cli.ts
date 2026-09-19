@@ -5,10 +5,10 @@ import { execFile as execFileCallback } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { homedir, hostname } from "node:os";
 import { join } from "node:path";
-import { promisify } from "node:util";
+
 import { randomUUID } from "node:crypto";
 import Bonjour from "bonjour-service";
-import { isDirectInvocation, sleep } from "@pi-mesh/shared";
+import { configuredMeshPort, isDirectInvocation, sleep } from "@pi-mesh/shared";
 import {
   browsePeers,
   type BonjourLike,
@@ -44,8 +44,6 @@ export type CliIO = {
 
 // Pi 0.85.1 is the oldest session format this milestone supports.
 export const PI_SUPPORTED_FLOOR = "0.85.1";
-const execFile = promisify(execFileCallback);
-
 const usage =
   "Usage: pi-mesh-agent keygen\n" +
   "Usage: pi-mesh-agent peers [--profile lan|public] [--watch] [--timeout seconds]\n" +
@@ -66,10 +64,18 @@ export async function run(
   }
 
   if (parsed.command === "keygen") {
+    if (parsed.args.length > 0) {
+      io.stderr.write("keygen takes no arguments\n");
+      return 2;
+    }
     io.stdout.write(`${generateSwarmKey()}\n`);
     return 0;
   }
   if (parsed.command === "peers") {
+    if (parsed.args.length > 0) {
+      io.stderr.write("peers takes no arguments\n");
+      return 2;
+    }
     return peers(
       parsed.profile,
       { watch: parsed.watch, timeoutMs: parsed.timeoutMs },
@@ -79,13 +85,19 @@ export async function run(
   try {
     if (
       parsed.profile === "public" &&
-      ["sessions", "stream", "call", "doctor"].includes(parsed.command ?? "")
+      ["start", "sessions", "stream", "call", "doctor"].includes(
+        parsed.command ?? "",
+      )
     ) {
       throw new CliUsageError(
         `The public profile cannot use ${parsed.command}; trusted control-plane discovery is not available yet`,
       );
     }
-    if (parsed.command === "start") return await start(parsed.profile, io);
+    if (parsed.command === "start") {
+      if (parsed.args.length > 0)
+        throw new CliUsageError("start takes no arguments");
+      return await start(parsed.profile, io);
+    }
     if (parsed.command === "sessions") {
       if (parsed.args.length > 0)
         throw new CliUsageError("sessions takes no arguments");
@@ -279,7 +291,7 @@ async function sessions(
     peer,
     "session.list",
     {},
-    await clientOptions(io),
+    await clientOptions(io, timeoutMs),
   );
   io.stdout.write(`${JSON.stringify(result)}\n`);
   return 0;
@@ -305,7 +317,12 @@ async function callSkill(
   }
   const peer = await discover(peerId, timeoutMs, io);
   if (peer === undefined) return 1;
-  const result = await sendSkill(peer, skill, input, await clientOptions(io));
+  const result = await sendSkill(
+    peer,
+    skill,
+    input,
+    await clientOptions(io, timeoutMs),
+  );
   io.stdout.write(`${JSON.stringify(result)}\n`);
   return 0;
 }
@@ -349,7 +366,7 @@ async function stream(
       peer,
       "session.stream",
       { id: sessionId },
-      await clientOptions(io),
+      await clientOptions(io, timeoutMs),
       abort.signal,
     );
     for await (const event of events) {
@@ -420,47 +437,76 @@ async function discover(
   }
 }
 
-async function clientOptions(io: CliIO): Promise<{
+async function clientOptions(
+  io: CliIO,
+  timeoutMs: number,
+): Promise<{
   identity: PeerIdentity;
   swarmKey: Uint8Array;
+  timeoutMs: number;
 }> {
   return {
     identity: io.identity ?? (await loadOrCreateIdentity()),
     swarmKey: io.swarmKey ?? (await loadSwarmKey()),
+    timeoutMs,
   };
 }
 
 async function doctor(io: CliIO): Promise<number> {
-  const identity = io.identity ?? (await readIdentity());
+  let identity: PeerIdentity | undefined;
+  let credentialsError: string | undefined;
+  if (io.identity !== undefined) {
+    identity = io.identity;
+  } else {
+    try {
+      identity = await readIdentity();
+    } catch (error) {
+      credentialsError = errorMessage(error);
+    }
+  }
+
   let swarmKeyPresent = io.swarmKey?.byteLength === 32;
-  if (!swarmKeyPresent) {
+  let swarmKeyError: string | undefined;
+  if (io.swarmKey !== undefined && !swarmKeyPresent) {
+    swarmKeyError = "Swarm key must be exactly 32 bytes";
+  } else if (!swarmKeyPresent && io.swarmKey === undefined) {
     try {
       await loadSwarmKey();
       swarmKeyPresent = true;
-    } catch {
-      swarmKeyPresent = false;
+    } catch (error) {
+      if (!isMissingFileError(error)) {
+        swarmKeyError = errorMessage(error);
+      }
     }
   }
+  const failed = credentialsError !== undefined || swarmKeyError !== undefined;
   io.stdout.write(
     `${JSON.stringify({
       peerId: identity?.peerId ?? null,
       name: identity?.name ?? process.env.PI_MESH_NAME ?? hostname(),
       swarmKeyPresent,
+      ...(credentialsError === undefined ? {} : { credentialsError }),
+      ...(swarmKeyError === undefined ? {} : { swarmKeyError }),
       configuredPort: configuredPort(),
       servedSkills: servedSkills(),
       piVersionFloor: PI_SUPPORTED_FLOOR,
       piVersion: await detectedPiVersion(),
     })}\n`,
   );
-  return 0;
+  return failed ? 1 : 0;
 }
 
 async function readIdentity(): Promise<PeerIdentity | undefined> {
+  const path = join(homedir(), ".pi-mesh", "credentials.json");
+  let text: string;
   try {
-    const text = await readFile(
-      join(homedir(), ".pi-mesh", "credentials.json"),
-      "utf8",
-    );
+    text = await readFile(path, "utf8");
+  } catch (error) {
+    if (isMissingFileError(error)) return undefined;
+    throw error;
+  }
+
+  try {
     const value: unknown = JSON.parse(text);
     if (
       typeof value !== "object" ||
@@ -471,30 +517,54 @@ async function readIdentity(): Promise<PeerIdentity | undefined> {
         (value as { peerId: string }).peerId,
       )
     ) {
-      return undefined;
+      throw new Error("credentials must contain a UUID peerId");
     }
     return {
       peerId: (value as { peerId: string }).peerId,
       name: process.env.PI_MESH_NAME ?? hostname(),
     };
-  } catch {
-    return undefined;
+  } catch (error) {
+    const reason = error instanceof Error ? error.message : String(error);
+    throw new Error(`Malformed identity credentials at ${path}: ${reason}`, {
+      cause: error,
+    });
   }
 }
 
 async function detectedPiVersion(): Promise<string | null> {
-  try {
-    const result = await execFile("pi", ["--version"], {
-      timeout: 2_000,
-      maxBuffer: 64 * 1024,
-    });
-    const match = `${result.stdout}\n${result.stderr}`.match(
-      /\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/,
+  return new Promise((resolve) => {
+    let settled = false;
+    const childRef: { child?: ReturnType<typeof execFileCallback> } = {};
+    const timer = setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      childRef.child?.stdout?.destroy();
+      childRef.child?.stderr?.destroy();
+      childRef.child?.kill();
+      resolve(null);
+    }, 2_500);
+    const finish = (value: string | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    childRef.child = execFileCallback(
+      "pi",
+      ["--version"],
+      { timeout: 2_000, maxBuffer: 64 * 1024 },
+      (error, stdout, stderr) => {
+        if (error !== null) {
+          finish(null);
+          return;
+        }
+        const match = `${stdout}\n${stderr}`.match(
+          /\b\d+\.\d+\.\d+(?:[-+][0-9A-Za-z.-]+)?\b/,
+        );
+        finish(match?.[0] ?? null);
+      },
     );
-    return match?.[0] ?? null;
-  } catch {
-    return null;
-  }
+  });
 }
 
 function errorMessage(error: unknown): string {
@@ -530,10 +600,7 @@ function errorExitCode(error: unknown): number {
 }
 
 function configuredPort(): number {
-  const configured = Number(process.env.PI_MESH_PORT ?? 7330);
-  return Number.isInteger(configured) && configured >= 0 && configured <= 65535
-    ? configured
-    : 7330;
+  return configuredMeshPort();
 }
 
 function parseArguments(argv: string[]):

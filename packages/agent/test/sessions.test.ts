@@ -1,5 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import { vi } from "vitest";
+
+vi.mock("node:fs/promises", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("node:fs/promises")>();
+  return { ...actual, readFile: vi.fn(actual.readFile) };
+});
+
 import {
   copyFile,
   mkdtemp,
@@ -11,6 +18,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import * as fs from "node:fs/promises";
 import {
   SessionStore,
   getSessionStorageDir,
@@ -28,6 +36,16 @@ async function installFixture(root: string, name: string): Promise<void> {
   const target = getSessionStorageDir("/synthetic/project", root);
   await mkdir(target, { recursive: true });
   await copyFile(fixture(name), join(target, `${name}.jsonl`));
+}
+
+function headerForTest(id: string): string {
+  return `${JSON.stringify({
+    type: "session",
+    version: 3,
+    id,
+    timestamp: "2024-01-01T00:00:00.000Z",
+    cwd: "/test",
+  })}\n`;
 }
 
 describe("Pi session parsing", () => {
@@ -213,6 +231,44 @@ describe("SessionStore", () => {
     await expect(store.read({ id: "/absolute/path" })).rejects.toThrow(
       "plain UUID",
     );
+  });
+
+  it("skips a session file that vanishes while finding another session", async () => {
+    const root = await testRoot();
+    const vanishedDirectory = getSessionStorageDir("/aaa", root);
+    const targetDirectory = getSessionStorageDir("/bbb", root);
+    await mkdir(vanishedDirectory, { recursive: true });
+    await mkdir(targetDirectory, { recursive: true });
+    const vanished = join(vanishedDirectory, "vanished.jsonl");
+    const target = join(targetDirectory, "target.jsonl");
+    await writeFile(
+      vanished,
+      headerForTest("123e4567-e89b-42d3-a456-426614174098"),
+    );
+    await writeFile(
+      target,
+      headerForTest("123e4567-e89b-42d3-a456-426614174097"),
+    );
+
+    const spy = vi.mocked(fs.readFile);
+    const originalReadFile = spy.getMockImplementation()!;
+    spy.mockImplementation((async (path: string | URL, ...args: unknown[]) => {
+      if (path === vanished) {
+        const error = new Error("vanished") as NodeJS.ErrnoException;
+        error.code = "ENOENT";
+        throw error;
+      }
+      return originalReadFile(path, ...(args as [never]));
+    }) as typeof fs.readFile);
+    try {
+      const store = new SessionStore({ sessionsRoot: root });
+      await expect(
+        store.read({ id: "123e4567-e89b-42d3-a456-426614174097" }),
+      ).resolves.toEqual([]);
+      expect(store.errors[0]?.message).toContain("disappeared");
+    } finally {
+      spy.mockRestore();
+    }
   });
 
   it("rejects an unknown since cursor", async () => {

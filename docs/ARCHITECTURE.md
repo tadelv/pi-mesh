@@ -43,8 +43,8 @@ with extra skills.
 ## Session model
 
 - Pi remains the source of truth for session state.
-- Agents expose `session.list`, `session.read`, `session.stream`,
-  `session.steer`, `session.abort` as A2A skills.
+- Agents expose `session.list`, `session.read`, and `session.stream` as A2A
+  skills.
 - The control plane caches snapshots in SQLite for offline viewing.
   On reconnect, it replays from the last cached **entry ID**, which is the
   cursor for a session's durable entries (ADR 0006's sibling decision; see

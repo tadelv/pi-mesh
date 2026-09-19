@@ -45,16 +45,31 @@ Each skill also declares its **exposure**:
 | `session.list` | peer | `{}` | `{ sessions: SessionSummary[] }` |
 | `session.read` | peer | `{ id, since? }` | `{ entries: Event[] }` |
 | `session.stream` | peer | `{ id }` | SSE stream of `Event` |
-| `session.steer` | **not served in M1** | `{ id, message }` | `{ accepted: boolean }` |
-| `session.abort` | **not served in M1** | `{ id }` | `{ stopped: boolean }` |
-| `process.spawn` | **not served in M1** | `{ project, cwd, argv? }` | `{ pid, session_id }` |
-| `process.stop` | **not served in M1** | `{ pid, grace_ms? }` | `{ stopped: boolean }` |
+| `session.steer` | **gated in M2** | `{ id, message }` | `{ accepted: boolean }` |
+| `session.abort` | peer | `{ id }` | `{ stopped: boolean }` |
+| `process.spawn` | **gated in M2** | `{ project, cwd? }` | `{ job_id, pid, session_id }` |
+| `process.stop` | **gated in M2** | `{ job_id, grace_ms? }` | `{ stopped: boolean }` |
 | `mesh.handoff` | **not served in M1** | `HandoffPayload` | `{ task_id }` |
 
 A peer exposure means the skill is reachable by any swarm member, and never
-means unauthenticated: every request carries a proof (below). Process and
-steering skills are withheld until milestone 2 defines a spawn policy; see
-ADR 0006.
+means unauthenticated: every request carries a proof (below).
+
+**Gated** means reachable only from a peer the machine has explicitly allowed
+to execute, and refused with `-32003` otherwise; see ADR 0008. Two details of
+the shapes above are load-bearing:
+
+- `process.spawn` takes **no `argv`**. The server constructs the command line;
+a remote caller chooses a project, not a program. Peer-chosen argv could
+change the provider, the session directory, or which extensions load.
+- `process.stop` takes a **mesh job id**, never a bare PID. The agent stops only
+jobs it started and still tracks, so a peer cannot signal arbitrary processes
+on the machine. `cwd`, when given, must resolve inside the configured
+workspace root.
+
+Steering is gated with spawning because injected prompts cause tool
+execution. Stopping is not gated: `session.abort` and `process.stop` are
+allowed to any member, since reducing activity cannot be the more dangerous
+operation.
 
 ## Skill invocation
 

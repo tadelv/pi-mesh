@@ -37,8 +37,9 @@ with extra skills.
 - Streaming uses SSE (`message/stream`).
 - The control plane connects to agents the same way any peer does —
   there is no privileged channel.
-- Agents serve read-only skills in v1. Process and steering skills are
-  withheld until a spawn policy exists (ADR 0006).
+- Agents serve read-only skills in v1. Process and steering skills are gated
+  on an explicit per-machine opt-in and denied by default (ADR 0008); the
+  spawn policy is what ADR 0006 deferred.
 
 ## Session model
 

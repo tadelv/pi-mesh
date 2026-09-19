@@ -65,8 +65,24 @@ may read this agent's session list, session content, and live session
 streams.** That follows from the shared-key model, and it is stated here
 rather than left to be discovered.
 
-Process control and steering are *not* part of that grant in v1. They are not
-served to peers at all until a spawn policy exists (ADR 0006).
+**It does not grant execution.** Process control and steering are a separate,
+larger grant that each machine makes locally (ADR 0008): `process.spawn` and
+`session.steer` are denied by default and refused with `-32003` unless the
+machine has explicitly allowed that peer to execute. A stolen swarm key
+should therefore yield read access, not code execution.
+
+That distinction is not conservatism about peers. Pi is not a sandbox - its
+`security.md` says so directly: built-in tools read, write, edit and run shell
+commands *"with the permissions of the pi process"*, and project trust *"is
+not a sandbox and it does not restrict what the model can ask tools to do"*.
+A spawned Pi is therefore arbitrary code execution as the agent's user. The
+key is a file on every member, so treating membership as authority to execute
+would mean compromising the least-maintained device yields code execution on
+the most valuable one.
+
+Stopping is deliberately ungated: `session.abort`, and `process.stop` for a
+job the agent started, are allowed to any member. `process.stop` never accepts
+a bare PID, so a peer cannot signal arbitrary processes.
 
 ## Pairing with the control plane
 

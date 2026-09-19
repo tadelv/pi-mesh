@@ -96,11 +96,11 @@ which is what a call actually connects to:
 ```json
 [{"id":"9f2c1b84-...","name":"agent-a","serviceType":"mesh","host":"192.168.1.11","port":7330,
   "txt":{"id":"9f2c1b84-...","name":"agent-a","version":"0.0.0","agent_version":"0.0.0",
-  "port":"7330","fp":"unpaired","caps":"mesh.peers,session.list,session.read,session.stream"},
+  "port":"7330","caps":"mesh.peers,session.list,session.read,session.stream"},
   "lastSeen":1789659594836},
  {"id":"70faf7ea-...","name":"agent-b","serviceType":"mesh","host":"192.168.1.12","port":7330,
   "txt":{"id":"70faf7ea-...","name":"agent-b","version":"0.0.0","agent_version":"0.0.0",
-  "port":"7330","fp":"unpaired","caps":"mesh.peers,session.list,session.read,session.stream"},
+  "port":"7330","caps":"mesh.peers,session.list,session.read,session.stream"},
   "lastSeen":1789659594876}]
 ```
 

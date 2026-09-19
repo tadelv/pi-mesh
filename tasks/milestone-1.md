@@ -259,3 +259,37 @@ finish; reconnect requires a fresh request.
   types.
 - ADRs 0006 and 0007 written.
 - No open `TODO`s in `packages/`.
+
+## Verification record
+
+Run across two real hosts on one L2 subnet, not two agents on one machine:
+
+| | machine A | machine B |
+|---|---|---|
+| host | macOS, `192.168.12.100` | Raspberry Pi, Debian 13 (trixie), aarch64, `devpi.local` = `192.168.12.108` |
+| interface | `en0` | `wlan0` |
+| Pi | 0.85.1 | 0.85.1 |
+| Node | 22 | 22.23.2 |
+| swarm key | mode 0600, `sha256 c8424311617d0e85…` | same key, mode 0600 |
+
+The full suite was run on machine B as well as in CI: **137 tests pass on
+aarch64**, installed with the pinned `pnpm@9.12.0` via corepack.
+
+From machine A, over real mDNS and authenticated with the shared swarm key:
+
+- `peers` discovered `devpi` at `192.168.12.108:7330` with the four
+  advertised read-only capabilities.
+- `session.list` returned machine B's **own** session store
+  (`/home/vid`, `/home/vid/bengle-tapkit`, `/home/vid/uprint/client`).
+- `session.read` returned 47 entries from a live session on machine B.
+- `session.stream` returned SSE frames
+  (`TASK_STATE_WORKING` followed by an A2A message).
+- Error paths, exercised across the network: an unserved skill returns
+  `-32004` (exit 12), an unknown session `-32101` (exit 12), and an
+  undiscoverable peer exits 1.
+
+This is the one property that could not be established on a single machine:
+two agents sharing a `HOME` parent validate the protocol, the authentication
+and the skills, but cannot validate **discovery**. Note that machine B's
+login shell is `fish`, which is why the setup commands in `docs/DEMO.md` are
+written to behave identically under `sh`, `bash`, `zsh` and `fish`.

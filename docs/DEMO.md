@@ -39,7 +39,8 @@ On machine A:
 
 ```sh
 mkdir -p ~/.pi-mesh
-(umask 077 && node packages/agent/dist/cli.js keygen > ~/.pi-mesh/swarm.key)
+node packages/agent/dist/cli.js keygen > ~/.pi-mesh/swarm.key
+chmod 600 ~/.pi-mesh/swarm.key
 scp ~/.pi-mesh/swarm.key B:~/.pi-mesh/swarm.key
 ```
 
@@ -51,13 +52,24 @@ stat -f '%Lp' ~/.pi-mesh/swarm.key # macOS: expect 600
 stat -c '%a'  ~/.pi-mesh/swarm.key # Linux: expect 600
 ```
 
-The `umask 077` matters: a bare `>` creates the file `0644`, and the loader
-refuses anything with group or other access. That refusal is the feature
-working, not a bug:
+The explicit `chmod 600` matters: a bare `>` creates the file `0644`, and the
+loader refuses anything with group or other access. That refusal is the
+feature working, not a bug:
+
+> **Why `chmod` rather than `umask 077`.** These blocks must run under any
+> login shell. In POSIX shells `( ... )` is a subshell, but in **fish** it is
+> command substitution, so a `(umask 077 && node ... > key)` one-liner silently
+> does something else there. Every command above behaves identically in
+> `sh`, `bash`, `zsh` and `fish`.
 
 ```
 Swarm key at /home/you/.pi-mesh/swarm.key has insecure permissions: mode 0644, expected 0600
 ```
+
+Note that `scp ... B:...` reaches machine B through *your* login shell on B, so
+if B's shell is not POSIX (fish is common on Raspberry Pis and Debian), prefer
+`scp` to an explicit path and run the `chmod`/`stat` yourself. Copying a
+32-byte key is the one step that must not be done over the mesh itself.
 
 ## 3. Start an agent on each machine
 

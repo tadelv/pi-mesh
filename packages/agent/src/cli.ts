@@ -11,13 +11,17 @@ import {
 } from "./mdns.js";
 import { PeerRegistry, type PeerRecord } from "./registry.js";
 import { generateSwarmKey, loadSwarmKey } from "./swarm-key.js";
-import { loadOrCreateIdentity } from "./identity.js";
+import { loadOrCreateIdentity, type PeerIdentity } from "./identity.js";
+import { createAgentServer } from "./server.js";
+import { servedSkills } from "./skills.js";
 
 export type CliIO = {
   stdout: Pick<NodeJS.WritableStream, "write">;
   stderr: Pick<NodeJS.WritableStream, "write">;
   bonjour?: BonjourLike;
   registry?: PeerRegistry;
+  identity?: PeerIdentity;
+  swarmKey?: Uint8Array;
 };
 
 const usage =
@@ -102,7 +106,7 @@ async function start(profile: NetworkProfile, io: CliIO): Promise<number> {
   let swarmKey: Uint8Array | undefined;
   if (profile === "lan") {
     try {
-      swarmKey = await loadSwarmKey();
+      swarmKey = io.swarmKey ?? (await loadSwarmKey());
     } catch (error) {
       if (!isMissingFileError(error)) {
         const message = error instanceof Error ? error.message : String(error);
@@ -115,41 +119,62 @@ async function start(profile: NetworkProfile, io: CliIO): Promise<number> {
   const registry = io.registry ?? new PeerRegistry();
   const bonjour =
     profile === "public" ? undefined : (io.bonjour ?? new Bonjour());
+  let server: Awaited<ReturnType<typeof createAgentServer>> | undefined;
+  let advertisement: Awaited<ReturnType<typeof publishAgent>> | undefined;
+  let browser: ReturnType<typeof browsePeers> | undefined;
   try {
-    // Advertise the SAME peer id the listener authenticates as. The
-    // advertisement used to publish hostname() while the server substituted its
-    // credentials UUID as the request recipient, so a peer that learned the
-    // recipient from mDNS - the documented primary source - signed a value the
-    // server would never accept and failed every request with no diagnostic.
-    // The display name stays separate.
-    const identity = await loadOrCreateIdentity();
-    await publishAgent(
-      {
-        id: process.env.PI_MESH_ID ?? identity.peerId,
-        name: process.env.PI_MESH_NAME ?? identity.name,
-        version: process.env.PI_MESH_VERSION ?? "0.0.0",
-        agentVersion: process.env.PI_MESH_AGENT_VERSION ?? "0.0.0",
+    // The listener and advertisement must use the same identity and port. A
+    // peer learns both from mDNS and signs requests addressed to that identity.
+    const identity = io.identity ?? (await loadOrCreateIdentity());
+    if (swarmKey !== undefined) {
+      server = createAgentServer({
         port: configuredPort(),
-        fingerprint: process.env.PI_MESH_FINGERPRINT ?? "unpaired",
-        capabilities: [],
-      },
-      {
-        profile,
-        ...(swarmKey === undefined ? {} : { swarmKey }),
-        ...(bonjour === undefined ? {} : { bonjour }),
-      },
-    );
+        swarmKey,
+        identity,
+        registry,
+      });
+      const listening = await server.start();
+      advertisement = await publishAgent(
+        {
+          id: identity.peerId,
+          name: process.env.PI_MESH_NAME ?? identity.name,
+          version: process.env.PI_MESH_VERSION ?? "0.0.0",
+          agentVersion: process.env.PI_MESH_AGENT_VERSION ?? "0.0.0",
+          port: listening.port,
+          fingerprint: process.env.PI_MESH_FINGERPRINT ?? "unpaired",
+          capabilities: servedSkills(),
+        },
+        {
+          profile,
+          swarmKey,
+          ...(bonjour === undefined ? {} : { bonjour }),
+        },
+      );
+    }
 
-    const browser = browsePeers(registry, {
+    browser = browsePeers(registry, {
       profile,
       ...(bonjour === undefined ? {} : { bonjour }),
       onPeer: (peer: PeerRecord) =>
         io.stdout.write(`${JSON.stringify(peer)}\n`),
     });
 
+    const cleanup = async (): Promise<void> => {
+      const results = await Promise.allSettled([
+        browser?.stop(),
+        advertisement?.stop(),
+        server?.stop(),
+      ]);
+      const failure = results.find(
+        (result): result is PromiseRejectedResult =>
+          result.status === "rejected",
+      );
+      if (failure !== undefined) throw failure.reason;
+    };
+
     return await new Promise<number>((resolveExit) => {
       process.once("SIGINT", () => {
-        void browser.stop().then(
+        void cleanup().then(
           () => resolveExit(0),
           () => resolveExit(1),
         );
@@ -158,6 +183,11 @@ async function start(profile: NetworkProfile, io: CliIO): Promise<number> {
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     io.stderr.write(`Failed to start agent: ${message}\n`);
+    await Promise.allSettled([
+      browser?.stop(),
+      advertisement?.stop(),
+      server?.stop(),
+    ]);
     return 1;
   }
 }

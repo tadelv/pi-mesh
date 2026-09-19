@@ -9,6 +9,7 @@ import { A2A_FIELDS } from "@pi-mesh/protocol";
 import {
   createAgentServer,
   getSessionStorageDir,
+  servedSkills,
   signedHeaders,
   sessionStream,
   type SessionStream,
@@ -109,6 +110,49 @@ async function fixtureRoot(): Promise<string> {
     `${JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: "2024-01-01T00:00:00Z", cwd: "/fixture/project" })}\n${JSON.stringify({ type: "message", id: "entry-1", parentId: null, timestamp: "2024-01-01T00:00:01Z", message: { role: "user", content: "hello" } })}\n`,
   );
   return root;
+}
+
+function streamCall(port: number, body: unknown): Promise<HttpResult> {
+  const text = JSON.stringify(body);
+  const headers = signedHeaders(testKey, testIdentity, {
+    method: "POST",
+    path: "/",
+    recipientPeerId: testIdentity.peerId,
+    body: text,
+  });
+  return new Promise((resolve, reject) => {
+    const client = request(
+      {
+        host: "127.0.0.1",
+        port,
+        method: "POST",
+        path: "/",
+        headers: {
+          "A2A-Version": "1.0",
+          "content-type": "application/json",
+          connection: "close",
+          ...headers,
+        },
+      },
+      (response) => {
+        response.once("error", () => undefined);
+        response.once("data", (chunk: Buffer) => {
+          resolve({
+            status: response.statusCode ?? 0,
+            headers: response.headers,
+            body: chunk.toString("utf8"),
+          });
+          client.destroy();
+        });
+      },
+    );
+    client.once("error", (error) => {
+      if ((error as NodeJS.ErrnoException).code !== "ECONNRESET") {
+        reject(error);
+      }
+    });
+    client.end(text);
+  });
 }
 
 function call(
@@ -218,6 +262,59 @@ describe("A2A HTTP server", () => {
       expect(
         JSON.parse(result.body).result.message.parts[0].data.result.sessions,
       ).toHaveLength(1);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("advertises and serves only the read-only M1 skills", async () => {
+    const root = await fixtureRoot();
+    const server = createAgentServer({
+      port: 0,
+      sessionsRoot: root,
+      swarmKey: testKey,
+      identity: testIdentity,
+    });
+    const address = await server.start();
+    try {
+      const card = JSON.parse((await httpCall(address.port)).body) as {
+        skills: { id: string }[];
+      };
+      const advertised = card.skills.map((skill) => skill.id).sort();
+      expect(advertised).toEqual([...servedSkills()].sort());
+
+      for (const skill of advertised) {
+        if (skill === "session.stream") {
+          const response = await streamCall(address.port, {
+            ...call(skill, { id: sessionId }),
+            method: "message/stream",
+          });
+          expect(response.status).toBe(200);
+          expect(response.body).toContain('"task"');
+          continue;
+        }
+        const response = await httpCallWith(
+          address.port,
+          call(skill, skill === "session.read" ? { id: sessionId } : {}),
+          {
+            "A2A-Version": "1.0",
+          },
+        );
+        expect(JSON.parse(response.body).error).toBeUndefined();
+      }
+
+      for (const skill of [
+        "process.spawn",
+        "process.stop",
+        "session.steer",
+        "session.abort",
+        "mesh.handoff",
+      ]) {
+        const response = await httpCallWith(address.port, call(skill), {
+          "A2A-Version": "1.0",
+        });
+        expect(JSON.parse(response.body).error.code).toBe(-32004);
+      }
     } finally {
       await server.stop();
     }
@@ -370,5 +467,59 @@ describe("A2A HTTP server", () => {
         "",
       );
     }
+  });
+
+  it("still stops while a peer holds a stream open", async () => {
+    // The sibling test above aborts the client, which is exactly what hid this:
+    // server.close() only stops accepting and then WAITS for existing sockets, so
+    // a peer that simply holds an SSE stream open blocked stop() forever and a
+    // running agent could not be shut down at all. This stream is deliberately
+    // never aborted.
+    const root = await fixtureRoot();
+    const server = createAgentServer({
+      port: 0,
+      sessionsRoot: root,
+      swarmKey: testKey,
+      identity: testIdentity,
+    });
+    const address = await server.start();
+    const streamBody = JSON.stringify({
+      ...call("session.stream", { id: sessionId }),
+      method: "message/stream",
+    });
+    const client = request({
+      host: "127.0.0.1",
+      port: address.port,
+      method: "POST",
+      path: "/",
+      headers: {
+        "A2A-Version": "1.0",
+        "content-type": "application/json",
+        connection: "close",
+        ...signedHeaders(testKey, testIdentity, {
+          method: "POST",
+          path: "/",
+          recipientPeerId: testIdentity.peerId,
+          body: streamBody,
+        }),
+      },
+    });
+    await new Promise<void>((resolve, reject) => {
+      client.on("response", (response) =>
+        response.once("data", () => resolve()),
+      );
+      client.on("error", reject);
+      client.end(streamBody);
+    });
+
+    // The stream is open and un-aborted, so this is the shutdown that used to hang.
+    const outcome = await Promise.race([
+      server.stop().then(() => "stopped"),
+      new Promise<string>((resolve) =>
+        setTimeout(() => resolve("hung"), 3_000).unref(),
+      ),
+    ]);
+    client.destroy();
+    expect(outcome).toBe("stopped");
   });
 });

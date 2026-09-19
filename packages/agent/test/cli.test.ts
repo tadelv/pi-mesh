@@ -1,8 +1,28 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import { mkdtemp, readdir } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { run } from "../src/cli.js";
-import { PeerRegistry } from "../src/index.js";
+import { PeerRegistry, servedSkills, type BonjourLike } from "../src/index.js";
+
+class FakeBonjour implements BonjourLike {
+  readonly published: { txt: Record<string, string>; port: number }[] = [];
+  destroyed = false;
+
+  publish(options: { txt: Record<string, string>; port: number }): void {
+    this.published.push(options);
+  }
+
+  find(): { stop(): void } {
+    return { stop: () => undefined };
+  }
+
+  destroy(): void {
+    this.destroyed = true;
+  }
+}
 
 function output() {
   let stdout = "";
@@ -82,5 +102,52 @@ describe("agent CLI", () => {
 
     const { stdout } = captured.read();
     expect(JSON.parse(stdout)).toEqual([]);
+  });
+
+  it("starts the listener and advertises exactly its served skills", async () => {
+    const home = await mkdtemp(join(tmpdir(), "pi-mesh-cli-"));
+    const bonjour = new FakeBonjour();
+    const captured = output();
+    const oldHome = process.env.HOME;
+    const oldPort = process.env.PI_MESH_PORT;
+    process.env.HOME = home;
+    process.env.PI_MESH_PORT = "47931";
+    try {
+      const running = run(["start"], {
+        ...captured.io,
+        bonjour,
+        identity: {
+          peerId: "22222222-2222-4222-8222-222222222222",
+          name: "agent",
+        },
+        swarmKey: Buffer.alloc(32, 7),
+      });
+      for (
+        let attempt = 0;
+        attempt < 100 && bonjour.published.length === 0;
+        attempt += 1
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      expect(bonjour.published).toHaveLength(1);
+      const capabilities = bonjour.published[0]?.txt.caps?.split(",").sort();
+      expect(capabilities).toEqual([...servedSkills()].sort());
+      const cardResponse = await fetch(
+        "http://127.0.0.1:47931/.well-known/agent-card.json",
+      );
+      const card = (await cardResponse.json()) as {
+        skills: { id: string }[];
+      };
+      expect(capabilities).toEqual(card.skills.map((skill) => skill.id).sort());
+      process.emit("SIGINT");
+      await expect(running).resolves.toBe(0);
+      expect(bonjour.destroyed).toBe(true);
+      await expect(readdir(home)).resolves.toEqual([]);
+    } finally {
+      if (oldHome === undefined) delete process.env.HOME;
+      else process.env.HOME = oldHome;
+      if (oldPort === undefined) delete process.env.PI_MESH_PORT;
+      else process.env.PI_MESH_PORT = oldPort;
+    }
   });
 });

@@ -1,14 +1,19 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import { mkdir, mkdtemp, writeFile } from "node:fs/promises";
 import { createServer, type Server } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { computeHandshakeHmac, encodeTranscript } from "@pi-mesh/protocol";
 import { describe, expect, it } from "vitest";
 import { ErrorCode, PiMeshError } from "@pi-mesh/shared";
 import {
   createAgentServer,
+  getSessionStorageDir,
   handshake,
   call,
   sendSkill,
+  PeerRegistry,
   ClientProtocolError,
   PeerIdentityMismatchError,
   PeerUnreachableError,
@@ -104,7 +109,60 @@ describe("A2A client", () => {
     }
   });
 
-  it("handshakes with a live peer and returns a real skill result", async () => {
+  it("handshakes with a live peer and returns its real mesh and session data", async () => {
+    const root = await mkdtemp(join(tmpdir(), "pi-mesh-client-"));
+    const directory = getSessionStorageDir("/agent-b/project", root);
+    await mkdir(directory, { recursive: true });
+    await writeFile(
+      join(directory, "session.jsonl"),
+      `${JSON.stringify({ type: "session", version: 3, id: "123e4567-e89b-42d3-a456-426614174099", timestamp: "2024-01-01T00:00:00Z", cwd: "/agent-b/project" })}\n`,
+    );
+    const registry = new PeerRegistry();
+    registry.add({
+      id: clientIdentity.peerId,
+      name: clientIdentity.name,
+      serviceType: "mesh",
+      host: "agent-a.local",
+      port: 7330,
+      txt: { id: clientIdentity.peerId },
+    });
+    const server = createAgentServer({
+      port: 0,
+      swarmKey: key,
+      identity: serverIdentity,
+      sessionsRoot: root,
+      registry,
+    });
+    const address = await server.start();
+    try {
+      const remote = peer(address.port);
+      await expect(handshake(remote, options())).resolves.toBe(remote.id);
+      await expect(
+        sendSkill(remote, "mesh.peers", {}, options()),
+      ).resolves.toEqual({
+        peers: [
+          expect.objectContaining({
+            id: clientIdentity.peerId,
+            host: "agent-a.local",
+          }),
+        ],
+      });
+      await expect(
+        sendSkill(remote, "session.list", {}, options()),
+      ).resolves.toEqual({
+        sessions: [
+          expect.objectContaining({
+            id: "123e4567-e89b-42d3-a456-426614174099",
+            project: "/agent-b/project",
+          }),
+        ],
+      });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("refuses every M1-unserved skill with A2A UnsupportedOperationError", async () => {
     const server = createAgentServer({
       port: 0,
       swarmKey: key,
@@ -113,13 +171,21 @@ describe("A2A client", () => {
     });
     const address = await server.start();
     try {
-      const remote = peer(address.port);
-      await expect(handshake(remote, options())).resolves.toBe(remote.id);
-      await expect(
-        sendSkill(remote, "session.list", {}, options()),
-      ).resolves.toEqual({
-        sessions: [],
-      });
+      for (const skill of [
+        "process.spawn",
+        "process.stop",
+        "session.steer",
+        "session.abort",
+        "mesh.handoff",
+      ]) {
+        await expect(
+          sendSkill(peer(address.port), skill, {}, options()),
+        ).rejects.toSatisfy((error: unknown) => {
+          expect(error).toBeInstanceOf(PiMeshError);
+          expect(error).toHaveProperty("code", -32004);
+          return true;
+        });
+      }
     } finally {
       await server.stop();
     }

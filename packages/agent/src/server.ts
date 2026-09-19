@@ -306,6 +306,12 @@ export class HttpAgentServer implements AgentServer {
       this.server.close((error) =>
         error === undefined ? resolve() : reject(error),
       );
+      // close() only stops accepting and then waits for existing sockets, so a
+      // peer holding an SSE stream open would block this forever and an agent
+      // could never be shut down while someone was streaming from it. Ending
+      // the sockets here also fires the request 'close' handler, which stops
+      // the underlying SessionStream.
+      this.server.closeAllConnections();
     });
     this.listening = false;
     this.actualPort = undefined;

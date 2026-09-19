@@ -575,7 +575,12 @@ export async function* streamSkill(
     for await (const chunk of response) {
       const chunkBuffer =
         typeof chunk === "string" ? Buffer.from(chunk) : chunk;
-      rawChunks.push(chunkBuffer);
+      // Only while nothing has been emitted. rawChunks exists solely for the
+      // !emitted fallback below, so retaining chunks an open-ended stream keeps
+      // producing would grow without bound for the life of the session - the
+      // server replays a session from the start, so a large session is a large
+      // leak. postJson caps a unary body at 10 MiB; this path had no cap at all.
+      if (!emitted) rawChunks.push(chunkBuffer);
       buffer += decoder.decode(chunkBuffer, { stream: true });
       let newline = buffer.indexOf("\n");
       while (newline !== -1) {

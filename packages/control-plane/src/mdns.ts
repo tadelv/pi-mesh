@@ -4,7 +4,6 @@ import Bonjour from "bonjour-service";
 import {
   SERVICE_TYPE_CONTROL,
   TXT_KEY_API_VERSION,
-  TXT_KEY_FINGERPRINT,
   TXT_KEY_ID,
   TXT_KEY_NAME,
   TXT_KEY_PORT,
@@ -16,7 +15,6 @@ import {
 export {
   SERVICE_TYPE_CONTROL,
   TXT_KEY_API_VERSION,
-  TXT_KEY_FINGERPRINT,
   TXT_KEY_ID,
   TXT_KEY_NAME,
   TXT_KEY_PORT,
@@ -31,7 +29,6 @@ export interface ControlPlaneService {
   version: string;
   apiVersion: string;
   port: number;
-  fingerprint: string;
 }
 
 export interface BonjourPublishOptions {
@@ -55,7 +52,6 @@ export function buildControlTxtRecord(
     [TXT_KEY_VERSION]: service.version,
     [TXT_KEY_API_VERSION]: service.apiVersion,
     [TXT_KEY_PORT]: String(service.port),
-    [TXT_KEY_FINGERPRINT]: service.fingerprint,
   });
 }
 

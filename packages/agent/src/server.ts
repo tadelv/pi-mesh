@@ -88,6 +88,7 @@ export interface AgentServer {
 function configuredPort(value: number | undefined): number {
   const port = value ?? Number(process.env.PI_MESH_PORT ?? DEFAULT_PORT);
   if (!Number.isInteger(port) || port < 0 || port > 65535) {
+    if (value === undefined) return DEFAULT_PORT;
     throw new RangeError("port must be an integer between 0 and 65535");
   }
   return port;

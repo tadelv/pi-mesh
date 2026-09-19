@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import { execFile as execFileCallback } from "node:child_process";
-import { stat } from "node:fs/promises";
-import { homedir } from "node:os";
+import { readFile } from "node:fs/promises";
+import { homedir, hostname } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
@@ -50,9 +50,9 @@ const usage =
   "Usage: pi-mesh-agent keygen\n" +
   "Usage: pi-mesh-agent peers [--profile lan|public] [--watch] [--timeout seconds]\n" +
   "Usage: pi-mesh-agent start [--profile lan|public]\n" +
-  "Usage: pi-mesh-agent sessions [--peer id]\n" +
-  "Usage: pi-mesh-agent stream <session> [--peer id]\n" +
-  "Usage: pi-mesh-agent call <peer> <skill> [json]\n" +
+  "Usage: pi-mesh-agent sessions [--peer id] [--timeout seconds]\n" +
+  "Usage: pi-mesh-agent stream <session> [--peer id] [--timeout seconds]\n" +
+  "Usage: pi-mesh-agent call <peer> <skill> [json] [--timeout seconds]\n" +
   "Usage: pi-mesh-agent doctor\n";
 
 export async function run(
@@ -77,20 +77,30 @@ export async function run(
     );
   }
   try {
+    if (
+      parsed.profile === "public" &&
+      ["sessions", "stream", "call", "doctor"].includes(parsed.command ?? "")
+    ) {
+      throw new CliUsageError(
+        `The public profile cannot use ${parsed.command}; trusted control-plane discovery is not available yet`,
+      );
+    }
     if (parsed.command === "start") return await start(parsed.profile, io);
     if (parsed.command === "sessions") {
       if (parsed.args.length > 0)
-        throw new Error("sessions takes no arguments");
+        throw new CliUsageError("sessions takes no arguments");
       return await sessions(parsed.peer, parsed.timeoutMs, io);
     }
     if (parsed.command === "stream") {
       if (parsed.args.length !== 1)
-        throw new Error("stream requires a session id");
+        throw new CliUsageError("stream requires a session id");
       return await stream(parsed.args[0]!, parsed.peer, parsed.timeoutMs, io);
     }
     if (parsed.command === "call") {
       if (parsed.args.length < 2 || parsed.args.length > 3) {
-        throw new Error("call requires a peer, skill, and optional JSON input");
+        throw new CliUsageError(
+          "call requires a peer, skill, and optional JSON input",
+        );
       }
       return await callSkill(
         parsed.args[0]!,
@@ -102,7 +112,7 @@ export async function run(
     }
     if (parsed.command === "doctor") {
       if (parsed.args.length > 0 || parsed.peer !== undefined) {
-        throw new Error("doctor takes no arguments");
+        throw new CliUsageError("doctor takes no arguments");
       }
       return await doctor(io);
     }
@@ -197,7 +207,6 @@ async function start(profile: NetworkProfile, io: CliIO): Promise<number> {
           version: process.env.PI_MESH_VERSION ?? "0.0.0",
           agentVersion: process.env.PI_MESH_AGENT_VERSION ?? "0.0.0",
           port: listening.port,
-          fingerprint: process.env.PI_MESH_FINGERPRINT ?? "unpaired",
           capabilities: servedSkills(),
         },
         {
@@ -288,7 +297,7 @@ async function callSkill(
     try {
       input = JSON.parse(encodedInput) as unknown;
     } catch (error) {
-      throw new Error(
+      throw new CliUsageError(
         `Invalid JSON input: ${error instanceof Error ? error.message : String(error)}`,
         { cause: error },
       );
@@ -375,6 +384,15 @@ async function discover(
   const bonjour = io.bonjour ?? new Bonjour();
   const browser = browsePeers(registry, { bonjour });
   const deadline = Date.now() + timeoutMs;
+  let onAbort: (() => void) | undefined;
+  const abortPromise =
+    signal === undefined
+      ? undefined
+      : new Promise<void>((resolve) => {
+          const abort = (): void => resolve();
+          onAbort = abort;
+          signal.addEventListener("abort", abort, { once: true });
+        });
   try {
     for (;;) {
       registry.prune();
@@ -388,14 +406,16 @@ async function discover(
         );
         return undefined;
       }
-      await Promise.race([
-        sleep(Math.min(100, remaining)),
-        new Promise<void>((resolve) =>
-          signal?.addEventListener("abort", () => resolve(), { once: true }),
-        ),
-      ]);
+      await Promise.race(
+        abortPromise === undefined
+          ? [sleep(Math.min(100, remaining))]
+          : [sleep(Math.min(100, remaining)), abortPromise],
+      );
     }
   } finally {
+    if (signal !== undefined && onAbort !== undefined) {
+      signal.removeEventListener("abort", onAbort);
+    }
     await browser.stop();
   }
 }
@@ -411,16 +431,22 @@ async function clientOptions(io: CliIO): Promise<{
 }
 
 async function doctor(io: CliIO): Promise<number> {
-  const identity = io.identity ?? (await loadOrCreateIdentity());
-  const swarmKeyPresent =
-    io.swarmKey !== undefined ||
-    (await filePresent(join(homedir(), ".pi-mesh", "swarm.key")));
+  const identity = io.identity ?? (await readIdentity());
+  let swarmKeyPresent = io.swarmKey?.byteLength === 32;
+  if (!swarmKeyPresent) {
+    try {
+      await loadSwarmKey();
+      swarmKeyPresent = true;
+    } catch {
+      swarmKeyPresent = false;
+    }
+  }
   io.stdout.write(
     `${JSON.stringify({
-      peerId: identity.peerId,
-      name: identity.name,
+      peerId: identity?.peerId ?? null,
+      name: identity?.name ?? process.env.PI_MESH_NAME ?? hostname(),
       swarmKeyPresent,
-      port: configuredPort(),
+      configuredPort: configuredPort(),
       servedSkills: servedSkills(),
       piVersionFloor: PI_SUPPORTED_FLOOR,
       piVersion: await detectedPiVersion(),
@@ -429,12 +455,30 @@ async function doctor(io: CliIO): Promise<number> {
   return 0;
 }
 
-async function filePresent(path: string): Promise<boolean> {
+async function readIdentity(): Promise<PeerIdentity | undefined> {
   try {
-    await stat(path);
-    return true;
+    const text = await readFile(
+      join(homedir(), ".pi-mesh", "credentials.json"),
+      "utf8",
+    );
+    const value: unknown = JSON.parse(text);
+    if (
+      typeof value !== "object" ||
+      value === null ||
+      Array.isArray(value) ||
+      typeof (value as { peerId?: unknown }).peerId !== "string" ||
+      !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(
+        (value as { peerId: string }).peerId,
+      )
+    ) {
+      return undefined;
+    }
+    return {
+      peerId: (value as { peerId: string }).peerId,
+      name: process.env.PI_MESH_NAME ?? hostname(),
+    };
   } catch {
-    return false;
+    return undefined;
   }
 }
 
@@ -472,6 +516,7 @@ function errorMessage(error: unknown): string {
 }
 
 function errorExitCode(error: unknown): number {
+  if (error instanceof CliUsageError) return 2;
   if (error instanceof PeerUnreachableError) return 10;
   if (
     error instanceof PeerIdentityMismatchError ||
@@ -486,7 +531,7 @@ function errorExitCode(error: unknown): number {
 
 function configuredPort(): number {
   const configured = Number(process.env.PI_MESH_PORT ?? 7330);
-  return Number.isInteger(configured) && configured > 0 && configured <= 65535
+  return Number.isInteger(configured) && configured >= 0 && configured <= 65535
     ? configured
     : 7330;
 }
@@ -545,6 +590,8 @@ function parseArguments(argv: string[]):
     : undefined;
 }
 
+class CliUsageError extends Error {}
+
 function isMissingFileError(error: unknown): boolean {
   if (error instanceof Error && "cause" in error) {
     return isMissingFileError(error.cause);
@@ -574,7 +621,6 @@ function exitQuietlyOnEpipe(stream: NodeJS.WriteStream): void {
 
 if (isDirectInvocation(import.meta.url, process.argv[1])) {
   exitQuietlyOnEpipe(process.stdout);
-  exitQuietlyOnEpipe(process.stderr);
   void run(process.argv.slice(2)).then((exitCode) => {
     process.exitCode = exitCode;
   });

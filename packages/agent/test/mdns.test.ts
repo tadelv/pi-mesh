@@ -62,7 +62,6 @@ const descriptor = {
   version: "1.0.0",
   agentVersion: "0.0.0",
   port: 7330,
-  fingerprint: "fp-1",
   capabilities: ["mesh.peers", "session.list"],
 };
 
@@ -86,7 +85,6 @@ describe("agent mDNS", () => {
           version: "1.0.0",
           agent_version: "0.0.0",
           port: "7330",
-          fp: "fp-1",
           caps: "mesh.peers,session.list",
         },
       },
@@ -94,7 +92,6 @@ describe("agent mDNS", () => {
     expect(Object.keys(bonjour.published[0]?.txt ?? {}).sort()).toEqual([
       "agent_version",
       "caps",
-      "fp",
       "id",
       "name",
       "port",
@@ -122,7 +119,7 @@ describe("agent mDNS", () => {
     const txt = (bonjour.published[0]?.txt ?? {}) as Record<string, string>;
     expect(Object.keys(txt)).not.toContain("caps");
     expect(Object.keys(txt)).not.toContain("caps=");
-    expect(Object.keys(txt)).toHaveLength(6);
+    expect(Object.keys(txt)).toHaveLength(5);
   });
 
   it.each([
@@ -201,11 +198,37 @@ describe("agent mDNS", () => {
     up?.({ ...base, host: "artemis", addresses: [] });
     expect(registry.get("mesh", "b")?.host).toBe("artemis.local");
 
+    // IPv6-only answers must use the SRV hostname rather than an undialable
+    // literal from the responder's UDP source.
+    up?.({
+      ...base,
+      host: "artemis",
+      addresses: ["fe80::1"],
+      referer: { address: "fe80::1" },
+    });
+    expect(registry.get("mesh", "b")?.host).toBe("artemis.local");
+
+    // IPv6 literals are never suffixed or selected as direct addresses.
+    up?.({ ...base, host: "fe80::1", addresses: ["fe80::1"] });
+    expect(registry.get("mesh", "b")?.host).toBe("fe80::1");
+
+    // A fully-qualified SRV name can carry a trailing root label.
+    up?.({ ...base, host: "artemis.", addresses: [] });
+    expect(registry.get("mesh", "b")?.host).toBe("artemis.local");
+
+    // An out-of-range IPv4 must not bypass hostname resolution.
+    up?.({
+      ...base,
+      host: "artemis",
+      addresses: ["999.999.999.999"],
+    });
+    expect(registry.get("mesh", "b")?.host).toBe("artemis.local");
+
     // An already-qualified name is left alone.
     up?.({ ...base, host: "agent.local", addresses: [] });
     expect(registry.get("mesh", "b")?.host).toBe("agent.local");
 
-    // The responder's address is the next best thing to a service address.
+    // The responder's IPv4 address is safe to use as a fallback.
     up?.({
       ...base,
       addresses: [],

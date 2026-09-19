@@ -1,12 +1,12 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import { isIPv4 } from "node:net";
 import Bonjour from "bonjour-service";
 import {
   SERVICE_TYPE_CONTROL,
   SERVICE_TYPE_MESH,
   TXT_KEY_AGENT_VERSION,
   TXT_KEY_CAPABILITIES,
-  TXT_KEY_FINGERPRINT,
   TXT_KEY_ID,
   TXT_KEY_NAME,
   TXT_KEY_PORT,
@@ -29,7 +29,6 @@ export interface AgentDescriptor {
   version: string;
   agentVersion: string;
   port: number;
-  fingerprint: string;
   capabilities: readonly string[];
   swarmKey?: Uint8Array;
   swarmKeyLoaded?: boolean;
@@ -76,7 +75,6 @@ export function buildAgentTxtRecord(
     [TXT_KEY_VERSION]: descriptor.version,
     [TXT_KEY_AGENT_VERSION]: descriptor.agentVersion,
     [TXT_KEY_PORT]: String(descriptor.port),
-    [TXT_KEY_FINGERPRINT]: descriptor.fingerprint,
     [TXT_KEY_CAPABILITIES]: descriptor.capabilities.join(","),
   });
 }
@@ -250,13 +248,18 @@ function discoveredPeer(
  * the fallback, with the `.local` suffix restored when it is a bare label.
  */
 function connectHost(service: BonjourDiscoveredService): string {
-  const ipv4 = service.addresses?.find((address) =>
-    /^\d{1,3}(\.\d{1,3}){3}$/.test(address),
-  );
+  const ipv4 = service.addresses?.find((address) => isIPv4(address));
   if (ipv4 !== undefined) return ipv4;
-  if (service.referer?.address !== undefined) return service.referer.address;
-  const host = service.host ?? service.addresses?.[0] ?? "";
-  return host.length > 0 && !host.includes(".") ? `${host}.local` : host;
+
+  const refererAddress = service.referer?.address;
+  if (refererAddress !== undefined && isIPv4(refererAddress)) {
+    return refererAddress;
+  }
+
+  const host = (service.host ?? "").replace(/\.$/, "");
+  return host.length > 0 && !host.includes(".") && !host.includes(":")
+    ? `${host}.local`
+    : host;
 }
 
 function normalizeTxt(

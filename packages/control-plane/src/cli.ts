@@ -40,7 +40,6 @@ function controlPlaneService(port: number): ControlPlaneService {
     version: "0.0.0",
     apiVersion: "1",
     port,
-    fingerprint: process.env.PI_MESH_FINGERPRINT ?? "unpaired",
   };
 }
 

@@ -19,7 +19,6 @@ export interface ControlTxtRecord {
   version: string;
   api_version: string;
   port: string;
-  fp: string;
 }
 
 export interface MeshTxtRecord {
@@ -28,7 +27,6 @@ export interface MeshTxtRecord {
   version: string;
   agent_version: string;
   port: string;
-  fp: string;
   caps: string;
 }
 

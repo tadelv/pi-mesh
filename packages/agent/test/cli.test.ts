@@ -144,6 +144,22 @@ describe("agent CLI", () => {
     expect(JSON.parse(stdout)).toEqual([]);
   });
 
+  it("rejects public-profile commands without trusted control-plane discovery", async () => {
+    const captured = output();
+
+    await expect(
+      run(["sessions", "--profile", "public"], captured.io),
+    ).resolves.toBe(2);
+    expect(captured.read().stderr).toMatch(/public profile/);
+  });
+
+  it("uses the usage exit code for command argument errors", async () => {
+    const captured = output();
+
+    await expect(run(["sessions", "unexpected"], captured.io)).resolves.toBe(2);
+    expect(captured.read().stderr).toContain("sessions takes no arguments");
+  });
+
   it("contacts the requested real peer with pure JSON and SSE stdout", async () => {
     const home = await mkdtemp(join(tmpdir(), "pi-mesh-cli-home-"));
     const sessionsRoot = await mkdtemp(join(tmpdir(), "pi-mesh-cli-sessions-"));
@@ -250,22 +266,13 @@ describe("agent CLI", () => {
     process.env.HOME = home;
     process.env.PATH = "";
     try {
-      await expect(
-        run(["doctor"], {
-          ...captured.io,
-          identity: {
-            peerId: "44444444-4444-4444-8444-444444444444",
-            name: "doctor-agent",
-          },
-        }),
-      ).resolves.toBe(0);
+      await expect(run(["doctor"], captured.io)).resolves.toBe(0);
       const report = JSON.parse(captured.read().stdout) as Record<
         string,
         unknown
       >;
       expect(report).toMatchObject({
-        peerId: "44444444-4444-4444-8444-444444444444",
-        name: "doctor-agent",
+        peerId: null,
         swarmKeyPresent: false,
         piVersionFloor: "0.85.1",
         piVersion: null,

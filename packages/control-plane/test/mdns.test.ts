@@ -6,7 +6,6 @@ import {
   publishControlPlane,
   SERVICE_TYPE_CONTROL,
   TXT_KEY_API_VERSION,
-  TXT_KEY_FINGERPRINT,
   TXT_KEY_ID,
   TXT_KEY_NAME,
   TXT_KEY_PORT,
@@ -21,7 +20,6 @@ const service: ControlPlaneService = {
   version: "0.0.0",
   apiVersion: "1",
   port: 7444,
-  fingerprint: "fingerprint",
 };
 
 function fakeBonjour() {
@@ -47,12 +45,10 @@ describe("control-plane mDNS", () => {
       [TXT_KEY_VERSION]: "0.0.0",
       [TXT_KEY_API_VERSION]: "1",
       [TXT_KEY_PORT]: "7444",
-      [TXT_KEY_FINGERPRINT]: "fingerprint",
     });
     expect(Object.keys(buildControlTxtRecord(service)).sort()).toEqual(
       [
         TXT_KEY_API_VERSION,
-        TXT_KEY_FINGERPRINT,
         TXT_KEY_ID,
         TXT_KEY_NAME,
         TXT_KEY_PORT,

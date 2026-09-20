@@ -24,13 +24,29 @@ In:
 - `process.spawn`, `process.stop`, `session.steer`, `session.abort`.
 - Capability honesty: an un-opted-in machine does not advertise what it refuses.
 
-Out (milestone 3):
+Out (milestone 3), in priority order:
 
-- Control plane: SQLite, web UI, pairing flow, loopback listener,
-  `docs/DEPLOYMENT.md`.
-- `mesh.handoff`.
-- Encryption. `SECURITY.md` is unchanged: this is still plaintext HTTP on a
-  LAN, and the swarm key is still the only boundary.
+1. **`mesh.handoff`** - deliberately first, and deliberately bounded. It is the
+   literal "agents pass tasks" promise of `init.md`'s Why, and leaving it in an
+   open-ended deferral is how a mesh becomes a remote-administration tool. It is
+   execution-increasing (a peer starts work on your behalf), so it meets the
+   ADR 0008 gate rather than a second mechanism. If it slips twice, the honest
+   move is to relabel the product as fleet observability and control rather than
+   keep promising collaboration.
+2. A thin, **user-visible control-plane vertical slice**: dashboard, SQLite and
+   pairing as one narrow end-to-end path rather than three layers. The loopback
+   listener arrives here, as its first real consumer (ADR 0006 §3).
+3. Packaging: `@pi-mesh/agent` is `"private": true` and unpublished while
+   `README.md` gives install instructions. Publish, or keep the README honest -
+   milestone 2 did the latter.
+4. `docs/DEPLOYMENT.md`, still a placeholder.
+
+Swap (1) and (2) only if user-visible value is judged more urgent than the
+collaboration promise. Both are legitimate. What is not legitimate is spending
+a third milestone on substrate while both remain placeholders.
+
+Also out, and unchanged: **encryption**. `SECURITY.md` still says this is
+plaintext HTTP on a LAN and the swarm key is the only boundary.
 
 ## Facts this plan is built on
 

@@ -19,6 +19,19 @@ const SERVED_SKILLS: readonly Skill[] = [
   "session.stream",
 ];
 
+/**
+ * Skills that start or steer work, and so require the local spawn policy
+ * (ADR 0008). This is the single list: the dispatch gate and the advertised
+ * capabilities both read it, so a skill cannot be added to one and forgotten
+ * in the other. Stopping skills are deliberately absent - reducing activity is
+ * never the more dangerous operation, so `session.abort` and `process.stop`
+ * are allowed to any member.
+ */
+export const EXECUTION_SKILLS: readonly Skill[] = [
+  "process.spawn",
+  "session.steer",
+];
+
 function objectInput(value: unknown): SkillInput {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new PiMeshError(-32602, "Skill input must be an object");

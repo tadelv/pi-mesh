@@ -48,6 +48,15 @@ The research behind this is in `docs/research/process-spawning.md`.
    list of peer IDs (only those). Per-peer is the same parsing cost as a
    boolean, and it is the difference between trusting your laptop and trusting
    everything on the network.
+
+   **The peer-ID list is a convenience, not an authorisation boundary.** A
+   claimed `peer_id` is a routing label rather than an authenticated identity
+   (ADR 0007), and every member holds the same swarm key, so a malicious
+   member can claim the ID of an allowed peer and inherit its permission. It
+   narrows *which of your own agents* may execute — protection against a
+   misconfigured or over-eager peer, not against an adversary. What actually
+   protects the machine is the machine-wide opt-in. Making the list a real
+   boundary needs per-peer keys, which v1 deliberately does not have.
 4. **`session.steer` is gated with spawn, not with read.** Steering injects a
    prompt into a live session whose tools then run. It is execution by another
    name.
@@ -109,5 +118,12 @@ The research behind this is in `docs/research/process-spawning.md`.
 - The deny path is new state and needs its own tests: denied by default,
   denied for a non-listed peer, allowed for a listed one, and never
   half-applied (no process started, no file touched).
+- **The gate is enforced once**, at the request dispatch point, and only for
+  skills the agent actually serves. Both halves of that matter: one point (so
+  a new execution skill cannot be added without meeting it), and only-if-served
+  (so an unimplemented skill is reported as `-32004 UnsupportedOperation`
+  rather than `-32102`, which would claim the agent can do a thing it cannot).
+  `EXECUTION_SKILLS` in `skills.ts` is read by the gate, so the list cannot
+  drift from the check.
 - `mesh.handoff` will need the same treatment when it lands, since it starts
   work on a peer's behalf; it is deliberately not decided here.

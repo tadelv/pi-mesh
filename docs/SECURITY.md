@@ -84,6 +84,13 @@ Stopping is deliberately ungated: `session.abort`, and `process.stop` for a
 job the agent started, are allowed to any member. `process.stop` never accepts
 a bare PID, so a peer cannot signal arbitrary processes.
 
+**One limit to be clear about.** `PI_MESH_ALLOW_SPAWN` may name the peer IDs
+allowed to execute. That list is a convenience, not a security boundary: a
+claimed `peer_id` is not authenticated (ADR 0007), and every member holds the
+same swarm key, so a malicious member can claim an allowed peer's ID. It
+scopes *your own* agents, and it is the machine-wide opt-in — not the list —
+that keeps a stolen key from becoming code execution.
+
 ## Pairing with the control plane
 
 The control plane does not share the swarm key. It pairs with each

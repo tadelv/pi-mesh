@@ -12,5 +12,6 @@ export * from "./sessions.js";
 export * from "./stream.js";
 export * from "./tasks.js";
 export * from "./skills.js";
+export * from "./spawn-policy.js";
 export * from "./server.js";
 export * from "./client.js";

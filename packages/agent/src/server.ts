@@ -34,6 +34,11 @@ import {
 } from "@pi-mesh/protocol";
 import { configuredMeshPort, ErrorCode, PiMeshError } from "@pi-mesh/shared";
 import {
+  assertExecutionAllowed,
+  parseSpawnPolicy,
+  type SpawnPolicy,
+} from "./spawn-policy.js";
+import {
   createSkillRegistry,
   servedSkills,
   type SkillRegistry,
@@ -74,6 +79,13 @@ export interface AgentServerOptions extends SkillRegistryOptions {
     options: SessionStreamOptions,
   ) => SessionStream;
   skillRegistry?: SkillRegistry;
+  /**
+   * The local execution policy (ADR 0008). Defaults to the value of
+   * `PI_MESH_ALLOW_SPAWN`, which is unset by default: nothing executes until a
+   * machine says so. Injectable so tests can open and close the gate without
+   * mutating the process environment.
+   */
+  spawnPolicy?: SpawnPolicy;
 }
 
 export interface AgentServer {
@@ -235,6 +247,7 @@ export class HttpAgentServer implements AgentServer {
   private identity: PeerIdentity | undefined;
   private readonly replay = new Map<string, number>();
   private readonly maxReplayEntries: number;
+  private readonly spawnPolicy: SpawnPolicy;
   private readonly maxPendingHandshakes: number;
   private readonly pendingHandshakes = new Map<
     string,
@@ -250,6 +263,7 @@ export class HttpAgentServer implements AgentServer {
     this.maxPendingHandshakes =
       options.maxPendingHandshakes ?? MAX_PENDING_HANDSHAKES;
     this.skills = options.skillRegistry ?? createSkillRegistry(options);
+    this.spawnPolicy = options.spawnPolicy ?? parseSpawnPolicy();
     this.server = createServer((request, response) => {
       void this.route(request, response).catch((error: unknown) => {
         if (!response.headersSent) {
@@ -366,7 +380,8 @@ export class HttpAgentServer implements AgentServer {
     }
 
     const rawBody = await readBody(request);
-    if (!this.verifyRequest(request, rawBody)) {
+    const peerId = this.verifyRequest(request, rawBody);
+    if (peerId === undefined) {
       this.unauthorized(response);
       return;
     }
@@ -401,7 +416,7 @@ export class HttpAgentServer implements AgentServer {
       return;
     }
     try {
-      const result = await this.call(body);
+      const result = await this.call(body, peerId);
       writeJson(response, 200, { jsonrpc: "2.0", id: body.id, result });
     } catch (error) {
       writeJson(response, 200, errorResponse(body.id, error));
@@ -419,7 +434,15 @@ export class HttpAgentServer implements AgentServer {
     );
   }
 
-  private verifyRequest(request: IncomingMessage, body: Uint8Array): boolean {
+  /**
+   * Verify a signed request and return the peer it came from, or undefined if
+   * the proof does not hold. The caller needs the identity, not just the
+   * verdict: the spawn gate (ADR 0008) is keyed on it.
+   */
+  private verifyRequest(
+    request: IncomingMessage,
+    body: Uint8Array,
+  ): string | undefined {
     const peerId = header(request, PI_MESH_HEADERS.peer);
     const nonce = header(request, PI_MESH_HEADERS.nonce);
     const timestamp = header(request, PI_MESH_HEADERS.timestamp);
@@ -430,16 +453,16 @@ export class HttpAgentServer implements AgentServer {
       timestamp === undefined ||
       signature === undefined
     ) {
-      return false;
+      return undefined;
     }
     const now = Date.now();
     // Accept against the same value the replay lifetime is derived from, so the
     // acceptance window and the cache entry cannot disagree.
     const accepted = acceptTimestamp(timestamp, new Date(now));
-    if (accepted === undefined) return false;
+    if (accepted === undefined) return undefined;
     const key = this.swarmKey;
     const identity = this.identity;
-    if (key === undefined || identity === undefined) return false;
+    if (key === undefined || identity === undefined) return undefined;
     if (
       !verifyRequestSignature(
         key,
@@ -458,11 +481,11 @@ export class HttpAgentServer implements AgentServer {
         signature,
       )
     ) {
-      return false;
+      return undefined;
     }
     this.pruneReplay(now);
     const replayKey = `${peerId}\u0000${nonce}`;
-    if (this.replay.has(replayKey)) return false;
+    if (this.replay.has(replayKey)) return undefined;
     // Hard cap: discard the OLDEST INSERTED nonce so an input flood cannot grow
     // memory. That is deliberately not "the entry nearest to expiring": a
     // request dated in the future is retained for longer than one dated in the
@@ -477,7 +500,7 @@ export class HttpAgentServer implements AgentServer {
     // instant plus the window; expiring at receipt-plus-window would leave it
     // replayable after its documented acceptance window had already closed.
     this.replay.set(replayKey, Math.max(accepted, now) + REPLAY_WINDOW_MS);
-    return true;
+    return peerId;
   }
 
   private pruneReplay(now: number): void {
@@ -584,9 +607,24 @@ export class HttpAgentServer implements AgentServer {
     }
   }
 
-  private async call(request: JsonRpcRequest): Promise<unknown> {
+  private async call(
+    request: JsonRpcRequest,
+    peerId: string,
+  ): Promise<unknown> {
     if (request.method === "message/send") {
       const call = invocation(objectParams(request.params).message);
+      // The single gate (ADR 0008). Every execution skill routes through here,
+      // so the check cannot be forgotten in one handler and present in another,
+      // and it runs before the handler can touch a process or a file.
+      //
+      // Gated only when the skill is actually served, because the two refusals
+      // mean different things: -32102 says "this agent does it, but not for
+      // you", while -32004 says "this agent does not do it at all". Reporting
+      // a spawn denial for a skill that was never implemented would be a lie,
+      // and a peer routes on the code.
+      if (this.skills.has(call.skill)) {
+        assertExecutionAllowed(this.spawnPolicy, peerId, call.skill);
+      }
       const result = await this.skills.invoke(call.skill, call.input);
       return { message: messageFrom(result, call.contextId) };
     }

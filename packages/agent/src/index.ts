@@ -15,3 +15,4 @@ export * from "./skills.js";
 export * from "./spawn-policy.js";
 export * from "./server.js";
 export * from "./client.js";
+export * from "./rpc.js";

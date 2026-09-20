@@ -10,6 +10,16 @@ import { createLogger, type Logger } from "@pi-mesh/shared";
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 10_000;
 const DEFAULT_SHUTDOWN_TIMEOUT_MS = 500;
+/**
+ * The largest single JSONL record accepted from Pi.
+ *
+ * Exceeding it stops the session rather than dropping the record: a dropped
+ * dialog would hang forever, which is the failure this module exists to
+ * prevent. That makes the ceiling a real operational bound rather than a
+ * formality - `agent_end` carries every message of a run, so a long run can
+ * legitimately approach it. M2-4 owns the resource policy and should revisit
+ * this with measurements instead of inheriting the number.
+ */
 const DEFAULT_MAX_RECORD_BYTES = 1024 * 1024;
 const DEFAULT_MAX_STDERR_BYTES = 64 * 1024;
 const DEFAULT_UI_TIMEOUT_MS = 1_000;
@@ -35,6 +45,26 @@ export interface PiRpcClientOptions {
 }
 
 export type PiRpcCommand = Record<string, unknown>;
+
+/**
+ * The environment a spawned Pi receives when the caller does not supply one.
+ *
+ * ADR 0008 decision 9 says the parent environment is "never passed wholesale"
+ * and that the swarm key and mesh credentials are not inherited. This is the
+ * minimal version of that: everything else is passed through, because Pi needs
+ * its provider credentials and a usable PATH, but every PI_MESH_* variable is
+ * removed. It is a filter rather than an allowlist because milestone 5 owns the
+ * real policy; the point here is that forgetting to pass `env` must not leak
+ * mesh secrets.
+ */
+function childEnvironment(parent: NodeJS.ProcessEnv): NodeJS.ProcessEnv {
+  const environment: NodeJS.ProcessEnv = {};
+  for (const [key, value] of Object.entries(parent)) {
+    if (key.startsWith("PI_MESH_")) continue;
+    environment[key] = value;
+  }
+  return environment;
+}
 export type PiRpcResponse = Record<string, unknown>;
 export type PiRpcEvent = Record<string, unknown>;
 
@@ -97,12 +127,20 @@ export class PiRpcResponseError extends PiRpcError {
   constructor(readonly response: PiRpcResponse) {
     const error = response.error;
     const message =
-      typeof error === "object" &&
-      error !== null &&
-      !Array.isArray(error) &&
-      typeof (error as Record<string, unknown>).message === "string"
-        ? String((error as Record<string, unknown>).message)
-        : "Pi RPC returned an error response";
+      // Pi's failure envelope carries `error` as a STRING, not an object:
+      // {"type":"response","command":"…","success":false,"error":"Unknown
+      // command: shutdown"} - verified against the real binary. Checking only
+      // for an object discarded every real diagnostic and reported the generic
+      // fallback, which is exactly the text M2-5 needs to say why a spawn
+      // failed.
+      typeof error === "string" && error.length > 0
+        ? error
+        : typeof error === "object" &&
+            error !== null &&
+            !Array.isArray(error) &&
+            typeof (error as Record<string, unknown>).message === "string"
+          ? String((error as Record<string, unknown>).message)
+          : "Pi RPC returned an error response";
     super(message);
     this.name = "PiRpcResponseError";
   }
@@ -126,6 +164,19 @@ class LineDecoder {
       let record = raw;
       if (record.byteLength > 0 && record[record.byteLength - 1] === 0x0d) {
         record = record.subarray(0, record.byteLength - 1);
+      }
+      // A zero-length record is ignored rather than fatal. Pi's own client
+      // ignores non-JSON lines, and a bare newline can arrive from a descendant
+      // that inherited fd 1: Pi's output guard redirects a stray
+      // process.stdout.write to stderr, but an fs.writeSync(1, …) or a child
+      // sharing the fd bypasses it. Tearing down the session and failing every
+      // pending request because something printed a blank line would be a
+      // disproportionate failure. Non-empty malformed records stay fatal -
+      // those are the ones a client can actually be broken by.
+      if (record.byteLength === 0) {
+        this.pending = this.pending.subarray(newline + 1);
+        newline = this.pending.indexOf(0x0a);
+        continue;
       }
       records.push(record.toString("utf8"));
       this.pending = this.pending.subarray(newline + 1);
@@ -243,13 +294,27 @@ export class PiRpcClient extends EventEmitter {
       shell: false,
       detached: false,
       stdio: ["pipe", "pipe", "pipe"],
-      ...(options.env === undefined ? {} : { env: options.env }),
+      env: options.env ?? childEnvironment(process.env),
     };
     this.child = spawn(binary, args, spawnOptions);
+    // A write to a destroyed stdin emits an asynchronous stream error. Without
+    // a listener that is an uncaught exception and the whole agent dies, which
+    // is a large failure for a child that has simply gone away.
+    this.child.stdin?.on("error", (error: Error) => {
+      this.fail(new PiRpcError("Pi RPC stdin error", { cause: error }));
+    });
     this.child.once("exit", (code, signal) => {
       this.exited = true;
       this.closeCode = code;
       this.closeSignal = signal;
+      // Reject pending requests on EXIT, not only on close. If a descendant
+      // inherited fd 1/2 the stdio never closes, so waiting for `close` would
+      // leave every pending request to expire on its own timer and be reported
+      // as a TIMEOUT - mislabelling a dead child as a slow one, which is the
+      // distinction M2-2 exists to make. Idempotent on an empty map.
+      if (!this.closing) {
+        this.failPending(new PiRpcChildExitError(code, signal));
+      }
     });
     this.closePromise = new Promise<void>((resolve) => {
       this.child.once("close", (code, signal) => {
@@ -365,16 +430,37 @@ export class PiRpcClient extends EventEmitter {
     });
   }
 
-  /** Stop the child using protocol shutdown, SIGTERM, then SIGKILL. */
+  /**
+   * Stop the child: stdin EOF, then SIGTERM, then SIGKILL.
+   *
+   * There is no protocol shutdown command. `{type:"shutdown"}` is answered
+   * `Unknown command: shutdown` by Pi 0.85.1 (verified against the real
+   * binary), so this used to spend a round trip asking for something that does
+   * not exist before falling through to signals. Closing stdin is the graceful
+   * path: Pi treats stdin end as input end and exits cleanly (measured: exit
+   * code 0 in about 100ms).
+   *
+   * Every wait is bounded, including the last one. Node fires `close` only when
+   * the child has exited AND its stdio streams are closed, so a descendant that
+   * inherited fd 1 or 2 keeps `close` from ever firing - and killing a child
+   * does not kill its descendants. Awaiting the close promise without a bound
+   * therefore hangs shutdown, which is the failure M1 already hit with
+   * `server.stop()`.
+   */
   async close(): Promise<void> {
-    if (this.closed) return;
+    if (this.closed) {
+      await this.waitForClose(this.shutdownTimeoutMs);
+      return;
+    }
     this.closing = true;
-    if (this.spawned && !this.child.killed && !this.child.stdin?.destroyed) {
+    if (this.spawned && !this.child.killed) {
       try {
-        await this.request({ type: "shutdown" }, this.shutdownTimeoutMs);
+        // Graceful: ask Pi to finish by ending its input.
+        this.child.stdin?.end();
       } catch {
-        // An unsupported or unresponsive protocol falls through to signals.
+        // A dead pipe falls through to signals.
       }
+      await this.waitForClose(this.shutdownTimeoutMs);
     }
     if (!this.closed) {
       this.child.kill("SIGTERM");
@@ -384,7 +470,14 @@ export class PiRpcClient extends EventEmitter {
       this.child.kill("SIGKILL");
       await this.waitForClose(this.shutdownTimeoutMs);
     }
-    await this.closePromise;
+    if (!this.closed) {
+      // Deliberately not awaited further. The process is gone (or killed); what
+      // is unobservable is the stdio closure, and hanging shutdown to observe
+      // it is worse than reporting it. M2-4 needs to know this happened.
+      this.logger.warn("Pi RPC child did not close its stdio; not waiting", {
+        pid: this.child.pid,
+      });
+    }
     this.failPending(new PiRpcChildExitError(this.closeCode, this.closeSignal));
   }
 
@@ -455,7 +548,9 @@ export class PiRpcClient extends EventEmitter {
     }
     let sent = false;
     const sendCancelled = (): void => {
-      if (sent || this.closed) return;
+      // `writable` as well as `closed`: the window between the child's stdin
+      // being destroyed and the close event is exactly when this runs.
+      if (sent || this.closed || this.child.stdin?.writable !== true) return;
       sent = true;
       try {
         this.child.stdin?.write(

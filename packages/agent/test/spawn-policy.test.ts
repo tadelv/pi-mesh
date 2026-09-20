@@ -90,7 +90,10 @@ async function executionServer(
   const skills = new SkillRegistry();
   // Registered precisely because it is an execution skill: the gate can only
   // be exercised through a skill this agent actually serves.
-  skills.register("session.steer", async (input) => {
+  // Registered via registerExecution precisely because it is an execution
+  // skill: `register` now refuses those, so an executing handler cannot be
+  // served without meeting the gate.
+  skills.registerExecution("session.steer", async (input) => {
     calls.push(input);
     return { accepted: true };
   });
@@ -184,14 +187,13 @@ describe("spawn policy parsing", () => {
     expect(policy.allows(callerIdentity.peerId.toUpperCase())).toBe(true);
   });
 
-  it("accepts a duplicate entry without widening the grant", () => {
-    const policy = parseSpawnPolicy(
-      `${callerIdentity.peerId},${callerIdentity.peerId}`,
-      "",
-    );
-    expect(policy.enabled).toBe(true);
-    expect(policy.allows(callerIdentity.peerId)).toBe(true);
-    expect(policy.allows("99999999-9999-4999-8999-999999999999")).toBe(false);
+  it("denies a value containing more than one wildcard", () => {
+    for (const value of ["*,*", "*,,*", "* , *"]) {
+      const policy = parseSpawnPolicy(value, "");
+      expect(policy.enabled).toBe(false);
+      expect(policy.allows(callerIdentity.peerId)).toBe(false);
+      expect(policy.warning).toBeDefined();
+    }
   });
 
   it("reads the environment when no explicit value is given", () => {
@@ -232,7 +234,7 @@ describe("the execution gate", () => {
   });
 
   it("serves the same skill once the machine opts in", async () => {
-    const server = await executionServer(parseSpawnPolicy("*"));
+    const server = await executionServer(parseSpawnPolicy("*", ""));
     try {
       const response = await post(server.port, sendMessage("session.steer"));
       const body = JSON.parse(response.body) as {
@@ -252,7 +254,7 @@ describe("the execution gate", () => {
     // authorisation boundary against a malicious member, who can claim any
     // peer id (ADR 0007): only the machine-wide opt-in is.
     const listed = await executionServer(
-      parseSpawnPolicy(callerIdentity.peerId),
+      parseSpawnPolicy(callerIdentity.peerId, ""),
     );
     try {
       const response = await post(listed.port, sendMessage("session.steer"));
@@ -262,7 +264,7 @@ describe("the execution gate", () => {
       await listed.stop();
     }
     const unlisted = await executionServer(
-      parseSpawnPolicy("99999999-9999-4999-8999-999999999999"),
+      parseSpawnPolicy("99999999-9999-4999-8999-999999999999", ""),
     );
     try {
       const response = await post(unlisted.port, sendMessage("session.steer"));
@@ -372,16 +374,23 @@ describe("capability honesty and the gate", () => {
     }
   });
 
-  it("refuses to register an executing skill that is not on the gate list", () => {
-    // The other direction of drift: EXECUTION_SKILLS stops the gate guarding a
-    // skill that is not served, but nothing stops a handler that executes from
-    // being registered without being gated - unless that is an error.
+  it("refuses to register an executing skill without the gate, and only that", () => {
+    // Both directions are startup errors, so the invariant is enforced by the
+    // type-adjacent API rather than by memory: an executing skill cannot be
+    // registered ungated, and a non-executing one cannot claim the gate.
     const skills = new SkillRegistry();
+    expect(() => skills.register("session.steer", async () => ({}))).toThrow(
+      /register it with registerExecution/,
+    );
+    // Deliberately ungated (ADR 0008 decision 5), so it is not an execution
+    // skill and must not be registered as one.
     expect(() =>
       skills.registerExecution("process.stop", async () => ({})),
-    ).toThrow(/bypass the spawn gate/);
-    expect(() =>
-      skills.registerExecution("session.steer", async () => ({})),
-    ).not.toThrow();
+    ).toThrow(/must use register/);
+    // And the sanctioned path actually serves the skill.
+    skills.registerExecution("session.steer", async () => ({ accepted: true }));
+    expect(skills.has("session.steer")).toBe(true);
+    skills.register("session.list", async () => ({ sessions: [] }));
+    expect(skills.has("session.list")).toBe(true);
   });
 });

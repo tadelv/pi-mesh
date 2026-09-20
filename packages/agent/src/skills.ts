@@ -71,26 +71,37 @@ export class SkillRegistry {
   private readonly handlers = new Map<Skill, SkillHandler>();
 
   register(skill: Skill, handler: SkillHandler): this {
-    this.handlers.set(skill, handler);
-    return this;
+    // The other direction of drift from registerExecution. `EXECUTION_SKILLS`
+    // stops the gate guarding a skill that is not served; this stops a skill
+    // that executes from being served without the gate. Making both omissions
+    // a startup error is what turns the invariant into code instead of memory.
+    if ((EXECUTION_SKILLS as readonly string[]).includes(skill)) {
+      throw new Error(
+        `Skill ${skill} starts or steers work; register it with registerExecution so it meets the spawn gate`,
+      );
+    }
+    return this.registerUngated(skill, handler);
   }
 
   /**
-   * Register a skill that starts or steers work.
+   * Register a skill that starts or steers work (ADR 0008).
    *
-   * `EXECUTION_SKILLS` stops the gate being applied to a skill that is not
-   * served. This is the other direction: it stops a skill that executes from
-   * being served without the gate, by making the omission a startup error
-   * rather than a silent hole. Prefer this over `register` for any handler
-   * that can spawn or steer.
+   * Use this rather than `register` for any handler that can spawn or steer;
+   * `register` refuses those skills outright, so the gate cannot be skipped by
+   * picking the wrong method.
    */
   registerExecution(skill: Skill, handler: SkillHandler): this {
     if (!(EXECUTION_SKILLS as readonly string[]).includes(skill)) {
       throw new Error(
-        `Skill ${skill} executes but is not in EXECUTION_SKILLS, so it would bypass the spawn gate`,
+        `Skill ${skill} does not start or steer work, so it is not in EXECUTION_SKILLS and must use register`,
       );
     }
-    return this.register(skill, handler);
+    return this.registerUngated(skill, handler);
+  }
+
+  private registerUngated(skill: Skill, handler: SkillHandler): this {
+    this.handlers.set(skill, handler);
+    return this;
   }
 
   has(skill: string): skill is Skill {

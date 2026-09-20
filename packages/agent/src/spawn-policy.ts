@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import { ErrorCode, PiMeshError } from "@pi-mesh/shared";
+import { isUuid } from "./identity.js";
 import { EXECUTION_SKILLS } from "./skills.js";
 
 /**
@@ -38,10 +39,6 @@ export interface SpawnPolicy {
 
 const DENY_ALL: SpawnPolicy = { allows: () => false, enabled: false };
 
-/** Peer IDs are UUIDs, minted by `randomUUID` and validated on load. */
-const PEER_ID =
-  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-
 function denyWith(warning: string): SpawnPolicy {
   return { ...DENY_ALL, warning };
 }
@@ -72,10 +69,10 @@ export function parseSpawnPolicy(
       return { allows: (peerId) => peerId.length > 0, enabled: true };
     }
     return denyWith(
-      `PI_MESH_ALLOW_SPAWN mixes "*" with explicit peer IDs; use either "*" or a list, not both. Execution is disabled.`,
+      `PI_MESH_ALLOW_SPAWN must be either "*" on its own, or a list of peer IDs. Execution is disabled.`,
     );
   }
-  const invalid = entries.filter((entry) => !PEER_ID.test(entry));
+  const invalid = entries.filter((entry) => !isUuid(entry));
   if (invalid.length > 0) {
     // A token that cannot be a peer ID can never name a real peer. Accepting it
     // would set `enabled` while allowing nobody, which misreports this machine's

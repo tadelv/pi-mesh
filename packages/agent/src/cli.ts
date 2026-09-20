@@ -28,6 +28,7 @@ import {
 } from "./client.js";
 import { createAgentServer } from "./server.js";
 import { servedSkills } from "./skills.js";
+import { parseSpawnPolicy, type SpawnPolicy } from "./spawn-policy.js";
 import { SessionStore } from "./sessions.js";
 import { sessionStream } from "./stream.js";
 import { PiMeshError, ErrorCode } from "@pi-mesh/shared";
@@ -41,6 +42,8 @@ export type CliIO = {
   identity?: PeerIdentity;
   swarmKey?: Uint8Array;
   sessionsRoot?: string;
+  /** Injected so a test can exercise a rejected policy without the environment. */
+  spawnPolicy?: SpawnPolicy;
 };
 
 // Pi 0.85.1 is the oldest session format this milestone supports.
@@ -564,6 +567,7 @@ async function clientOptions(
 }
 
 async function doctor(io: CliIO): Promise<number> {
+  const spawnPolicy = io.spawnPolicy ?? parseSpawnPolicy();
   let identity: PeerIdentity | undefined;
   let credentialsError: string | undefined;
   if (io.identity !== undefined) {
@@ -590,7 +594,12 @@ async function doctor(io: CliIO): Promise<number> {
       }
     }
   }
-  const failed = credentialsError !== undefined || swarmKeyError !== undefined;
+  const failed =
+    credentialsError !== undefined ||
+    swarmKeyError !== undefined ||
+    // A rejected policy is a configuration failure: it denies every peer while
+    // looking like a first run, so it should not report success.
+    spawnPolicy.warning !== undefined;
   io.stdout.write(
     `${JSON.stringify({
       peerId: identity?.peerId ?? null,
@@ -600,6 +609,15 @@ async function doctor(io: CliIO): Promise<number> {
       ...(swarmKeyError === undefined ? {} : { swarmKeyError }),
       configuredPort: configuredPort(),
       servedSkills: servedSkills(),
+      // Reported here because a rejected policy denies everything, and doctor
+      // is the command an operator runs when nothing works. Without this, a
+      // fail-closed configuration is indistinguishable from a broken agent.
+      spawnPolicy: {
+        enabled: spawnPolicy.enabled,
+        ...(spawnPolicy.warning === undefined
+          ? {}
+          : { warning: spawnPolicy.warning }),
+      },
       piVersionFloor: PI_SUPPORTED_FLOOR,
       piVersion: await detectedPiVersion(),
     })}\n`,

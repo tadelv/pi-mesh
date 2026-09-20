@@ -274,7 +274,12 @@ export class HttpAgentServer implements AgentServer {
       // a rejected policy must be visible - silently denying everything looks
       // like a bug, and silently allowing everything is the failure this
       // feature exists to prevent.
-      createLogger({ name: "spawn-policy" }).warn(this.spawnPolicy.warning);
+      // Explicit level, not the environment's: PI_MESH_LOG_LEVEL=error would
+      // otherwise suppress the one message explaining a fail-closed policy,
+      // producing exactly the mystery refusal this warning exists to prevent.
+      createLogger({ level: "warn", name: "spawn-policy" }).warn(
+        this.spawnPolicy.warning,
+      );
     }
     this.server = createServer((request, response) => {
       void this.route(request, response).catch((error: unknown) => {

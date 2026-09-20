@@ -127,9 +127,12 @@ The research behind this is in `docs/research/process-spawning.md`.
   drift from the check. Two residual obligations follow from that shape:
   a skill that executes must be **registered** (a transport-owned skill is the
   exception that proves it: `session.stream` registers a throwing placeholder
-  so it is still gated), and the guard rests on that invariant rather than on
-  the type system. `SkillRegistry.registerExecution` makes the omission a
-  startup error for the direction it can catch.
+  so it is not silently absent from the registered set - not because the gate
+  applies to it, since it does not execute, but because the guard's correctness
+  rests on every dispatched skill being present in the registry).
+  `SkillRegistry.register` refuses execution skills outright and
+  `registerExecution` refuses non-execution ones, so both directions of the
+  drift are a startup error rather than a silent hole.
 - **`tasks/get` and `tasks/cancel` are a second, non-skill dispatch path.** They
   reach task state without naming a skill, so the gate does not cover them, and
   ADR 0008 should say so rather than let "enforced once" imply more than it

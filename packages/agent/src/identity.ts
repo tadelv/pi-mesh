@@ -98,6 +98,14 @@ function isUuid(value: string): boolean {
   );
 }
 
+/**
+ * Exported because the spawn policy (ADR 0008) must recognise the same peer IDs
+ * this module mints and validates. A second copy of the pattern is a second
+ * thing to keep in step, and the failure would be a policy that silently
+ * accepts an ID no peer can have.
+ */
+export { isUuid };
+
 function isMissingFile(error: unknown): boolean {
   return (
     typeof error === "object" &&

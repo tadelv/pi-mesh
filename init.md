@@ -2,12 +2,20 @@
 
 > **Historical snapshot, not live documentation.** Kept for provenance: this is
 > the spec the project was bootstrapped from, and parts of it were superseded as
-> the work ran. Where it disagrees with `docs/`, `docs/` wins. Specifically, its
-> error-code table predates ADR 0005 (pi-mesh's own codes now sit above A2A's
-> reserved range), it lists `process.spawn` with a peer-supplied `argv?` that
-> ADR 0008 §7 rejects, and it describes the bearer-token handshake that ADR 0007
-> replaced with per-request HMAC. Copying a table out of here is how a fixed bug
-> returns.
+> the work ran. Where it disagrees with `docs/`, `docs/` wins. Specifically:
+>
+> - The **error-code table** predates ADR 0005, which moved pi-mesh's own codes
+>   above A2A's reserved range.
+> - The **skill table** lists `process.spawn` with a peer-supplied `argv?` and
+>   `process.stop` taking a bare `pid`; ADR 0008 §7 rejects the first and §6
+>   rejects the second (stop takes a mesh job ID), and "only reachable
+>   in-process" is repudiated by `AGENTS.md`.
+> - The **handshake** section claims connection-level authentication after a
+>   challenge-response; ADR 0007 replaced that with a proof on every request.
+> - Its **control-plane pairing token** is *not* superseded and is still the
+>   design (`docs/SECURITY.md`).
+>
+> Copying a table out of here is how a fixed bug returns.
 
 You are bootstrapping a new TypeScript monorepo called **pi-mesh**.
 This file contains the full specification. Execute it top to bottom.

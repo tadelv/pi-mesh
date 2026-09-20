@@ -412,7 +412,7 @@ export class HttpAgentServer implements AgentServer {
       return;
     }
     if (body.method === "message/stream") {
-      await this.streamMessage(body, request, response);
+      await this.streamMessage(body, peerId, request, response);
       return;
     }
     try {
@@ -607,24 +607,30 @@ export class HttpAgentServer implements AgentServer {
     }
   }
 
+  /**
+   * The single execution gate (ADR 0008). Every dispatch path must call this
+   * before touching a skill: `message/send` and `message/stream` are separate
+   * routes, and a gate present in only one of them is a bypass waiting for the
+   * day a gated skill becomes streamable.
+   *
+   * Gated only when the skill is actually served, because the two refusals mean
+   * different things: -32102 says "this agent does it, but not for you", while
+   * -32004 says "this agent does not do it at all". Reporting a spawn denial
+   * for a skill that was never implemented would be a lie, and a peer routes on
+   * the code.
+   */
+  private gateExecution(skill: string, peerId: string): void {
+    if (!this.skills.has(skill)) return;
+    assertExecutionAllowed(this.spawnPolicy, peerId, skill);
+  }
+
   private async call(
     request: JsonRpcRequest,
     peerId: string,
   ): Promise<unknown> {
     if (request.method === "message/send") {
       const call = invocation(objectParams(request.params).message);
-      // The single gate (ADR 0008). Every execution skill routes through here,
-      // so the check cannot be forgotten in one handler and present in another,
-      // and it runs before the handler can touch a process or a file.
-      //
-      // Gated only when the skill is actually served, because the two refusals
-      // mean different things: -32102 says "this agent does it, but not for
-      // you", while -32004 says "this agent does not do it at all". Reporting
-      // a spawn denial for a skill that was never implemented would be a lie,
-      // and a peer routes on the code.
-      if (this.skills.has(call.skill)) {
-        assertExecutionAllowed(this.spawnPolicy, peerId, call.skill);
-      }
+      this.gateExecution(call.skill, peerId);
       const result = await this.skills.invoke(call.skill, call.input);
       return { message: messageFrom(result, call.contextId) };
     }
@@ -651,11 +657,16 @@ export class HttpAgentServer implements AgentServer {
 
   private async streamMessage(
     request: JsonRpcRequest,
+    peerId: string,
     incoming: IncomingMessage,
     response: ServerResponse,
   ): Promise<void> {
     try {
       const call = invocation(objectParams(request.params).message);
+      // The same gate as message/send: this is a second dispatch path, and
+      // gating only one of them would leave a silence hole the moment a gated
+      // skill becomes streamable.
+      this.gateExecution(call.skill, peerId);
       if (call.skill !== "session.stream")
         throw new RpcFailure(
           -32004,

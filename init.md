@@ -455,6 +455,13 @@ Extension URI: `https://pi-mesh.dev/extensions/handoff/v1`
 
 ## Error codes
 
+> **Superseded — do not copy this table.** These assignments predate ADR 0005,
+> which moved pi-mesh's own codes above A2A's reserved `-32001`-`-32099` range
+> because they collided with A2A's own errors (`-32001` is
+> `TaskNotFoundError`, `-32003` is `PushNotificationNotSupportedError`). The
+> live codes are in `packages/shared/src/errors.ts` and `docs/PROTOCOL.md`.
+> Copying this table into ADR 0008 is exactly how the collision came back.
+
 | Code | Meaning |
 |---|---|
 | `-32001` | Unauthorized (swarm key mismatch) |

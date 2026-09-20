@@ -7,6 +7,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   createAgentServer,
+  EXECUTION_SKILLS,
   parseSpawnPolicy,
   servedSkills,
   signedHeaders,
@@ -219,6 +220,36 @@ describe("the execution gate", () => {
       expect(unlisted.calls).toHaveLength(0);
     } finally {
       await unlisted.stop();
+    }
+  });
+
+  it("gates every execution skill on every dispatch path", async () => {
+    // message/send and message/stream are separate routes. A gate present in
+    // only one of them is a bypass waiting for the day a gated skill becomes
+    // streamable, so this iterates the list rather than naming one skill.
+    const server = await executionServer(
+      parseSpawnPolicy(undefined, undefined),
+    );
+    try {
+      // The code must be asserted per path, not as a set of acceptable codes:
+      // an assertion that accepts either code passes even when a path has no
+      // gate at all, which is exactly the bypass this test exists to catch.
+      const servedExecutionSkill = "session.steer";
+      for (const skill of EXECUTION_SKILLS) {
+        const expected = skill === servedExecutionSkill ? -32102 : -32004;
+        for (const method of ["message/send", "message/stream"]) {
+          const request = sendMessage(skill);
+          request.method = method;
+          const response = await post(server.port, request);
+          const code = JSON.parse(response.body).error?.code;
+          expect(`${method} ${skill}: ${String(code)}`).toBe(
+            `${method} ${skill}: ${expected}`,
+          );
+        }
+      }
+      expect(server.calls).toHaveLength(0);
+    } finally {
+      await server.stop();
     }
   });
 

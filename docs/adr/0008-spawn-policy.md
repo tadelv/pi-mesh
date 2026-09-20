@@ -41,7 +41,7 @@ The research behind this is in `docs/research/process-spawning.md`.
    decision about that identity.
 2. **Execution-increasing operations are denied by default.** `process.spawn`
    and `session.steer` are refused unless the machine has explicitly opted in.
-   Refusal is `-32003`, already reserved, reported as `PI_MESH_SPAWN_DENIED`,
+   Refusal is `-32102`, already reserved, reported as `PI_MESH_SPAWN_DENIED`,
    before any process is started and before any filesystem work is done.
 3. **The opt-in is per-machine and optionally per-peer.** `PI_MESH_ALLOW_SPAWN`
    is unset (nothing may execute), `*` (any member may), or a comma-separated
@@ -103,7 +103,7 @@ The research behind this is in `docs/research/process-spawning.md`.
   unless the victim machine opted in. That is the entire point.
 - A partially-opted-in swarm is normal and supported: the workstation may
   allow execution while the Pi only allows reading.
-- Failure is loud. A denied spawn is a clear `-32003` naming the reason; the
+- Failure is loud. A denied spawn is a clear `-32102` naming the reason; the
   alternative default (allow) fails silently and is discovered afterwards.
 - **Irreducible asymmetry:** an approved peer on an opted-in machine still gets
   full user authority. This policy bounds *who* may execute and *where*, not

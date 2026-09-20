@@ -16,7 +16,7 @@ its supervision.
 
 In:
 
-- The ADR 0008 gate: per-machine opt-in, default deny, `-32003`.
+- The ADR 0008 gate: per-machine opt-in, default deny, `-32102`.
 - A Pi RPC client: launch `pi --mode rpc`, JSONL framing, correlation,
   lifecycle.
 - The extension-UI problem (below), which is a hang waiting to happen.
@@ -56,7 +56,7 @@ Verified against the installed Pi 0.85.1 docs and the research note in
 1. **The gate is checked before any side effect.** A denied `process.spawn`
    must not create a directory, read a file, or fork. The check runs on the
    peer identity already verified by the request proof (ADR 0007), and a
-   denial is `-32003` with `PI_MESH_SPAWN_DENIED`.
+   denial is `-32102` with `PI_MESH_SPAWN_DENIED`.
 2. **`extension_ui_request` is answered, always, and never allowed to block.**
    This is the sharp edge of RPC mode. With no human present the safe answer
    is "no": dialog methods are answered `cancelled: true` unless policy says
@@ -78,13 +78,29 @@ Verified against the installed Pi 0.85.1 docs and the research note in
    directly with an argv array. Both development machines use `fish` as their
    login shell, so `shell: true` would change semantics underneath us, and it
    is an injection hazard regardless.
+8. **The argv literal is fixed, and it includes `--no-approve`.**
+   Non-interactive modes do not show a trust prompt (`security.md:29` in the
+   installed 0.85.1), so a peer-spawned session silently inherits whatever the
+   project-trust default is. Trusting a project loads its `.pi/extensions`, and
+   extension code is TypeScript running with the user's permissions. A peer
+   must not be able to cause project-local code to execute by asking for a
+   spawn, so the agent passes `--no-approve` explicitly rather than relying on
+   a default. The peer contributes `project` and `cwd`; every flag is ours.
+9. **A spawned session becomes visible to the file-backed reader only after it
+   persists something.** Measured, not assumed: `get_state` reports
+   `sessionId` and `sessionFile` immediately, the file name embeds the
+   `sessionId`, and the header `id` equals it — but **no file exists until the
+   first turn writes one**. So `session.list` cannot show an idle spawned
+   session, and any DoD that reads a spawned session's entries must first have
+   produced a turn. This is why reads stay file-backed (decision 4) without a
+   second read path: the seam is real and is pinned by test instead.
 
 ## Issues
 
 ### M2-1 — The spawn gate
 - `PI_MESH_ALLOW_SPAWN`: unset means nothing executes; `*` means any member;
   otherwise a comma-separated list of peer IDs.
-- Authorization runs before any side effect. Denial is `-32003`, reported as
+- Authorization runs before any side effect. Denial is `-32102`, reported as
   `PI_MESH_SPAWN_DENIED`, and names the reason.
 - Applies to `process.spawn` and `session.steer`. Does **not** apply to
   `session.abort` or `process.stop` (ADR 0008 decision 5).
@@ -112,9 +128,15 @@ Verified against the installed Pi 0.85.1 docs and the research note in
 - Log fire-and-forget requests; never surface them as protocol errors.
 - Enforce our own timeout even when the request carries none, so a dialog can
   never hold a session open indefinitely.
+- **The fire-and-forget flood is the common case, measured:** a spawned
+  `pi --mode rpc` emitted 27 events on a trivial prompt, the first six of them
+  `extension_ui_request` (`setStatus` ×7, `setWidget` ×4, `notify` ×2 in one
+  window). No dialog appeared for that extension, but the protocol permits one
+  with no timeout, so the handler must exist regardless.
 - **DoD:** a test that a dialog request with no `timeout` field is answered and
   the session continues; a test that a fire-and-forget request does not
-  produce a response or an error.
+  produce a response or an error; and a real spawned session that answers a
+  trivial prompt to completion with UI traffic present.
 
 ### M2-4 — Job table, staged stop, and reaping
 - One authoritative record per job: mesh job id, owning peer, pid, start time,
@@ -122,24 +144,38 @@ Verified against the installed Pi 0.85.1 docs and the research note in
 - Staged stop: request graceful shutdown, then `SIGTERM`, then a bounded wait,
   then `SIGKILL`. Observe `close`; never infer termination from `kill()`
   returning true. Stop is idempotent.
+- **A job whose spawner vanished is still our job.** The job id only ever
+  exists in the `process.spawn` response, and the unary path writes that
+  response unconditionally without watching for a closed socket, so a peer
+  that disconnects mid-spawn leaves a live `pi` nobody can name, stop, or
+  enumerate. Socket closure alone is not enough to detect it (the peer may
+  have received the response and then died), so unacknowledged jobs also carry
+  a wall-clock deadline and are reaped on expiry.
 - Reap children when the agent shuts down. M1 already learned this the hard
   way: `server.stop()` hung on an open SSE stream.
 - Bound retained output, concurrent jobs, and per-peer start rate.
 - **DoD:** a child that ignores `SIGTERM` is escalated to `SIGKILL`; stopping
-  twice is safe; a stop for an unknown job id is refused; after agent shutdown
-  no child survives (checked against the real process table, not a mock).
+  twice is safe; a stop for an unknown job id is refused; a spawn whose
+  requester disconnects before the response is written does not leave a
+  running child; after agent shutdown no child survives (checked against the
+  real process table, not a mock).
 
 ### M2-5 — `process.spawn`
 - Input `{ project, cwd? }`. `cwd` is resolved with `realpath` and must be the
   workspace root or beneath it.
-- argv constructed by the agent; the peer supplies no flags.
+- argv constructed by the agent: the resolved `pi` binary, `--mode rpc`, the
+  session directory, and `--no-approve` (decision 8). Nothing else, and no
+  flags from the peer.
 - Environment is an explicit allowlist; the swarm key and mesh credentials are
   **not** inherited. Asserted positively, not by absence.
 - Readiness: do not report success until the child answers, or report the
   failure.
 - **DoD:** a `cwd` escaping via `..` and via a symlink is refused; the child
   environment provably lacks the swarm key; a spawn that cannot start reports
-  an error rather than a phantom job.
+  an error rather than a phantom job; **the `session_id` returned is accepted
+  by file-backed `session.read` and appears in `session.list` once the session
+  has produced a turn** (this cross-path assertion is what M2-9 depends on, and
+  it is the one seam the two read paths share).
 
 ### M2-6 — `process.stop` and `session.abort`
 - Both ungated, both allowed to any member.
@@ -151,13 +187,18 @@ Verified against the installed Pi 0.85.1 docs and the research note in
 ### M2-7 — `session.steer`
 - Maps to the RPC `steer` command. Gated exactly like spawn.
 - **DoD:** a steered session receives the message; steering is refused with
-  `-32003` when the gate is closed.
+  `-32102` when the gate is closed.
 
 ### M2-8 — Capability honesty for gated skills
 - The agent card and the mDNS `caps` TXT value advertise `process.spawn` and
   `session.steer` only when the gate is open.
 - **DoD:** with spawn disabled, neither the card nor `caps` mentions them; with
-  it enabled, both do; and `servedSkills()` agrees with both.
+  it enabled, both do.
+- **Careful: `servedSkills()` is already the single source for the card, the
+  `caps` value and the tests**, so an assertion that all three agree is
+  circular and can never fail. The DoD must assert the *gate's* effect on the
+  list (disabled ⇒ the names are absent, enabled ⇒ present) from a
+  fixed point outside that shared function, or it tests nothing.
 
 ### M2-9 — Two-machine proof
 - On the real Mac + Pi setup: with the gate open, spawn a session on the Pi,
@@ -166,11 +207,20 @@ Verified against the installed Pi 0.85.1 docs and the research note in
 - **DoD:** transcripted evidence from the actual machines, including the
   process table on the Pi before and after.
 
+### M2-10 — The gate holds on every dispatch path
+- `message/send` and `message/stream` are separate routes; the gate must be
+  reached from both. Today `streamMessage` rejects everything but
+  `session.stream`, so nothing is bypassable *yet* — the hole would appear the
+  day a gated skill becomes streamable, silently.
+- **DoD:** a test that iterates `EXECUTION_SKILLS` and asserts each is refused
+  for a denied peer over **both** request methods; and the gate itself lives in
+  one method that both routes call.
+
 ## Exit criteria
 
 - CI green on `main`.
 - The two-machine proof above, recorded in the repository.
-- A machine with no opt-in refuses execution with `-32003`, starts nothing,
+- A machine with no opt-in refuses execution with `-32102`, starts nothing,
   and does not advertise the capability.
 - `docs/PROTOCOL.md`, `docs/SECURITY.md` and the agent card agree with the
   implementation.

@@ -67,7 +67,7 @@ rather than left to be discovered.
 
 **It does not grant execution.** Process control and steering are a separate,
 larger grant that each machine makes locally (ADR 0008): `process.spawn` and
-`session.steer` are denied by default and refused with `-32003` unless the
+`session.steer` are denied by default and refused with `-32102` unless the
 machine has explicitly allowed that peer to execute. A stolen swarm key
 should therefore yield read access, not code execution.
 

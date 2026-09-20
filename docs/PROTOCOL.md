@@ -55,7 +55,7 @@ A peer exposure means the skill is reachable by any swarm member, and never
 means unauthenticated: every request carries a proof (below).
 
 **Gated** means reachable only from a peer the machine has explicitly allowed
-to execute, and refused with `-32003` otherwise; see ADR 0008. Two details of
+to execute, and refused with `-32102` otherwise; see ADR 0008. Two details of
 the shapes above are load-bearing:
 
 - `process.spawn` takes **no `argv`**. The server constructs the command line;

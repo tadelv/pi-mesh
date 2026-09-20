@@ -19,6 +19,16 @@ losing visibility into what each instance is doing. pi-mesh gives you:
 
 ## Install
 
+> **Not yet released.** `@pi-mesh/agent` is `private` in this repository and is
+> not published to npm, so the commands below describe the intended install
+> once a release exists. Until then, run it from a checkout:
+>
+> ```sh
+> git clone https://github.com/tadelv/pi-mesh && cd pi-mesh
+> pnpm install && pnpm -r build
+> node packages/agent/dist/cli.js doctor
+> ```
+
 On each device that runs Pi:
 
     npm install -g @pi-mesh/agent
@@ -35,11 +45,17 @@ The peer's identity is learned from the authenticated handshake, so the direct
 path is exactly as trustworthy as discovery and works with no multicast at
 all. See [docs/SECURITY.md](docs/SECURITY.md).
 
-Deploy the control plane (optional but recommended):
+### Status of the control plane
 
-    docker compose -f examples/docker-compose.yml up -d
+The `packages/control-plane` package currently does discovery only: it
+publishes a service record and has no dashboard, no database and no pairing
+flow yet. Those are milestone 3. `docker compose -f
 
-Open http://localhost:7331 and pair your agents with a token.
+examples/docker-compose.yml up -d` starts the placeholder, and there is
+nothing to open at `http://localhost:7331` — it does not serve HTTP yet.
+
+The agent alone (read, stream, and gated execution of sessions over the mesh)
+is complete for what it claims.
 
 ## Security model
 
@@ -62,8 +78,11 @@ See [docs/SECURITY.md](docs/SECURITY.md).
 
 ## Status
 
-Pre-alpha. See [tasks/milestone-0.md](tasks/milestone-0.md) for the
-current scope.
+Pre-alpha. The **agent** is a working LAN mesh for reading, streaming and
+(review-gated) executing Pi sessions across machines; milestone 1 is complete
+and verified across two hosts, and milestone 2 adds controlled execution. The
+**control plane** is a discovery placeholder with no UI, database or pairing
+yet. See [tasks/milestone-2.md](tasks/milestone-2.md) for the current scope.
 
 ## License
 

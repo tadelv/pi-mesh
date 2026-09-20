@@ -20,8 +20,12 @@ with extra skills.
   not be pruned on "no announcement recently": liveness is refreshed by
   re-querying on an interval, and only a peer that stops answering ages out.
   `docs/DEMO.md` has the two-device check for this.
-- No manual address configuration in v1. Manual peer fallback is
-  deferred to a future milestone.
+- No manual address *configuration* in v1: peers are found by mDNS, and there
+  is no static peer file or config to maintain. A peer **can** be dialed
+  directly with `--peer-host <host[:port]>`, which is what makes the mesh
+  usable where multicast is blocked; the id is learned from the authenticated
+  handshake, so nothing is taken on trust (ADR 0007 amendment). A persistent
+  peer list is deferred until someone needs one.
 
 ## Transport
 
@@ -90,5 +94,5 @@ losing mesh membership.
 | Control plane offline | Mesh continues. UI unavailable. |
 | Peer goes silent | TTL expires; peer removed from registry. |
 | Session process dies | Agent emits `session.ended` with exit code. |
-| mDNS blocked | No discovery. Manual config deferred. |
+| mDNS blocked | `--peer-host` dials an address directly; discovery is unavailable, the mesh is not. |
 | Swarm key mismatch | Peer handshake fails; peer marked incompatible. |

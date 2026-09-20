@@ -48,7 +48,7 @@ Each skill also declares its **exposure**:
 | `session.steer` | **gated in M2** | `{ id, message }` | `{ accepted: boolean }` |
 | `session.abort` | peer | `{ id }` | `{ stopped: boolean }` |
 | `process.spawn` | **gated in M2** | `{ project, cwd? }` | `{ job_id, pid, session_id }` |
-| `process.stop` | **gated in M2** | `{ job_id, grace_ms? }` | `{ stopped: boolean }` |
+| `process.stop` | peer | `{ job_id, grace_ms? }` | `{ stopped: boolean }` |
 | `mesh.handoff` | **not served in M1** | `HandoffPayload` | `{ task_id }` |
 
 A peer exposure means the skill is reachable by any swarm member, and never
@@ -61,10 +61,11 @@ the shapes above are load-bearing:
 - `process.spawn` takes **no `argv`**. The server constructs the command line;
 a remote caller chooses a project, not a program. Peer-chosen argv could
 change the provider, the session directory, or which extensions load.
+- `process.spawn`'s `cwd`, when given, must resolve inside the configured
+workspace root, because it selects what the spawned agent may read and write.
 - `process.stop` takes a **mesh job id**, never a bare PID. The agent stops only
 jobs it started and still tracks, so a peer cannot signal arbitrary processes
-on the machine. `cwd`, when given, must resolve inside the configured
-workspace root.
+on the machine.
 
 Steering is gated with spawning because injected prompts cause tool
 execution. Stopping is not gated: `session.abort` and `process.stop` are

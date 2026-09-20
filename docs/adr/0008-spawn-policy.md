@@ -124,6 +124,18 @@ The research behind this is in `docs/research/process-spawning.md`.
   (so an unimplemented skill is reported as `-32004 UnsupportedOperation`
   rather than `-32102`, which would claim the agent can do a thing it cannot).
   `EXECUTION_SKILLS` in `skills.ts` is read by the gate, so the list cannot
-  drift from the check.
+  drift from the check. Two residual obligations follow from that shape:
+  a skill that executes must be **registered** (a transport-owned skill is the
+  exception that proves it: `session.stream` registers a throwing placeholder
+  so it is still gated), and the guard rests on that invariant rather than on
+  the type system. `SkillRegistry.registerExecution` makes the omission a
+  startup error for the direction it can catch.
+- **`tasks/get` and `tasks/cancel` are a second, non-skill dispatch path.** They
+  reach task state without naming a skill, so the gate does not cover them, and
+  ADR 0008 should say so rather than let "enforced once" imply more than it
+  does. Today that is safe: the methods only mutate an in-memory record, and the
+  only task that exists is created by `session.stream`. If `tasks/cancel` ever
+  becomes the cancellation path for a spawned job, that is a deliberate ungated
+  stop - consistent with decision 5, and worth stating when it happens.
 - `mesh.handoff` will need the same treatment when it lands, since it starts
   work on a peer's behalf; it is deliberately not decided here.

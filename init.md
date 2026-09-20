@@ -1,5 +1,14 @@
 # init.md — Bootstrap pi-mesh
 
+> **Historical snapshot, not live documentation.** Kept for provenance: this is
+> the spec the project was bootstrapped from, and parts of it were superseded as
+> the work ran. Where it disagrees with `docs/`, `docs/` wins. Specifically, its
+> error-code table predates ADR 0005 (pi-mesh's own codes now sit above A2A's
+> reserved range), it lists `process.spawn` with a peer-supplied `argv?` that
+> ADR 0008 §7 rejects, and it describes the bearer-token handshake that ADR 0007
+> replaced with per-request HMAC. Copying a table out of here is how a fixed bug
+> returns.
+
 You are bootstrapping a new TypeScript monorepo called **pi-mesh**.
 This file contains the full specification. Execute it top to bottom.
 
@@ -457,10 +466,8 @@ Extension URI: `https://pi-mesh.dev/extensions/handoff/v1`
 
 > **Superseded — do not copy this table.** These assignments predate ADR 0005,
 > which moved pi-mesh's own codes above A2A's reserved `-32001`-`-32099` range
-> because they collided with A2A's own errors (`-32001` is
-> `TaskNotFoundError`, `-32003` is `PushNotificationNotSupportedError`). The
-> live codes are in `packages/shared/src/errors.ts` and `docs/PROTOCOL.md`.
-> Copying this table into ADR 0008 is exactly how the collision came back.
+> because they collided with A2A's own errors. The live codes are in
+> `packages/shared/src/errors.ts` and `docs/PROTOCOL.md`.
 
 | Code | Meaning |
 |---|---|

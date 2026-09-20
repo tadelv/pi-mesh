@@ -109,8 +109,11 @@ async function executionServer(
 
 describe("spawn policy parsing", () => {
   it("denies everything when unset, empty, or only separators", () => {
+    // Both arguments are passed explicitly: defaulting to the real
+    // process.env would make this depend on the ambient environment, and
+    // PI_MESH_ALLOW_SPAWN is exactly the variable an operator may have set.
     for (const value of [undefined, "", "   ", ",", " , "]) {
-      const policy = parseSpawnPolicy(value);
+      const policy = parseSpawnPolicy(value, "");
       expect(policy.enabled).toBe(false);
       expect(policy.allows(callerIdentity.peerId)).toBe(false);
       expect(policy.allows("")).toBe(false);
@@ -118,7 +121,7 @@ describe("spawn policy parsing", () => {
   });
 
   it("allows any identified peer for the wildcard", () => {
-    const policy = parseSpawnPolicy("*");
+    const policy = parseSpawnPolicy("*", "");
     expect(policy.enabled).toBe(true);
     expect(policy.allows(callerIdentity.peerId)).toBe(true);
     expect(policy.allows("00000000-0000-4000-8000-000000000000")).toBe(true);
@@ -129,6 +132,7 @@ describe("spawn policy parsing", () => {
   it("allows exactly the listed peer ids", () => {
     const policy = parseSpawnPolicy(
       ` ${callerIdentity.peerId} , 11111111-1111-4111-8111-111111111111 `,
+      "",
     );
     expect(policy.enabled).toBe(true);
     expect(policy.allows(callerIdentity.peerId)).toBe(true);
@@ -137,11 +141,57 @@ describe("spawn policy parsing", () => {
   });
 
   it("ignores empty entries rather than widening the grant", () => {
-    const policy = parseSpawnPolicy(`,${callerIdentity.peerId},,`);
+    const policy = parseSpawnPolicy(`,${callerIdentity.peerId},,`, "");
     expect(policy.enabled).toBe(true);
     expect(policy.allows(callerIdentity.peerId)).toBe(true);
     expect(policy.allows("")).toBe(false);
     expect(policy.allows("44444444-4444-4444-8444-444444444444")).toBe(false);
+  });
+
+  it("treats a wildcard mixed with IDs as malformed, not as a wildcard", () => {
+    // The operator who had "*" and appended a peer ID meant to narrow the
+    // grant. Reading any "*" entry as a wildcard would widen it to every member
+    // instead - the one direction a security control must never fail.
+    for (const value of [
+      `*,${callerIdentity.peerId}`,
+      `${callerIdentity.peerId},*`,
+      ` *, ${callerIdentity.peerId} `,
+    ]) {
+      const policy = parseSpawnPolicy(value, "");
+      expect(policy.enabled).toBe(false);
+      expect(policy.allows(callerIdentity.peerId)).toBe(false);
+      expect(policy.allows("99999999-9999-4999-8999-999999999999")).toBe(false);
+      expect(policy.warning).toBeDefined();
+    }
+  });
+
+  it("rejects entries that cannot name a peer, rather than misreporting capability", () => {
+    // A token that is not a peer ID can never match a real peer. Accepting it
+    // would set `enabled` while allowing nobody, which would misreport this
+    // machine's capability once M2-8 filters advertising on the gate.
+    for (const value of ["true", "yes", "peer-1", "not-a-uuid"]) {
+      const policy = parseSpawnPolicy(value, "");
+      expect(policy.enabled).toBe(false);
+      expect(policy.allows(value)).toBe(false);
+      expect(policy.warning).toBeDefined();
+    }
+  });
+
+  it("matches listed peer ids case-insensitively", () => {
+    const policy = parseSpawnPolicy(callerIdentity.peerId.toUpperCase(), "");
+    expect(policy.enabled).toBe(true);
+    expect(policy.allows(callerIdentity.peerId)).toBe(true);
+    expect(policy.allows(callerIdentity.peerId.toUpperCase())).toBe(true);
+  });
+
+  it("accepts a duplicate entry without widening the grant", () => {
+    const policy = parseSpawnPolicy(
+      `${callerIdentity.peerId},${callerIdentity.peerId}`,
+      "",
+    );
+    expect(policy.enabled).toBe(true);
+    expect(policy.allows(callerIdentity.peerId)).toBe(true);
+    expect(policy.allows("99999999-9999-4999-8999-999999999999")).toBe(false);
   });
 
   it("reads the environment when no explicit value is given", () => {
@@ -296,7 +346,11 @@ describe("the execution gate", () => {
     // -32102 says "this agent does it, but not for you"; -32004 says "this
     // agent does not do it at all". Reporting a spawn denial for a skill that
     // was never implemented would be a lie, and a peer routes on the code.
-    const server = await executionServer(parseSpawnPolicy("*"));
+    //
+    // The policy DENIES, which is what makes this discriminate: with the
+    // served-check absent, the gate fires first and yields -32102, so a test
+    // run with an allowing policy would pass either way and catch nothing.
+    const server = await executionServer(parseSpawnPolicy(undefined, ""));
     try {
       const response = await post(server.port, sendMessage("process.spawn"));
       expect(JSON.parse(response.body).error?.code).toBe(-32004);
@@ -307,14 +361,27 @@ describe("the execution gate", () => {
 });
 
 describe("capability honesty and the gate", () => {
-  it("does not advertise an execution skill the agent does not serve", () => {
-    // Until the execution skills are implemented they are absent from the
-    // served set, so the card and the mDNS caps value cannot over-advertise
-    // them no matter how the gate is set. M2-8 makes the gate itself filter
-    // this list; this asserts the invariant that already holds.
+  it("does not list an execution skill the agent does not serve", () => {
+    // A tripwire on the module constant, not a test of advertising: the card
+    // and the mDNS caps value both derive from servedSkills(), so asserting
+    // that they agree would compare a value to itself. M2-8 carries the real
+    // assertion (the gate's effect on the advertised set).
     const served = servedSkills();
-    for (const skill of ["process.spawn", "session.steer"]) {
+    for (const skill of EXECUTION_SKILLS) {
       expect(served).not.toContain(skill);
     }
+  });
+
+  it("refuses to register an executing skill that is not on the gate list", () => {
+    // The other direction of drift: EXECUTION_SKILLS stops the gate guarding a
+    // skill that is not served, but nothing stops a handler that executes from
+    // being registered without being gated - unless that is an error.
+    const skills = new SkillRegistry();
+    expect(() =>
+      skills.registerExecution("process.stop", async () => ({})),
+    ).toThrow(/bypass the spawn gate/);
+    expect(() =>
+      skills.registerExecution("session.steer", async () => ({})),
+    ).not.toThrow();
   });
 });

@@ -32,7 +32,12 @@ import {
   verifyRequestSignature,
   type HandshakeTranscript,
 } from "@pi-mesh/protocol";
-import { configuredMeshPort, ErrorCode, PiMeshError } from "@pi-mesh/shared";
+import {
+  configuredMeshPort,
+  createLogger,
+  ErrorCode,
+  PiMeshError,
+} from "@pi-mesh/shared";
 import {
   assertExecutionAllowed,
   parseSpawnPolicy,
@@ -264,6 +269,13 @@ export class HttpAgentServer implements AgentServer {
       options.maxPendingHandshakes ?? MAX_PENDING_HANDSHAKES;
     this.skills = options.skillRegistry ?? createSkillRegistry(options);
     this.spawnPolicy = options.spawnPolicy ?? parseSpawnPolicy();
+    if (this.spawnPolicy.warning !== undefined) {
+      // stderr, not stdout: the CLI prints machine-readable JSON on stdout, and
+      // a rejected policy must be visible - silently denying everything looks
+      // like a bug, and silently allowing everything is the failure this
+      // feature exists to prevent.
+      createLogger({ name: "spawn-policy" }).warn(this.spawnPolicy.warning);
+    }
     this.server = createServer((request, response) => {
       void this.route(request, response).catch((error: unknown) => {
         if (!response.headersSent) {

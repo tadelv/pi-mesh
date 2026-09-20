@@ -31,7 +31,13 @@ wire shapes against.
 1. pi-mesh application errors move out of A2A's reserved range, starting at
    `-32100`: Unauthorized `-32100`, Unknown session `-32101`, Process spawn
    denied `-32102`.
-2. `-32001`-`-32099` is A2A's range and pi-mesh never emits a code from it.
+2. `-32001`-`-32099` is A2A's range and pi-mesh **never defines its own codes
+   inside it**. A2A-mandated errors are of course still emitted, because the
+   spec requires them and their codes are not ours to choose: `TaskNotFound`
+   (`-32001`) for `tasks/get`/`tasks/cancel`, and `VersionNotSupported`
+   (`-32009`) for an unsupported `A2A-Version`. The distinction is between a
+   code *we invent* and a code *the protocol dictates*; reading this as "never
+   emits" would be wrong, and the earlier phrasing invited that reading.
 3. Only genuine application errors get a code. Two conditions previously
    listed as errors are removed:
    - **Handoff rejected** is an A2A task outcome (`TASK_STATE_REJECTED`), not

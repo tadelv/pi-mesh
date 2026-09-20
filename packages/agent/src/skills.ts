@@ -21,11 +21,14 @@ const SERVED_SKILLS: readonly Skill[] = [
 
 /**
  * Skills that start or steer work, and so require the local spawn policy
- * (ADR 0008). This is the single list: the dispatch gate and the advertised
- * capabilities both read it, so a skill cannot be added to one and forgotten
- * in the other. Stopping skills are deliberately absent - reducing activity is
- * never the more dangerous operation, so `session.abort` and `process.stop`
- * are allowed to any member.
+ * (ADR 0008). This is the one list the dispatch gate reads, so a skill cannot
+ * be named in the gate and forgotten here. It does NOT yet drive advertising -
+ * `servedSkills()` returns `SERVED_SKILLS` directly, and M2-8 is what makes the
+ * advertised set depend on the gate.
+ *
+ * Stopping skills are deliberately absent: reducing activity is never the more
+ * dangerous operation, so `session.abort` and `process.stop` are allowed to any
+ * member (ADR 0008 decision 5).
  */
 export const EXECUTION_SKILLS: readonly Skill[] = [
   "process.spawn",
@@ -70,6 +73,24 @@ export class SkillRegistry {
   register(skill: Skill, handler: SkillHandler): this {
     this.handlers.set(skill, handler);
     return this;
+  }
+
+  /**
+   * Register a skill that starts or steers work.
+   *
+   * `EXECUTION_SKILLS` stops the gate being applied to a skill that is not
+   * served. This is the other direction: it stops a skill that executes from
+   * being served without the gate, by making the omission a startup error
+   * rather than a silent hole. Prefer this over `register` for any handler
+   * that can spawn or steer.
+   */
+  registerExecution(skill: Skill, handler: SkillHandler): this {
+    if (!(EXECUTION_SKILLS as readonly string[]).includes(skill)) {
+      throw new Error(
+        `Skill ${skill} executes but is not in EXECUTION_SKILLS, so it would bypass the spawn gate`,
+      );
+    }
+    return this.register(skill, handler);
   }
 
   has(skill: string): skill is Skill {

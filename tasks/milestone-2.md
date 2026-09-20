@@ -107,8 +107,11 @@ Verified against the installed Pi 0.85.1 docs and the research note in
 - Malformed configuration fails closed, with a clear message — never "parse
   error, therefore allow".
 - **DoD:** tests for default deny, wildcard, per-peer allow and per-peer deny,
-  malformed config, and a denied spawn that provably starts no process and
-  touches no file.
+  malformed config (a wildcard mixed with IDs; a token that is not a peer ID),
+  and a denied spawn that provably starts no process and touches no file.
+  The last clause is only satisfiable against a **registered stub handler** at
+  M2-1, because no execution skill exists yet; it is repeated for real in M2-5,
+  which is where an actual process could be started.
 
 ### M2-2 — Pi RPC client: framing and lifecycle
 - Launch `pi --mode rpc` (binary resolved explicitly, argv array, no shell).
@@ -156,16 +159,22 @@ Verified against the installed Pi 0.85.1 docs and the research note in
 - Bound retained output, concurrent jobs, and per-peer start rate.
 - **DoD:** a child that ignores `SIGTERM` is escalated to `SIGKILL`; stopping
   twice is safe; a stop for an unknown job id is refused; a spawn whose
-  requester disconnects before the response is written does not leave a
-  running child; after agent shutdown no child survives (checked against the
-  real process table, not a mock).
+  requester disconnects before the response is written leaves no child alive
+  **once its deadline plus grace has elapsed** (checked against the real
+  process table, not a mock, and naming the deadline - "does not leave a
+  running child" is unfalsifiable while the mechanism deliberately keeps the
+  child alive until that deadline); the agent itself survives the disconnect
+  rather than dying on a write to a destroyed socket; and after agent shutdown
+  no child survives.
 
 ### M2-5 — `process.spawn`
 - Input `{ project, cwd? }`. `cwd` is resolved with `realpath` and must be the
   workspace root or beneath it.
-- argv constructed by the agent: the resolved `pi` binary, `--mode rpc`, the
-  session directory, and `--no-approve` (decision 8). Nothing else, and no
-  flags from the peer.
+- argv constructed by the agent, and the literal recorded so it can be checked:
+  `[<resolved pi binary>, "--mode", "rpc", "--session-dir", <dir>,
+  "--no-approve", "--name", <job name>]`. The peer contributes `project` and
+  `cwd`; every flag is ours, and `--no-approve` is what stops a peer-spawned
+  session from loading project-local extension code.
 - Environment is an explicit allowlist; the swarm key and mesh credentials are
   **not** inherited. Asserted positively, not by absence.
 - Readiness: do not report success until the child answers, or report the
@@ -182,7 +191,10 @@ Verified against the installed Pi 0.85.1 docs and the research note in
 - `process.stop` takes a job id and refuses anything not in the table.
 - `session.abort` maps to the RPC `abort` command.
 - **DoD:** stop refuses an unknown job id and never signals an arbitrary PID;
-  abort on a live session ends it and is observable.
+  abort on a live session ends it and is observable **as the absence of any
+  further event for that session plus a terminal RPC event, not merely as a
+  successful response** - the observation has to be named or the criterion
+  cannot fail.
 
 ### M2-7 — `session.steer`
 - Maps to the RPC `steer` command. Gated exactly like spawn.

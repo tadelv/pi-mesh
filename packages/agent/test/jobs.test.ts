@@ -65,6 +65,7 @@ function realSpawner(running: Running[]) {
       get stdioClosed() {
         return rpc.stdioClosed;
       },
+      command: (command) => rpc.request(command),
       close: () => rpc.close(),
     };
   };
@@ -181,6 +182,7 @@ describe("JobManager", () => {
         pid: undefined,
         argv: [],
         stdioClosed: true,
+        command: async () => ({}),
         close: async () => {
           closes += 1;
         },
@@ -211,6 +213,7 @@ describe("JobManager", () => {
           pid: undefined,
           argv: [],
           stdioClosed: true,
+          command: async () => ({}),
           close: async () => undefined,
         };
       },
@@ -235,6 +238,41 @@ describe("JobManager", () => {
     });
   });
 
+  it("forwards commands only to a live job", async () => {
+    let exited:
+      | ((status: { code: number | null; signal: string | null }) => void)
+      | undefined;
+    const commands: Record<string, unknown>[] = [];
+    const jobs = new JobManager({
+      spawnJob: (_spec, report) => {
+        exited = report.exited;
+        return {
+          pid: undefined,
+          argv: [],
+          stdioClosed: true,
+          command: async (command) => {
+            commands.push(command);
+            return { success: true };
+          },
+          close: async () => undefined,
+        };
+      },
+      logger: silentLogger,
+    });
+    const record = jobs.start(spec());
+    await expect(jobs.send(record.id, { type: "abort" })).resolves.toEqual({
+      success: true,
+    });
+    expect(commands).toEqual([{ type: "abort" }]);
+    exited!({ code: 0, signal: null });
+    await expect(jobs.send(record.id, { type: "abort" })).rejects.toMatchObject(
+      {
+        code: ErrorCode.UnknownJob,
+      },
+    );
+    await jobs.shutdown();
+  });
+
   it("enforces concurrency, rate, output, and acknowledgement bounds", async () => {
     const reports: JobReporter[] = [];
     const handles: JobHandle[] = [];
@@ -248,6 +286,7 @@ describe("JobManager", () => {
           pid: undefined,
           argv: [],
           stdioClosed: true,
+          command: async () => ({}),
           close: async () => undefined,
         };
         handles.push(handle);
@@ -275,6 +314,7 @@ describe("JobManager", () => {
         pid: undefined,
         argv: [],
         stdioClosed: true,
+        command: async () => ({}),
         close: async () => report.exited({ code: 0, signal: null }),
       }),
       logger: silentLogger,
@@ -405,6 +445,7 @@ describe("JobManager", () => {
         pid: undefined,
         argv: [],
         stdioClosed: false,
+        command: async () => ({}),
         close: () => {
           closeCalls += 1;
           return new Promise<void>(() => undefined);
@@ -504,6 +545,7 @@ describe("JobManager", () => {
         pid: undefined,
         argv: [],
         stdioClosed: true,
+        command: async () => ({}),
         close: async () => report.exited({ code: 0, signal: null }),
       }),
       logger: silentLogger,
@@ -529,6 +571,7 @@ describe("JobManager", () => {
           pid: undefined,
           argv: [],
           stdioClosed: true,
+          command: async () => ({}),
           close: async () => report.exited({ code: 0, signal: null }),
         };
       },

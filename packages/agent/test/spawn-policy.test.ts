@@ -84,6 +84,7 @@ function sendMessage(skill: string, input: Record<string, unknown> = {}) {
 /** A server whose registry serves `session.steer`, an execution skill. */
 async function executionServer(
   policy: SpawnPolicy,
+  includeSpawn = true,
 ): Promise<{ port: number; calls: unknown[]; stop: () => Promise<void> }> {
   const sessionsRoot = await mkdtemp(join(tmpdir(), "pi-mesh-gate-"));
   const calls: unknown[] = [];
@@ -97,6 +98,12 @@ async function executionServer(
     calls.push(input);
     return { accepted: true };
   });
+  if (includeSpawn) {
+    skills.registerExecution("process.spawn", async (input) => {
+      calls.push(input);
+      return { accepted: true };
+    });
+  }
   const server = createAgentServer({
     host: "127.0.0.1",
     port: 0,
@@ -286,9 +293,8 @@ describe("the execution gate", () => {
       // The code must be asserted per path, not as a set of acceptable codes:
       // an assertion that accepts either code passes even when a path has no
       // gate at all, which is exactly the bypass this test exists to catch.
-      const servedExecutionSkill = "session.steer";
       for (const skill of EXECUTION_SKILLS) {
-        const expected = skill === servedExecutionSkill ? -32102 : -32004;
+        const expected = -32102;
         for (const method of ["message/send", "message/stream"]) {
           const request = sendMessage(skill);
           request.method = method;
@@ -352,7 +358,10 @@ describe("the execution gate", () => {
     // The policy DENIES, which is what makes this discriminate: with the
     // served-check absent, the gate fires first and yields -32102, so a test
     // run with an allowing policy would pass either way and catch nothing.
-    const server = await executionServer(parseSpawnPolicy(undefined, ""));
+    const server = await executionServer(
+      parseSpawnPolicy(undefined, ""),
+      false,
+    );
     try {
       const response = await post(server.port, sendMessage("process.spawn"));
       expect(JSON.parse(response.body).error?.code).toBe(-32004);

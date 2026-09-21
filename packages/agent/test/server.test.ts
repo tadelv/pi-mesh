@@ -293,27 +293,29 @@ describe("A2A HTTP server", () => {
           expect(response.body).toContain('"task"');
           continue;
         }
-        const response = await httpCallWith(
-          address.port,
-          call(skill, skill === "session.read" ? { id: sessionId } : {}),
-          {
-            "A2A-Version": "1.0",
-          },
-        );
-        expect(JSON.parse(response.body).error).toBeUndefined();
+        const input =
+          skill === "session.read"
+            ? { id: sessionId }
+            : skill === "process.stop" || skill === "session.abort"
+              ? { job_id: "missing" }
+              : {};
+        const response = await httpCallWith(address.port, call(skill, input), {
+          "A2A-Version": "1.0",
+        });
+        if (skill === "process.stop" || skill === "session.abort") {
+          expect(JSON.parse(response.body).error.code).toBe(-32004);
+        } else {
+          expect(JSON.parse(response.body).error).toBeUndefined();
+        }
       }
 
-      for (const skill of [
-        "process.spawn",
-        "process.stop",
-        "session.steer",
-        "session.abort",
-        "mesh.handoff",
-      ]) {
+      for (const skill of ["process.spawn", "session.steer", "mesh.handoff"]) {
         const response = await httpCallWith(address.port, call(skill), {
           "A2A-Version": "1.0",
         });
-        expect(JSON.parse(response.body).error.code).toBe(-32004);
+        expect(JSON.parse(response.body).error.code).toBe(
+          skill === "session.steer" ? -32102 : -32004,
+        );
       }
     } finally {
       await server.stop();

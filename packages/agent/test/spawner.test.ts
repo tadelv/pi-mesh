@@ -338,6 +338,10 @@ describe("spawn policy primitives", () => {
       "job",
     ]);
     expect(reports).toEqual(["123e4567-e89b-42d3-a456-426614174099"]);
+    await expect(handle.command({ type: "get_state" })).resolves.toMatchObject({
+      success: true,
+      data: { sessionId: "123e4567-e89b-42d3-a456-426614174099" },
+    });
     await handle.close();
   });
 });

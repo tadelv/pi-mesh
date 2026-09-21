@@ -7,6 +7,7 @@ import {
   PiMeshError,
   type Logger,
 } from "@pi-mesh/shared";
+import type { PiRpcCommand, PiRpcResponse } from "./rpc.js";
 
 /**
  * Concurrent jobs per agent. A Pi session is a full model-backed process, so
@@ -102,6 +103,7 @@ export interface JobHandle {
   readonly stdioClosed: boolean;
   /** Optional readiness barrier for spawners that need an RPC handshake. */
   readonly ready?: Promise<void>;
+  command(command: PiRpcCommand): Promise<PiRpcResponse>;
   close(): Promise<void>;
 }
 
@@ -388,6 +390,19 @@ export class JobManager {
 
   list(): JobRecord[] {
     return [...this.jobs.values()].reverse();
+  }
+
+  async send(id: string, command: PiRpcCommand): Promise<PiRpcResponse> {
+    const record = this.jobs.get(id);
+    const handle = this.handles.get(id);
+    if (
+      record === undefined ||
+      handle === undefined ||
+      record.state === "exited"
+    ) {
+      throw new PiMeshError(ErrorCode.UnknownJob, `Unknown job: ${id}`);
+    }
+    return handle.command(command);
   }
 
   async stop(id: string): Promise<JobRecord> {

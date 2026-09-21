@@ -45,10 +45,10 @@ Each skill also declares its **exposure**:
 | `session.list` | peer | `{}` | `{ sessions: SessionSummary[] }` |
 | `session.read` | peer | `{ id, since? }` | `{ entries: Event[] }` |
 | `session.stream` | peer | `{ id }` | SSE stream of `Event` |
-| `session.steer` | **gated in M2** | `{ id, message }` | `{ accepted: boolean }` |
-| `session.abort` | peer | `{ id }` | `{ stopped: boolean }` |
-| `process.spawn` | **gated in M2** | `{ project, cwd? }` | `{ job_id, pid, session_id }` |
-| `process.stop` | peer | `{ job_id, grace_ms? }` | `{ stopped: boolean }` |
+| `session.steer` | **gated on the spawn policy** | `{ job_id (mesh id, not PID), message }` | Pi RPC response; refused with `-32102` when closed |
+| `session.abort` | peer (ungated) | `{ job_id (mesh id, not PID) }` | Pi RPC response |
+| `process.spawn` | **gated on the spawn policy** | `{ project, cwd? }` | `{ job_id, pid, session_id }` |
+| `process.stop` | peer (ungated) | `{ job_id (mesh id, not PID) }` | `{ job_id, state, pid }` |
 | `mesh.handoff` | **not served in M1** | `HandoffPayload` | `{ task_id }` |
 
 A peer exposure means the skill is reachable by any swarm member, and never

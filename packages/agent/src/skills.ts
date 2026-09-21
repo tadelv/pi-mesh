@@ -22,6 +22,8 @@ const SERVED_SKILLS: readonly Skill[] = [
   "session.list",
   "session.read",
   "session.stream",
+  "process.stop",
+  "session.abort",
 ];
 
 /**
@@ -203,6 +205,33 @@ export function createSkillRegistry(
     });
   }
 
+  skills.register("process.stop", async (input) => {
+    const jobId = requiredString(input, "job_id");
+    if (options.jobs === undefined) {
+      throw new PiMeshError(-32004, "process.stop requires a job manager");
+    }
+    const record = await options.jobs.stop(jobId);
+    return { job_id: record.id, state: record.state, pid: record.pid };
+  });
+  skills.register("session.abort", async (input) => {
+    const jobId = requiredString(input, "job_id");
+    if (options.jobs === undefined) {
+      throw new PiMeshError(-32004, "session.abort requires a job manager");
+    }
+    return options.jobs.send(jobId, { type: "abort" });
+  });
+  skills.registerExecution("session.steer", async (input) => {
+    const jobId = requiredString(input, "job_id");
+    const message = requiredString(input, "message");
+    if (message.trim().length === 0) {
+      throw new PiMeshError(-32602, "Skill input requires non-blank message");
+    }
+    if (options.jobs === undefined) {
+      throw new PiMeshError(-32004, "session.steer requires a job manager");
+    }
+    return options.jobs.send(jobId, { type: "steer", message });
+  });
+
   skills.register("mesh.peers", async () => ({
     peers: peerSummaries(registry),
   }));
@@ -236,6 +265,6 @@ export function createSkillRegistry(
 export function servedSkills(spawnEnabled = false): Skill[] {
   return [
     ...SERVED_SKILLS,
-    ...(spawnEnabled ? (["process.spawn"] as Skill[]) : []),
+    ...(spawnEnabled ? (["process.spawn", "session.steer"] as Skill[]) : []),
   ];
 }

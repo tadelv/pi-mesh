@@ -104,6 +104,52 @@ function handle(line) {
     response(command.id, { keys: Object.keys(globalThis.process.env).sort() });
     return;
   }
+  if (mode === "abort" || mode === "steer") {
+    if (command.type === "get_state") {
+      response(command.id, {
+        command: "get_state",
+        success: true,
+        data: {
+          sessionId: "123e4567-e89b-42d3-a456-426614174099",
+          sessionFile: `${globalThis.process.cwd()}/session.jsonl`,
+        },
+      });
+      if (mode === "abort") {
+        const timer = globalThis.setInterval(() => {
+          globalThis.process.stderr.write("timer-output\n");
+        }, 20);
+        globalThis.process.once("abort-session", () =>
+          globalThis.clearInterval(timer),
+        );
+      }
+      return;
+    }
+    if (mode === "abort" && command.type === "abort") {
+      response(command.id, { success: true });
+      write({ type: "agent_end", reason: "aborted" });
+      globalThis.process.emit("abort-session");
+      return;
+    }
+    if (mode === "steer" && command.type === "steer") {
+      if (typeof command.message !== "string") {
+        response(command.id, {
+          success: false,
+          error: "steer message must be a string",
+        });
+        return;
+      }
+      globalThis.process.stderr.write(`steer=${command.message}\n`);
+      response(command.id, { success: true, accepted: true });
+      return;
+    }
+    write({
+      type: "response",
+      id: command.id,
+      success: false,
+      error: `Unknown command: ${JSON.stringify(command)}`,
+    });
+    return;
+  }
   if (mode === "state") {
     // Validate the request SHAPE, as real Pi does. Answering regardless of what
     // arrives is how a `{command:"get_state"}` request passed the suite while

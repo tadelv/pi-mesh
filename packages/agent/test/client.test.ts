@@ -172,13 +172,7 @@ describe("A2A client", () => {
     });
     const address = await server.start();
     try {
-      for (const skill of [
-        "process.spawn",
-        "process.stop",
-        "session.steer",
-        "session.abort",
-        "mesh.handoff",
-      ]) {
+      for (const skill of ["process.spawn", "mesh.handoff"]) {
         await expect(
           sendSkill(peer(address.port), skill, {}, options()),
         ).rejects.toSatisfy((error: unknown) => {

@@ -182,6 +182,7 @@ export function createPiSpawner(options: PiSpawnerOptions): JobSpawner {
       get stdioClosed() {
         return rpc.stdioClosed;
       },
+      command: (command) => rpc.request(command),
       close: () => rpc.close(),
       ready,
     };

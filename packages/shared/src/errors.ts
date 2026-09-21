@@ -18,6 +18,7 @@ export const ErrorCode = {
   SpawnDenied: -32102,
   UnknownJob: -32103,
   TooManyJobs: -32104,
+  SpawnFailed: -32105,
 } as const;
 
 export class PiMeshError extends Error {

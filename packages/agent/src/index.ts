@@ -17,3 +17,5 @@ export * from "./server.js";
 export * from "./client.js";
 export * from "./rpc.js";
 export * from "./jobs.js";
+export * from "./spawn-env.js";
+export * from "./spawner.js";

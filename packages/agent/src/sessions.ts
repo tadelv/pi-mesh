@@ -65,13 +65,20 @@ export function assertPlainUuid(id: string): void {
  * docs/PROTOCOL.md's paraphrase ("`/` replaced by `-`") is what produced the
  * extra dash; Pi's source is authoritative.
  */
-export function getSessionStorageDir(
+export function defaultSessionsRoot(): string {
+  return join(homedir(), ".pi", "agent", "sessions");
+}
+
+export function sessionDirectory(
   cwd: string,
-  sessionsRoot = join(homedir(), ".pi", "agent", "sessions"),
+  sessionsRoot = defaultSessionsRoot(),
 ): string {
   const encoded = cwd.replace(/^[/\\]/, "").replace(/[/\\:]/g, "-");
   return join(sessionsRoot, `--${encoded}--`);
 }
+
+/** Backwards-compatible name for the Pi storage-directory encoding. */
+export const getSessionStorageDir = sessionDirectory;
 
 function record(value: unknown): Record<string, unknown> | undefined {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -243,8 +250,7 @@ export class SessionStore {
   private parseErrors: SessionParseError[] = [];
 
   constructor(options: SessionStoreOptions = {}) {
-    this.sessionsRoot =
-      options.sessionsRoot ?? join(homedir(), ".pi", "agent", "sessions");
+    this.sessionsRoot = options.sessionsRoot ?? defaultSessionsRoot();
     this.onError = options.onError;
   }
 

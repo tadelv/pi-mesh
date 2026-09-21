@@ -31,6 +31,12 @@ import { servedSkills } from "./skills.js";
 import { parseSpawnPolicy, type SpawnPolicy } from "./spawn-policy.js";
 import { SessionStore } from "./sessions.js";
 import { sessionStream } from "./stream.js";
+import { JobManager } from "./jobs.js";
+import {
+  createPiSpawner,
+  resolvePiBinary,
+  resolveWorkspaceRoot,
+} from "./spawner.js";
 import { PiMeshError, ErrorCode } from "@pi-mesh/shared";
 import type { StreamResponse } from "@pi-mesh/protocol";
 
@@ -208,16 +214,33 @@ async function start(profile: NetworkProfile, io: CliIO): Promise<number> {
   let server: Awaited<ReturnType<typeof createAgentServer>> | undefined;
   let advertisement: Awaited<ReturnType<typeof publishAgent>> | undefined;
   let browser: ReturnType<typeof browsePeers> | undefined;
+  let jobs: JobManager | undefined;
   try {
     // The listener and advertisement must use the same identity and port. A
     // peer learns both from mDNS and signs requests addressed to that identity.
     const identity = io.identity ?? (await loadOrCreateIdentity());
+    const spawnPolicy = parseSpawnPolicy();
+    let workspaceRoot: string | undefined;
+    if (spawnPolicy.enabled) {
+      workspaceRoot = resolveWorkspaceRoot();
+      jobs = new JobManager({
+        spawnJob: createPiSpawner({
+          workspaceRoot,
+          piBinary: resolvePiBinary(),
+          ...(io.sessionsRoot === undefined
+            ? {}
+            : { sessionsRoot: io.sessionsRoot }),
+        }),
+      });
+    }
     if (swarmKey !== undefined) {
       server = createAgentServer({
         port: configuredPort(),
         swarmKey,
         identity,
         registry,
+        ...(jobs === undefined ? {} : { jobs }),
+        ...(workspaceRoot === undefined ? {} : { workspaceRoot }),
       });
       const listening = await server.start();
       advertisement = await publishAgent(
@@ -227,7 +250,7 @@ async function start(profile: NetworkProfile, io: CliIO): Promise<number> {
           version: process.env.PI_MESH_VERSION ?? "0.0.0",
           agentVersion: process.env.PI_MESH_AGENT_VERSION ?? "0.0.0",
           port: listening.port,
-          capabilities: servedSkills(),
+          capabilities: servedSkills(spawnPolicy.enabled && jobs !== undefined),
         },
         {
           profile,
@@ -249,6 +272,7 @@ async function start(profile: NetworkProfile, io: CliIO): Promise<number> {
         browser?.stop(),
         advertisement?.stop(),
         server?.stop(),
+        jobs?.shutdown(),
       ]);
       const failure = results.find(
         (result): result is PromiseRejectedResult =>
@@ -258,12 +282,17 @@ async function start(profile: NetworkProfile, io: CliIO): Promise<number> {
     };
 
     return await new Promise<number>((resolveExit) => {
-      process.once("SIGINT", () => {
+      let cleaned = false;
+      const onSignal = (): void => {
+        if (cleaned) return;
+        cleaned = true;
         void cleanup().then(
           () => resolveExit(0),
           () => resolveExit(1),
         );
-      });
+      };
+      process.once("SIGINT", onSignal);
+      process.once("SIGTERM", onSignal);
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -594,9 +623,23 @@ async function doctor(io: CliIO): Promise<number> {
       }
     }
   }
+  const spawnOptedIn =
+    process.env.PI_MESH_ALLOW_SPAWN !== undefined || spawnPolicy.enabled;
+  let piBinary: string | undefined;
+  let workspaceRoot: string | undefined;
+  let spawnResolutionError: string | undefined;
+  if (spawnOptedIn) {
+    try {
+      piBinary = resolvePiBinary();
+      workspaceRoot = resolveWorkspaceRoot();
+    } catch (error) {
+      spawnResolutionError = errorMessage(error);
+    }
+  }
   const failed =
     credentialsError !== undefined ||
     swarmKeyError !== undefined ||
+    spawnResolutionError !== undefined ||
     // A rejected policy is a configuration failure: it denies every peer while
     // looking like a first run, so it should not report success.
     spawnPolicy.warning !== undefined;
@@ -609,6 +652,9 @@ async function doctor(io: CliIO): Promise<number> {
       ...(swarmKeyError === undefined ? {} : { swarmKeyError }),
       configuredPort: configuredPort(),
       servedSkills: servedSkills(),
+      piBinary: piBinary ?? null,
+      workspaceRoot: workspaceRoot ?? null,
+      ...(spawnResolutionError === undefined ? {} : { spawnResolutionError }),
       // Reported here because a rejected policy denies everything, and doctor
       // is the command an operator runs when nothing works. Without this, a
       // fail-closed configuration is indistinguishable from a broken agent.

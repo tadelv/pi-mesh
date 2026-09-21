@@ -304,6 +304,7 @@ once a transport exists to carry it.
 | `-32102` | `PI_MESH_SPAWN_DENIED` | Process spawn denied (policy) |
 | `-32103` | `PI_MESH_UNKNOWN_JOB` | Unknown job |
 | `-32104` | `PI_MESH_TOO_MANY_JOBS` | Job concurrency or start-rate limit exceeded |
+| `-32105` | `PI_MESH_SPAWN_FAILED` | Process failed to start or become ready |
 
 Two conditions are deliberately **not** error codes:
 

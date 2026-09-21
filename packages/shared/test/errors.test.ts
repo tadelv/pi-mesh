@@ -11,6 +11,7 @@ describe("PiMeshError", () => {
       SpawnDenied: -32102,
       UnknownJob: -32103,
       TooManyJobs: -32104,
+      SpawnFailed: -32105,
     });
   });
 
@@ -23,6 +24,7 @@ describe("PiMeshError", () => {
       "SpawnDenied",
       "UnknownJob",
       "TooManyJobs",
+      "SpawnFailed",
     ]);
     expect(Object.values(ErrorCode).every((code) => code < -32099)).toBe(true);
   });

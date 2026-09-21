@@ -80,6 +80,57 @@ function handle(line) {
     response(command.id, { value: "spawned" });
     return;
   }
+  if (mode === "env") {
+    if (command.type !== "get_state") {
+      write({
+        type: "response",
+        id: command.id,
+        success: false,
+        error: `Unknown command: ${JSON.stringify(command)}`,
+      });
+      return;
+    }
+    if (command.type === "get_state") {
+      response(command.id, {
+        command: "get_state",
+        success: true,
+        data: {
+          sessionId: "123e4567-e89b-42d3-a456-426614174099",
+          sessionFile: `${globalThis.process.cwd()}/session.jsonl`,
+        },
+      });
+      return;
+    }
+    response(command.id, { keys: Object.keys(globalThis.process.env).sort() });
+    return;
+  }
+  if (mode === "state") {
+    // Validate the request SHAPE, as real Pi does. Answering regardless of what
+    // arrives is how a `{command:"get_state"}` request passed the suite while
+    // being unrecognisable to the actual binary.
+    if (command.type !== "get_state") {
+      write({
+        type: "response",
+        id: command.id,
+        success: false,
+        error: `Unknown command: ${JSON.stringify(command)}`,
+      });
+      return;
+    }
+    response(command.id, {
+      command: "get_state",
+      success: true,
+      data: {
+        sessionId: "123e4567-e89b-42d3-a456-426614174099",
+        sessionFile: `${globalThis.process.cwd()}/session.jsonl`,
+      },
+    });
+    return;
+  }
+  if (mode === "argv") {
+    response(command.id, { argv: globalThis.process.argv.slice(1) });
+    return;
+  }
   if (mode === "errorstring") {
     // Pi's real failure envelope carries `error` as a STRING, verified against
     // the binary: {"success":false,"error":"Unknown command: shutdown"}.
@@ -191,6 +242,14 @@ stdin.on("end", () => {
   if (mode === "ignoreterm") return;
   globalThis.setImmediate(() => globalThis.process.exit(0));
 });
+
+if (mode === "env") {
+  // At startup, where a test that drives the real spawner can read it from the
+  // reporter's stderr stream rather than from the stub's own belief.
+  globalThis.process.stderr.write(
+    `[fixture] envkeys=${JSON.stringify(Object.keys(globalThis.process.env).sort())}\n`,
+  );
+}
 
 if (mode === "ignoreterm") {
   globalThis.process.on("SIGTERM", () => undefined);

@@ -126,6 +126,7 @@ function reasonFor(code: number): string | undefined {
   if (code === ErrorCode.Unauthorized) return "PI_MESH_UNAUTHORIZED";
   if (code === ErrorCode.UnknownSession) return "PI_MESH_UNKNOWN_SESSION";
   if (code === ErrorCode.SpawnDenied) return "PI_MESH_SPAWN_DENIED";
+  if (code === ErrorCode.SpawnFailed) return "PI_MESH_SPAWN_FAILED";
   if (code === ErrorCode.UnknownJob) return "PI_MESH_UNKNOWN_JOB";
   if (code === ErrorCode.TooManyJobs) return "PI_MESH_TOO_MANY_JOBS";
   // A2A's own errors carry a reason too. The spec makes ErrorInfo a SHOULD for
@@ -371,7 +372,9 @@ export class HttpAgentServer implements AgentServer {
       securityRequirements: [],
       defaultInputModes: ["application/json"],
       defaultOutputModes: ["application/json"],
-      skills: servedSkills().map(skillInfo),
+      skills: servedSkills(
+        this.spawnPolicy.enabled && this.skills.has("process.spawn"),
+      ).map(skillInfo),
       signatures: [],
       iconUrl: "",
     };
@@ -663,7 +666,13 @@ export class HttpAgentServer implements AgentServer {
     if (request.method === "message/send") {
       const call = invocation(objectParams(request.params).message);
       this.gateExecution(call.skill, peerId);
-      const result = await this.skills.invoke(call.skill, call.input);
+      const inputWithPeer =
+        typeof call.input === "object" &&
+        call.input !== null &&
+        !Array.isArray(call.input)
+          ? { ...(call.input as Record<string, unknown>), _peerId: peerId }
+          : call.input;
+      const result = await this.skills.invoke(call.skill, inputWithPeer);
       return { message: messageFrom(result, call.contextId) };
     }
     if (request.method === "tasks/get") {

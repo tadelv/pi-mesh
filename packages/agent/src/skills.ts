@@ -1,15 +1,20 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import type { PeerSummary, Skill } from "@pi-mesh/protocol";
+import { isAbsolute, join } from "node:path";
 import { ErrorCode, PiMeshError } from "@pi-mesh/shared";
 import { PeerRegistry } from "./registry.js";
 import { SessionStore, type SessionStoreOptions } from "./sessions.js";
+import type { JobManager } from "./jobs.js";
+import { assertInsideWorkspace, resolveWorkspaceRoot } from "./spawner.js";
 
 export type SkillInput = Record<string, unknown>;
 export type SkillHandler = (input: SkillInput) => Promise<unknown>;
 
 export interface SkillRegistryOptions extends SessionStoreOptions {
   registry?: PeerRegistry;
+  jobs?: JobManager;
+  workspaceRoot?: string;
 }
 
 const SERVED_SKILLS: readonly Skill[] = [
@@ -128,6 +133,76 @@ export function createSkillRegistry(
   const registry = options.registry ?? new PeerRegistry();
   const skills = new SkillRegistry();
 
+  if (options.jobs !== undefined) {
+    skills.registerExecution("process.spawn", async (input) => {
+      const project = input.project;
+      if (typeof project !== "string" || project.trim().length === 0) {
+        throw new PiMeshError(
+          -32602,
+          "process.spawn requires a non-blank project",
+        );
+      }
+      if (input.cwd !== undefined && typeof input.cwd !== "string") {
+        throw new PiMeshError(-32602, "process.spawn cwd must be a string");
+      }
+      let root: string;
+      try {
+        root = resolveWorkspaceRoot(options.workspaceRoot);
+      } catch (error) {
+        throw new PiMeshError(
+          ErrorCode.SpawnDenied,
+          `process.spawn refused: workspace is not configured (${error instanceof Error ? error.message : String(error)})`,
+        );
+      }
+      let cwd: string;
+      try {
+        // A relative cwd resolves against the workspace ROOT, never against the
+        // agent's incidental process.cwd(): `realpathSync("sub")` would resolve
+        // against whatever directory the daemon was started in, so a legitimate
+        // request would be refused - or worse, silently point somewhere
+        // unrelated. `..` is still caught, by the realpath check inside.
+        const requested = input.cwd ?? root;
+        cwd = assertInsideWorkspace(
+          root,
+          isAbsolute(requested) ? requested : join(root, requested),
+        );
+      } catch (error) {
+        throw new PiMeshError(
+          ErrorCode.SpawnDenied,
+          `process.spawn refused: cwd is outside the workspace (${error instanceof Error ? error.message : String(error)})`,
+        );
+      }
+      let record;
+      try {
+        record = await options.jobs!.startReady({
+          peerId:
+            typeof input._peerId === "string" ? input._peerId : "unknown-peer",
+          project,
+          cwd,
+          name: project,
+        });
+      } catch (error) {
+        if (error instanceof PiMeshError) throw error;
+        throw new PiMeshError(
+          ErrorCode.SpawnFailed,
+          `process.spawn failed: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error },
+        );
+      }
+      if (record.sessionId === undefined) {
+        throw new PiMeshError(
+          ErrorCode.SpawnFailed,
+          "process.spawn failed: Pi did not report a session id",
+        );
+      }
+      return {
+        job_id: record.id,
+        pid: record.pid,
+        session_id: record.sessionId,
+      };
+    });
+  }
+
   skills.register("mesh.peers", async () => ({
     peers: peerSummaries(registry),
   }));
@@ -158,6 +233,9 @@ export function createSkillRegistry(
   return skills;
 }
 
-export function servedSkills(): Skill[] {
-  return [...SERVED_SKILLS];
+export function servedSkills(spawnEnabled = false): Skill[] {
+  return [
+    ...SERVED_SKILLS,
+    ...(spawnEnabled ? (["process.spawn"] as Skill[]) : []),
+  ];
 }

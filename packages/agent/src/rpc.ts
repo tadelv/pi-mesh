@@ -42,6 +42,8 @@ export interface PiRpcClientOptions {
   binaryArgs?: readonly string[];
   /** Optional environment override, primarily for deterministic fixture tests. */
   env?: NodeJS.ProcessEnv;
+  /** Working directory for the child process. */
+  cwd?: string;
 }
 
 export type PiRpcCommand = Record<string, unknown>;
@@ -301,6 +303,7 @@ export class PiRpcClient extends EventEmitter {
       detached: true,
       stdio: ["pipe", "pipe", "pipe"],
       env: options.env ?? childEnvironment(process.env),
+      ...(options.cwd === undefined ? {} : { cwd: options.cwd }),
     };
     this.child = spawn(binary, args, spawnOptions);
     // A write to a destroyed stdin emits an asynchronous stream error. Without

@@ -100,6 +100,8 @@ export interface JobHandle {
    * survived.
    */
   readonly stdioClosed: boolean;
+  /** Optional readiness barrier for spawners that need an RPC handshake. */
+  readonly ready?: Promise<void>;
   close(): Promise<void>;
 }
 
@@ -335,6 +337,28 @@ export class JobManager {
       this.deliveryTimers.set(id, timer);
     }
     return record;
+  }
+
+  async startReady(spec: JobSpec): Promise<JobRecord> {
+    const record = this.start(spec);
+    const handle = this.handles.get(record.id);
+    try {
+      await handle?.ready;
+      return record;
+    } catch (error) {
+      await this.stop(record.id).catch(() => undefined);
+      this.remove(record.id);
+      throw error;
+    }
+  }
+
+  private remove(id: string): void {
+    this.clearDeliveryTimer(id);
+    this.jobs.delete(id);
+    this.handles.delete(id);
+    this.stopPromises.delete(id);
+    this.retainedOutput.delete(id);
+    this.retainedOutputBytes.delete(id);
   }
 
   acknowledge(id: string): boolean {

@@ -42,6 +42,24 @@ you do not know yet.
 - **Run a race-sensitive test more than once.** One green run says nothing.
   Twelve is a reasonable floor before believing it.
 
+- **`process.kill(pid, 0)` returns success for a ZOMBIE**, so it cannot prove a
+  process is still alive. A test that asserts liveness this way is blind to
+  exactly the failure it is written to catch, and it is not a race: the
+  assertion runs before the event loop has reaped the child, so a `stop()` that
+  killed the pid still reads as alive. Measured immediately after `SIGKILL`:
+  `kill(pid, 0)` -> alive, `ps -o stat= -p <pid>` -> `Z`, gone 300ms later.
+  Assert liveness **behaviourally** - a live fixture keeps emitting output; a
+  killed one cannot - or check `ps` state is neither empty nor `Z`. Guarded
+  `process.stop`'s "never signals an arbitrary PID" clause, which passed while
+  a pid fallback was killing the child (`7a797f5`).
+- **A stub that answers regardless of the request shape hides wire-format bugs.**
+  The RPC fixture replied to `get_state` whatever arrived, so a request sent as
+  `{command: "get_state"}` - which real Pi cannot recognise, because its wire
+  format keys the method on `type` - passed a fully green suite and would have
+  failed every real spawn. Answering regardless is not tolerance, it is a test
+  that has stopped testing. Make doubles REFUSE what the real thing refuses
+  (`0526b6b`).
+
 ## Node / runtime
 
 - **`response.writeHead`/`end` on a destroyed socket does not throw and does not

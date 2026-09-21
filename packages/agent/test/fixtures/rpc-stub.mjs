@@ -169,6 +169,9 @@ stdin.on("end", () => {
 
 if (mode === "ignoreterm") {
   globalThis.process.on("SIGTERM", () => undefined);
+  // Load-bearing, not decoration: without a ref'd handle the process would exit
+  // as soon as stdin ended, and the SIGKILL escalation stage would never be
+  // exercised. Removing this silently changes what the escalation test covers.
   globalThis.setInterval(() => undefined, 1_000);
 }
 stdin.on("data", (chunk) => {

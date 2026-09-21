@@ -11,6 +11,7 @@ import {
   type JobHandle,
   type JobReporter,
   JobManager,
+  jobIdsIn,
 } from "../src/index.js";
 import { SkillRegistry } from "../src/skills.js";
 import { PiRpcClient } from "../src/rpc.js";
@@ -74,7 +75,62 @@ function spec(peerId = "peer-1") {
 }
 
 function assertGone(pid: number): void {
+  // `process.kill(undefined, 0)` throws a TypeError, so without this a missing
+  // pid would satisfy `toThrow()` and report a dead process that never existed.
+  expect(typeof pid).toBe("number");
+  expect(pid).toBeGreaterThan(0);
   expect(() => process.kill(pid, 0)).toThrow();
+}
+
+/** Fail rather than hang: a bound that never fires tests nothing. */
+function withDeadline<T>(
+  promise: Promise<T>,
+  ms: number,
+  what: string,
+): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(`${what} did not settle`)), ms),
+    ),
+  ]);
+}
+
+/** Resolve once every spawned child has actually started. */
+async function runningReady(running: Running[]): Promise<void> {
+  for (let i = 0; i < 50 && running.length === 0; i += 1) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  await Promise.all(running.map(({ rpc }) => rpc.ready));
+}
+
+/** POST a signed request and resolve with the status code. */
+function postOnce(
+  port: number,
+  headers: Record<string, string>,
+  body: string,
+): Promise<number | undefined> {
+  return new Promise((resolve, reject) => {
+    const client = request(
+      {
+        host: "127.0.0.1",
+        port,
+        method: "POST",
+        path: "/",
+        headers: {
+          ...headers,
+          "A2A-Version": "1.0",
+          "content-type": "application/json",
+        },
+      },
+      (response) => {
+        response.resume();
+        response.on("end", () => resolve(response.statusCode));
+      },
+    );
+    client.on("error", reject);
+    client.end(body);
+  });
 }
 
 /** GET the unauthenticated agent card: proof the server still answers. */
@@ -246,7 +302,7 @@ describe("JobManager", () => {
         name: "disconnect-test",
       });
       await new Promise((resolve) => setTimeout(resolve, 150));
-      return { job: started };
+      return { job_id: started.id, pid: started.pid };
     });
     const server = createAgentServer({
       port: 0,
@@ -315,6 +371,152 @@ describe("JobManager", () => {
       await jobs.shutdown();
       for (const child of running) await child.rpc.close();
     }
+  });
+
+  it("reads the documented job_id shape, and only that shape", () => {
+    // This is the contract between the two sides: PROTOCOL.md documents
+    // `process.spawn` -> `{ job_id, pid, session_id }`. When jobIdsIn accepted a
+    // different shape, a DELIVERED spawn was never acknowledged, so the job was
+    // killed 30s after every successful spawn while the whole suite stayed
+    // green - the failure that looks like success.
+    expect(jobIdsIn({ job_id: "job-1" })).toEqual(["job-1"]);
+    expect(
+      jobIdsIn({
+        message: { parts: [{ data: { result: { job_id: "job-2" } } }] },
+      }),
+    ).toEqual(["job-2"]);
+    // The undeclared shape that used to be accepted, and matched nothing on the
+    // wire: acknowledging it would be acknowledging a shape no peer sends.
+    expect(jobIdsIn({ job: { id: "job-3" } })).toEqual([]);
+    expect(jobIdsIn({ jobs: [{ id: "job-4" }] })).toEqual([]);
+    expect(jobIdsIn(undefined)).toEqual([]);
+  });
+
+  it("stays bounded when a handle's close() never settles", async () => {
+    // A handle whose close() never settles used to hang the re-entrant path,
+    // because stopPromises held the RAW promise: the first stop() returned on
+    // time and every later one - shutdown() included - waited forever. That is
+    // M1's server.stop() hang reintroduced at the job layer, and it is the
+    // precise case stopTimeoutMs exists for.
+    let closeCalls = 0;
+    const jobs = new JobManager({
+      stopTimeoutMs: 150,
+      spawnJob: () => ({
+        pid: undefined,
+        argv: [],
+        stdioClosed: false,
+        close: () => {
+          closeCalls += 1;
+          return new Promise<void>(() => undefined);
+        },
+      }),
+      logger: silentLogger,
+    });
+    const record = jobs.start(spec());
+    await expect(
+      withDeadline(jobs.stop(record.id), 2_000, "first stop"),
+    ).resolves.toBe(record);
+    await expect(
+      withDeadline(jobs.stop(record.id), 2_000, "second stop"),
+    ).resolves.toBe(record);
+    await expect(
+      withDeadline(jobs.shutdown(), 2_000, "shutdown"),
+    ).resolves.toBeUndefined();
+    expect(closeCalls).toBe(1);
+  });
+
+  it("lets a delivered spawn result survive the deadline", async () => {
+    // The crossing test the suite was missing: a real request, over the real
+    // server, whose result is delivered while the socket is healthy. If
+    // acknowledgement is broken the job is reaped at the deadline and this
+    // fails - whereas the disconnect test cannot tell the difference, because
+    // it EXPECTS reaping.
+    const running: Running[] = [];
+    const jobs = new JobManager({
+      spawnJob: realSpawner(running),
+      unacknowledgedTtlMs: 250,
+      logger: silentLogger,
+    });
+    const skills = new SkillRegistry();
+    skills.registerExecution("process.spawn", async () => {
+      const started = jobs.start({
+        peerId: "peer-1",
+        project: "project",
+        cwd: process.cwd(),
+        name: "delivered-test",
+      });
+      // The shape PROTOCOL.md documents, because that is what acknowledgement
+      // keys on. Returning the record itself acknowledged nothing - which is
+      // the whole defect this test exists to catch.
+      return { job_id: started.id, pid: started.pid, session_id: "session-1" };
+    });
+    const server = createAgentServer({
+      port: 0,
+      host: "127.0.0.1",
+      swarmKey: testKey,
+      identity: testIdentity,
+      skillRegistry: skills,
+      jobs,
+      spawnPolicy: { allows: () => true, enabled: true },
+    });
+    const address = await server.start();
+    const body = JSON.stringify({
+      jsonrpc: "2.0",
+      id: 1,
+      method: "message/send",
+      params: {
+        message: {
+          messageId: "message-1",
+          role: "ROLE_USER",
+          parts: [{ data: { skill: "process.spawn", input: {} } }],
+        },
+      },
+    });
+    const headers = signedHeaders(testKey, testIdentity, {
+      method: "POST",
+      path: "/",
+      recipientPeerId: testIdentity.peerId,
+      body,
+    });
+    try {
+      await runningReady(running);
+      const status = await postOnce(address.port, headers, body);
+      expect(status).toBe(200);
+      const id = jobs.list()[0]!.id;
+      expect(jobs.get(id)?.acknowledged).toBe(true);
+      // Past the deadline: an acknowledged job must still be alive.
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      const record = jobs.get(id)!;
+      expect(record.state).not.toBe("exited");
+      expect(() => process.kill(record.pid!, 0)).not.toThrow();
+    } finally {
+      await server.stop();
+      await jobs.shutdown();
+      for (const child of running) await child.rpc.close();
+    }
+  });
+
+  it("keeps an exited job so a later stop can still answer for it", async () => {
+    // AGENTS.md: a stop for an already-stopped process must succeed. Dropping
+    // the record the moment it exits made that report UnknownJob instead.
+    const jobs = new JobManager({
+      spawnJob: (_spec, report) => ({
+        pid: undefined,
+        argv: [],
+        stdioClosed: true,
+        close: async () => report.exited({ code: 0, signal: null }),
+      }),
+      logger: silentLogger,
+    });
+    const record = jobs.start(spec());
+    await jobs.stop(record.id);
+    expect(record.state).toBe("exited");
+    const again = await jobs.stop(record.id);
+    expect(again).toBe(record);
+    // A fresh start must not forget it either.
+    jobs.start(spec("peer-2"));
+    await expect(jobs.stop(record.id)).resolves.toBe(record);
+    await jobs.shutdown();
   });
 
   it("does not reap an acknowledged job at the delivery deadline", async () => {

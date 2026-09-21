@@ -210,6 +210,12 @@ Verified against the installed Pi 0.85.1 docs and the research note in
   has produced a turn** (this cross-path assertion is what M2-9 depends on, and
   it is the one seam the two read paths share).
 
+- **Wiring M2-4 handed forward.** Reaping on shutdown is a property of
+  `JobManager`, not of the agent: nothing constructs a `JobManager` yet, and
+  `cli.ts`'s `cleanup()` does not call `jobs.shutdown()`. Until M2-5 does both,
+  M2-4's "after agent shutdown no child survives" holds only in tests, and the
+  delivery deadline never fires against a real `pi`.
+
 ### M2-6 — `process.stop` and `session.abort`
 - Both ungated, both allowed to any member.
 - `process.stop` takes a job id and refuses anything not in the table.

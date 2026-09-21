@@ -438,10 +438,18 @@ export class HttpAgentServer implements AgentServer {
     }
     try {
       const result = await this.call(body, peerId);
-      const responseWasAlive =
-        response.destroyed === false && response.writableEnded === false;
+      // Acknowledge on `finish`, not on a flag read before the write. `finish`
+      // never fires for a response whose socket was destroyed (verified: only
+      // `close` fires), so it is positive evidence the payload actually left.
+      // A pre-write check also passes when the socket dies during the write,
+      // which would mark a job delivered that the peer never heard about and
+      // exempt it from the reaping deadline - the exact orphan the deadline
+      // exists to prevent. The remaining window (accepted by the kernel, never
+      // sent) is not closable from here and is why the deadline is best-effort.
+      response.once("finish", () => {
+        this.options.jobs?.acknowledgeResult(result);
+      });
       writeJson(response, 200, { jsonrpc: "2.0", id: body.id, result });
-      if (responseWasAlive) this.options.jobs?.acknowledgeResult(result);
     } catch (error) {
       writeJson(response, 200, errorResponse(body.id, error));
     }

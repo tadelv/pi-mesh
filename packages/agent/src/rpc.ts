@@ -393,13 +393,6 @@ export class PiRpcClient extends EventEmitter {
     return this.stderrText;
   }
 
-  get exitStatus():
-    { code: number | null; signal: NodeJS.Signals | null } | undefined {
-    return this.exited
-      ? { code: this.closeCode, signal: this.closeSignal }
-      : undefined;
-  }
-
   get stdioClosed(): boolean {
     return this.closed;
   }

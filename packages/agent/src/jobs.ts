@@ -8,9 +8,31 @@ import {
   type Logger,
 } from "@pi-mesh/shared";
 
+/**
+ * Concurrent jobs per agent. A Pi session is a full model-backed process, so
+ * this is a resource bound rather than a queue depth: four is what a 2 GB
+ * Raspberry Pi (the smallest target this project runs on) survives while still
+ * leaving room for the agent itself.
+ */
 const DEFAULT_MAX_JOBS = 4;
+/**
+ * How long a job may exist before the peer that asked for it has learned its
+ * id. Must exceed the spawn-readiness bound: acknowledgement can only happen
+ * after the skill resolves, and M2-5's handler awaits the child being ready
+ * (`rpc.ready`, then `get_state`). If readiness ever takes longer than this,
+ * the job is reaped before its response is written - so raising one without the
+ * other is the way to break this.
+ */
 const DEFAULT_UNACKNOWLEDGED_TTL_MS = 30_000;
 const DEFAULT_MAX_RETAINED_OUTPUT_LINES = 200;
+/** Bytes, not just lines: one stderr chunk can be tens of KB. */
+const DEFAULT_MAX_RETAINED_OUTPUT_BYTES = 32_768;
+/**
+ * Exited records are kept so a peer can still ask what happened to a job it
+ * started (`process.stop` on an already-stopped job must succeed, AGENTS.md),
+ * and evicted oldest-first beyond this so the table cannot grow without bound.
+ */
+const DEFAULT_MAX_RETAINED_JOBS = 64;
 const DEFAULT_PEER_START_LIMIT = 6;
 const DEFAULT_PEER_START_WINDOW_MS = 60_000;
 /**
@@ -27,7 +49,12 @@ const DEFAULT_STOP_TIMEOUT_MS = 5_000;
 
 type StopPromise = Promise<void>;
 
-export type JobState = "starting" | "running" | "stopping" | "exited";
+/**
+ * `starting` is deliberately absent: the record cannot be observed in that
+ * state, because it is created and promoted to `running` in one synchronous
+ * block. A state no caller can see is a state that only misleads readers.
+ */
+export type JobState = "running" | "stopping" | "exited";
 
 export interface JobSpec {
   readonly peerId: string;
@@ -67,10 +94,26 @@ export interface JobReporter {
 export interface JobHandle {
   readonly pid: number | undefined;
   readonly argv: readonly string[];
+  /**
+   * Whether the child's stdio has closed, meaningful only after `close()`.
+   * False means "unreaped": the wait was given up on, not that the process
+   * survived.
+   */
   readonly stdioClosed: boolean;
   close(): Promise<void>;
 }
 
+/**
+ * A spawner MUST call `report.exited` when the child terminates. That report is
+ * the only evidence the table accepts that a child is gone, because inferring
+ * termination from a quiet handle is how a live process gets forgotten.
+ *
+ * The consequence of breaking it is worth stating: a record whose exit is never
+ * reported stays in `stopping` forever and keeps consuming a `maxJobs` slot, so
+ * enough silent handles block every future spawn. M2-5 should make that
+ * unreachable (PiRpcClient always emits `exit` after SIGKILL) and M2-6 should
+ * decide what `process.stop` reports for a job stuck in `stopping`.
+ */
 export type JobSpawner = (spec: JobSpec, report: JobReporter) => JobHandle;
 
 export interface JobManagerOptions {
@@ -78,10 +121,35 @@ export interface JobManagerOptions {
   maxJobs?: number;
   unacknowledgedTtlMs?: number;
   maxRetainedOutputLines?: number;
+  maxRetainedOutputBytes?: number;
+  maxRetainedJobs?: number;
   perPeerStartLimit?: { limit: number; windowMs: number };
   stopTimeoutMs?: number;
   logger?: Logger;
   now?: () => number;
+}
+
+/**
+ * Resolve when `promise` settles, or after `ms` - whichever comes first.
+ * Resolving early leaves the original promise running; callers must therefore
+ * treat "resolved" as "gave up waiting", not as "done".
+ */
+function boundBy(
+  promise: Promise<void>,
+  ms: number,
+  onTimeout: () => void,
+): Promise<void> {
+  return new Promise<void>((resolve) => {
+    const timer = setTimeout(() => {
+      onTimeout();
+      resolve();
+    }, ms);
+    timer.unref();
+    void promise.then(() => {
+      clearTimeout(timer);
+      resolve();
+    });
+  });
 }
 
 function nonNegativeInteger(value: number, name: string): number {
@@ -104,6 +172,8 @@ export class JobManager {
   private readonly maxJobs: number;
   private readonly unacknowledgedTtlMs: number;
   private readonly maxRetainedOutputLines: number;
+  private readonly maxRetainedOutputBytes: number;
+  private readonly maxRetainedJobs: number;
   private readonly peerStartLimit: number;
   private readonly peerStartWindowMs: number;
   private readonly stopTimeoutMs: number;
@@ -114,6 +184,7 @@ export class JobManager {
   private readonly deliveryTimers = new Map<string, NodeJS.Timeout>();
   private readonly stopPromises = new Map<string, StopPromise>();
   private readonly retainedOutput = new Map<string, string[]>();
+  private readonly retainedOutputBytes = new Map<string, number>();
   private readonly peerStarts = new Map<string, number[]>();
 
   constructor(options: JobManagerOptions) {
@@ -129,6 +200,14 @@ export class JobManager {
     this.maxRetainedOutputLines = nonNegativeInteger(
       options.maxRetainedOutputLines ?? DEFAULT_MAX_RETAINED_OUTPUT_LINES,
       "maxRetainedOutputLines",
+    );
+    this.maxRetainedOutputBytes = nonNegativeInteger(
+      options.maxRetainedOutputBytes ?? DEFAULT_MAX_RETAINED_OUTPUT_BYTES,
+      "maxRetainedOutputBytes",
+    );
+    this.maxRetainedJobs = positiveInteger(
+      options.maxRetainedJobs ?? DEFAULT_MAX_RETAINED_JOBS,
+      "maxRetainedJobs",
     );
     const peerLimit = options.perPeerStartLimit ?? {
       limit: DEFAULT_PEER_START_LIMIT,
@@ -151,7 +230,7 @@ export class JobManager {
   }
 
   start(spec: JobSpec): JobRecord {
-    this.reapExited();
+    this.evictExited();
     const active = [...this.jobs.values()].filter(
       (job) => job.state !== "exited",
     ).length;
@@ -166,6 +245,11 @@ export class JobManager {
     const starts = (this.peerStarts.get(spec.peerId) ?? []).filter(
       (at) => at + this.peerStartWindowMs > now,
     );
+    if (starts.length === 0) this.peerStarts.delete(spec.peerId);
+    // Containment, not anti-abuse: `peerId` is a routing label that any member
+    // can claim or rotate (ADR 0008 decision 3), so this bounds a runaway
+    // loop's churn, not a determined peer. `maxJobs` is what actually bounds
+    // concurrency.
     if (starts.length >= this.peerStartLimit) {
       throw new PiMeshError(
         ErrorCode.TooManyJobs,
@@ -181,9 +265,22 @@ export class JobManager {
         const record = current.record;
         if (record === undefined) return;
         const lines = this.retainedOutput.get(record.id);
-        if (lines === undefined || this.maxRetainedOutputLines === 0) return;
+        if (lines === undefined) return;
+        if (
+          this.maxRetainedOutputLines === 0 ||
+          this.maxRetainedOutputBytes === 0
+        )
+          return;
         lines.push(line);
-        if (lines.length > this.maxRetainedOutputLines) lines.shift();
+        let bytes =
+          (this.retainedOutputBytes.get(record.id) ?? 0) + line.length;
+        while (
+          lines.length > this.maxRetainedOutputLines ||
+          (bytes > this.maxRetainedOutputBytes && lines.length > 1)
+        ) {
+          bytes -= (lines.shift() ?? "").length;
+        }
+        this.retainedOutputBytes.set(record.id, Math.max(bytes, 0));
       },
       session: (sessionId) => {
         const record = current.record;
@@ -209,7 +306,7 @@ export class JobManager {
       argv: handle.argv,
       project: spec.project,
       cwd: spec.cwd,
-      state: "starting",
+      state: "running",
       acknowledged: false,
       stdioClosed: false,
     };
@@ -217,15 +314,15 @@ export class JobManager {
     this.jobs.set(id, record);
     this.handles.set(id, handle);
     this.retainedOutput.set(id, []);
+    this.retainedOutputBytes.set(id, 0);
     starts.push(now);
     this.peerStarts.set(spec.peerId, starts);
-    record.state = "running";
     if (earlyExit !== undefined) this.markExited(record, earlyExit);
 
     if (earlyExit === undefined) {
       const timer = setTimeout(() => {
         this.deliveryTimers.delete(id);
-        if (!record?.acknowledged && record?.state !== "exited") {
+        if (!record.acknowledged && record.state !== "exited") {
           void this.stop(id).catch((error: unknown) => {
             this.logger.error("Unable to reap unacknowledged job", {
               id,
@@ -295,20 +392,18 @@ export class JobManager {
           this.logger.error("Job close failed", { id, error: String(error) });
         },
       );
-    this.stopPromises.set(id, close);
-    let timer: NodeJS.Timeout | undefined;
-    let timedOut = true;
-    const timeout = new Promise<void>((resolve) => {
-      timer = setTimeout(resolve, this.stopTimeoutMs);
-      timer.unref();
+    let timedOut = false;
+    // The BOUNDED promise is what gets stored. Storing the raw close() here is
+    // the bug this replaced: every other caller reaches the handle through this
+    // map, so an unbounded promise made the first stop() return on time while
+    // leaving the second stop() - and shutdown() with it - waiting forever on a
+    // handle that never settles. That is the same shape as M1's server.stop()
+    // hang, and it is exactly the case stopTimeoutMs claims to cover.
+    const bounded = boundBy(close, this.stopTimeoutMs, () => {
+      timedOut = true;
     });
-    await Promise.race([
-      close.then(() => {
-        timedOut = false;
-      }),
-      timeout,
-    ]);
-    if (timer !== undefined) clearTimeout(timer);
+    this.stopPromises.set(id, bounded);
+    await bounded;
     if (timedOut) {
       // A close that finishes after this bound still updates stdioClosed above.
       // Keeping the record in stopping is intentional: only the reporter's exit
@@ -329,6 +424,19 @@ export class JobManager {
         .filter((record) => record.state !== "exited")
         .map((record) => this.stop(record.id)),
     );
+    // Say so when this was not clean. Resolving silently would let "shutdown
+    // finished" and "two children are still running" look identical to the
+    // caller, and the DoD reads better than it deserves. The honest scope is
+    // "no direct child": a descendant that inherited an fd survives regardless
+    // (ADR 0008, Consequences).
+    const survivors = [...this.jobs.values()]
+      .filter((record) => record.state !== "exited")
+      .map((record) => ({ id: record.id, pid: record.pid }));
+    if (survivors.length > 0) {
+      this.logger.warn("Jobs still running after shutdown", {
+        jobs: survivors,
+      });
+    }
   }
 
   private markExited(
@@ -359,56 +467,63 @@ export class JobManager {
    * exited". M2-6's `process.stop` should decide whether that distinction
    * matters to a peer before relying on it.
    */
-  private reapExited(): void {
-    for (const [id, record] of this.jobs) {
-      if (record.state !== "exited") continue;
-      this.jobs.delete(id);
-      this.handles.delete(id);
-      this.stopPromises.delete(id);
-      this.retainedOutput.delete(id);
-      this.clearDeliveryTimer(id);
+  /**
+   * Drop the oldest exited records once the table is at its retention bound.
+   *
+   * Exited records are kept rather than dropped immediately, because
+   * `process.stop` on a job that has already stopped must succeed rather than
+   * reporting that a job the peer really did start never existed (AGENTS.md:
+   * idempotent control commands). Eviction is oldest-first, and only ever of
+   * records that have already exited, so it can never orphan a live child.
+   *
+   * An exited-but-unreported job is NOT evicted and NOT counted as finished:
+   * the sole evidence that a child is gone is the spawner's exit report, and
+   * treating a quiet handle as dead is how a live process gets forgotten.
+   */
+  private evictExited(): void {
+    while (this.jobs.size >= this.maxRetainedJobs) {
+      const oldest = [...this.jobs.values()].find(
+        (record) => record.state === "exited",
+      );
+      if (oldest === undefined) return;
+      this.jobs.delete(oldest.id);
+      this.handles.delete(oldest.id);
+      this.stopPromises.delete(oldest.id);
+      this.retainedOutput.delete(oldest.id);
+      this.retainedOutputBytes.delete(oldest.id);
+      this.clearDeliveryTimer(oldest.id);
     }
   }
 }
 
 export function jobIdsIn(result: unknown): string[] {
   const ids: string[] = [];
-  const collect = (value: unknown): void => {
-    if (typeof value !== "object" || value === null || Array.isArray(value))
-      return;
-    const object = value as Record<string, unknown>;
-    const job = object.job;
-    if (typeof job === "object" && job !== null && !Array.isArray(job)) {
-      const id = (job as Record<string, unknown>).id;
-      if (typeof id === "string") ids.push(id);
-    }
-    if (Array.isArray(object.jobs)) {
-      for (const item of object.jobs) {
-        if (typeof item !== "object" || item === null || Array.isArray(item))
-          continue;
-        const id = (item as Record<string, unknown>).id;
-        if (typeof id === "string") ids.push(id);
-      }
-    }
-    const message = object.message;
-    if (
-      typeof message === "object" &&
-      message !== null &&
-      !Array.isArray(message)
-    ) {
-      const parts = (message as Record<string, unknown>).parts;
-      if (Array.isArray(parts)) {
-        for (const part of parts) {
-          if (typeof part !== "object" || part === null || Array.isArray(part))
-            continue;
-          const data = (part as Record<string, unknown>).data;
-          if (typeof data !== "object" || data === null || Array.isArray(data))
-            continue;
-          collect((data as Record<string, unknown>).result);
-        }
-      }
-    }
+  // The documented output of `process.spawn` is `{ job_id, pid, session_id }`
+  // (docs/PROTOCOL.md, skill table). Accepting anything else - a `{ job: { id } }`
+  // convention that no document declares - is how a DELIVERED spawn result goes
+  // unacknowledged: the job is then reaped at its deadline while every test
+  // still passes, because the disconnect test expects reaping. One shape, the
+  // documented one, pinned by a test.
+  const fromSkillOutput = (value: unknown): void => {
+    const jobId = asObject(value)?.job_id;
+    if (typeof jobId === "string" && jobId.length > 0) ids.push(jobId);
   };
-  collect(result);
+  fromSkillOutput(result);
+  // The unary path wraps a skill's output in an A2A message, so a real response
+  // carries it at message.parts[].data.result rather than at the top level.
+  const message = asObject(asObject(result)?.message);
+  const parts = message?.parts;
+  if (Array.isArray(parts)) {
+    for (const part of parts) {
+      fromSkillOutput(asObject(asObject(part)?.data)?.result);
+    }
+  }
   return [...new Set(ids)];
+}
+
+function asObject(value: unknown): Record<string, unknown> | undefined {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  return value as Record<string, unknown>;
 }

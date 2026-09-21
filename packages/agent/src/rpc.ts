@@ -307,6 +307,7 @@ export class PiRpcClient extends EventEmitter {
       this.exited = true;
       this.closeCode = code;
       this.closeSignal = signal;
+      this.emit("exit", { code, signal });
       // Reject pending requests on EXIT, not only on close. If a descendant
       // inherited fd 1/2 the stdio never closes, so waiting for `close` would
       // leave every pending request to expire on its own timer and be reported
@@ -390,6 +391,17 @@ export class PiRpcClient extends EventEmitter {
 
   get stderr(): string {
     return this.stderrText;
+  }
+
+  get exitStatus():
+    { code: number | null; signal: NodeJS.Signals | null } | undefined {
+    return this.exited
+      ? { code: this.closeCode, signal: this.closeSignal }
+      : undefined;
+  }
+
+  get stdioClosed(): boolean {
+    return this.closed;
   }
 
   /** Send a Pi RPC command and await only its matching response. */

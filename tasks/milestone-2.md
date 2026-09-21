@@ -164,12 +164,20 @@ Verified against the installed Pi 0.85.1 docs and the research note in
   then `SIGKILL`. Observe `close`; never infer termination from `kill()`
   returning true. Stop is idempotent.
 - **A job whose spawner vanished is still our job.** The job id only ever
-  exists in the `process.spawn` response, and the unary path writes that
-  response unconditionally without watching for a closed socket, so a peer
-  that disconnects mid-spawn leaves a live `pi` nobody can name, stop, or
-  enumerate. Socket closure alone is not enough to detect it (the peer may
-  have received the response and then died), so unacknowledged jobs also carry
-  a wall-clock deadline and are reaped on expiry.
+  exists in the `process.spawn` response, so a peer that disconnects mid-spawn
+  leaves a live `pi` nobody can name, stop, or enumerate. Socket closure alone
+  is not enough to detect it (the peer may have received the response and then
+  died), so unacknowledged jobs also carry a wall-clock deadline and are reaped
+  on expiry.
+
+  *Measured correction (2026-02):* this section used to claim the unary path
+  "writes that response unconditionally without watching for a closed socket"
+  and that the agent therefore dies. It does not. Node silently discards
+  `writeHead`/`end` on a destroyed `ServerResponse` — no throw, no `error`
+  event, verified both after a clean `close` and after an RST. The agent
+  survives a peer disconnect on its own, so there is no guard to add; the harm
+  is the orphaned job, not a crash. The survival assertion stays in the tests
+  because it is cheap to lock in, not because anything defends it.
 - Reap children when the agent shuts down. M1 already learned this the hard
   way: `server.stop()` hung on an open SSE stream.
 - Bound retained output, concurrent jobs, and per-peer start rate.
@@ -180,8 +188,8 @@ Verified against the installed Pi 0.85.1 docs and the research note in
   process table, not a mock, and naming the deadline - "does not leave a
   running child" is unfalsifiable while the mechanism deliberately keeps the
   child alive until that deadline); the agent itself survives the disconnect
-  rather than dying on a write to a destroyed socket; and after agent shutdown
-  no child survives.
+  (it already does - see the measured correction above, so this is a
+  regression lock, not a fix); and after agent shutdown no child survives.
 
 ### M2-5 — `process.spawn`
 - Input `{ project, cwd? }`. `cwd` is resolved with `realpath` and must be the

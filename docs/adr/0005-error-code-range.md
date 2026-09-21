@@ -30,7 +30,7 @@ wire shapes against.
 
 1. pi-mesh application errors move out of A2A's reserved range, starting at
    `-32100`: Unauthorized `-32100`, Unknown session `-32101`, Process spawn
-   denied `-32102`.
+   denied `-32102`, Unknown job `-32103`, and Too many jobs `-32104`.
 2. `-32001`-`-32099` is A2A's range and pi-mesh **never defines its own codes
    inside it**. A2A-mandated errors are of course still emitted, because the
    spec requires them and their codes are not ours to choose: `TaskNotFound`
@@ -60,7 +60,12 @@ wire shapes against.
   catches `PiMeshError` keeps working because it matches on the symbolic name
   rather than the number.
 - The surface stays small: three application errors rather than five, because
-  two of the original five were not errors to begin with.
+  two of the original five were not errors to begin with. M2-4 later added
+  `-32103` and `-32104` for job lifecycle failures, which are genuine errors
+  rather than the two that were removed - so the range holds five codes again,
+  but not for the reason the range was originally narrowed, and the narrowing
+  itself is still the precedent that stops a code being invented to fit a
+  message.
 - The shift is a breaking wire change, made while nothing is deployed.
 - Still outstanding, and to be tracked in milestone 1 rather than here: the
   A2A message *shapes* in `@pi-mesh/protocol` must be reconciled with

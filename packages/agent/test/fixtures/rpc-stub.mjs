@@ -162,9 +162,15 @@ function handle(line) {
 stdin.setEncoding("utf8");
 // Pi exits cleanly when its stdin ends: that is the real graceful shutdown
 // path, and the client now uses it instead of a command Pi does not have.
-stdin.on("end", () =>
-  globalThis.setImmediate(() => globalThis.process.exit(0)),
-);
+stdin.on("end", () => {
+  if (mode === "ignoreterm") return;
+  globalThis.setImmediate(() => globalThis.process.exit(0));
+});
+
+if (mode === "ignoreterm") {
+  globalThis.process.on("SIGTERM", () => undefined);
+  globalThis.setInterval(() => undefined, 1_000);
+}
 stdin.on("data", (chunk) => {
   buffer += chunk;
   let newline = buffer.indexOf("\n");

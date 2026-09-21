@@ -58,6 +58,7 @@ import type { SessionReadRequest } from "./sessions.js";
 import { TaskStore } from "./tasks.js";
 import { loadOrCreateIdentity, type PeerIdentity } from "./identity.js";
 import { loadSwarmKey } from "./swarm-key.js";
+import type { JobManager } from "./jobs.js";
 
 const MAX_REPLAY_ENTRIES = 10_000;
 const MAX_PENDING_HANDSHAKES = 1_024;
@@ -91,6 +92,7 @@ export interface AgentServerOptions extends SkillRegistryOptions {
    * mutating the process environment.
    */
   spawnPolicy?: SpawnPolicy;
+  jobs?: JobManager;
 }
 
 export interface AgentServer {
@@ -124,6 +126,8 @@ function reasonFor(code: number): string | undefined {
   if (code === ErrorCode.Unauthorized) return "PI_MESH_UNAUTHORIZED";
   if (code === ErrorCode.UnknownSession) return "PI_MESH_UNKNOWN_SESSION";
   if (code === ErrorCode.SpawnDenied) return "PI_MESH_SPAWN_DENIED";
+  if (code === ErrorCode.UnknownJob) return "PI_MESH_UNKNOWN_JOB";
+  if (code === ErrorCode.TooManyJobs) return "PI_MESH_TOO_MANY_JOBS";
   // A2A's own errors carry a reason too. The spec makes ErrorInfo a SHOULD for
   // the JSON-RPC binding (a MUST for gRPC and HTTP details), but emitting it
   // only for pi-mesh errors and not for A2A's would be an odd inconsistency,
@@ -434,7 +438,10 @@ export class HttpAgentServer implements AgentServer {
     }
     try {
       const result = await this.call(body, peerId);
+      const responseWasAlive =
+        response.destroyed === false && response.writableEnded === false;
       writeJson(response, 200, { jsonrpc: "2.0", id: body.id, result });
+      if (responseWasAlive) this.options.jobs?.acknowledgeResult(result);
     } catch (error) {
       writeJson(response, 200, errorResponse(body.id, error));
     }

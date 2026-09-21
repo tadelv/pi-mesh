@@ -16,6 +16,8 @@ export const ErrorCode = {
   Unauthorized: -32100,
   UnknownSession: -32101,
   SpawnDenied: -32102,
+  UnknownJob: -32103,
+  TooManyJobs: -32104,
 } as const;
 
 export class PiMeshError extends Error {

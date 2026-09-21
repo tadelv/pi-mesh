@@ -83,6 +83,40 @@ you do not know yet.
 - **Writing to a destroyed stdin emits an asynchronous stream error**, which
   without a listener is an uncaught exception that kills the whole agent.
 
+## Pi (the binary this project supervises)
+
+- **`--session-dir <root>` bypasses the cwd-derived subdirectory, and the
+  file-backed reader skips what it writes there.** Measured against Pi 0.85.1
+  with cwd `/tmp/ws-probe/sub` and `ROOT=~/.pi/agent/sessions`:
+
+  ```
+  --session-dir <ROOT>            -> sessions/<ts>_<uuid>.jsonl        (FLAT)
+  no --session-dir                -> sessions/--private-tmp-ws-probe-sub--/...
+  --session-dir <ROOT>/--<enc>--  -> sessions/--private-tmp-ws-probe-sub--/...
+  ```
+
+  `sessionFiles()` skips any top-level entry that is not a directory or a
+  symlink, so the flat layout produces a session that `session.list` and
+  `session.read` **cannot see** — silently, with no error. Spawn with
+  `--session-dir <sessionDirectory(realpath(cwd), sessionsRoot)>`, reusing the
+  one encoding implementation in `sessions.ts` rather than re-deriving it.
+
+  Note `<enc>` is built from the **realpath**: `/tmp` encodes as `private-tmp`,
+  because `/private/tmp` is its real path on macOS. Passing the unresolved cwd
+  puts the file in a different directory than Pi would have chosen.
+
+- **`get_state`'s payload is nested under `data`.** The reply is
+  `{"type":"response","command":"get_state","success":true,"data":{...}}`, so it
+  is `response.data.sessionId`, and a flat read returns `undefined` — which
+  looks exactly like "the session has no id yet" rather than a bug.
+- **No session file exists until a turn persists something**, but `get_state`
+  reports `sessionId` and `sessionFile` immediately. Readiness must not wait for
+  a file.
+- **Non-interactive modes show no trust prompt**, so a peer-spawned session
+  silently inherits the project-trust default and trusting a project loads its
+  `.pi/extensions` as code with the user's permissions. `--no-approve` is passed
+  explicitly rather than relying on that default.
+
 ## Environment / tooling
 
 - **A global `~/.gitignore` containing `/Packages` case-insensitively ignores

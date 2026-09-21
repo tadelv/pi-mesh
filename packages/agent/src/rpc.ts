@@ -243,6 +243,7 @@ export class PiRpcClient extends EventEmitter {
   private stderrText = "";
   private nextId = 1;
   private spawned = false;
+  private signalled = false;
   private closed = false;
   private closeCode: number | null = null;
   private closeSignal: NodeJS.Signals | null = null;
@@ -292,7 +293,12 @@ export class PiRpcClient extends EventEmitter {
     this.argv = [binary, ...args];
     const spawnOptions: SpawnOptions = {
       shell: false,
-      detached: false,
+      // Its OWN process group (`setsid()` on POSIX), always. That is what makes
+      // the session's descendants reachable: the kernel reparents orphans to
+      // init the moment the child dies, so afterwards there is no way to find
+      // them (docs/GOTCHAS.md). Labelling the tree at spawn time is exact and
+      // free; reconstructing it later is neither. See ADR 0008 decision 11.
+      detached: true,
       stdio: ["pipe", "pipe", "pipe"],
       env: options.env ?? childEnvironment(process.env),
     };
@@ -458,7 +464,7 @@ export class PiRpcClient extends EventEmitter {
       return;
     }
     this.closing = true;
-    if (this.spawned && !this.child.killed) {
+    if (this.spawned && !this.signalled) {
       try {
         // Graceful: ask Pi to finish by ending its input.
         this.child.stdin?.end();
@@ -468,13 +474,20 @@ export class PiRpcClient extends EventEmitter {
       await this.waitForClose(this.shutdownTimeoutMs);
     }
     if (!this.closed) {
-      this.child.kill("SIGTERM");
+      this.signalChild("SIGTERM");
       await this.waitForClose(this.shutdownTimeoutMs);
     }
     if (!this.closed) {
-      this.child.kill("SIGKILL");
+      this.signalChild("SIGKILL");
       await this.waitForClose(this.shutdownTimeoutMs);
     }
+    // Final sweep, unconditionally - including when the graceful stage above
+    // already closed the session. Nonsense? No: stdin EOF ends the SESSION, not
+    // its descendants. They keep running, and once the session is gone they are
+    // unfindable (the kernel reparents them to init; docs/GOTCHAS.md), so the
+    // group is the last handle on them. ESRCH means the tree was already gone,
+    // which is the common case and costs nothing.
+    this.signalChild("SIGKILL");
     if (!this.closed) {
       // Deliberately not awaited further. The process is gone (or killed); what
       // is unobservable is the stdio closure, and hanging shutdown to observe
@@ -581,14 +594,53 @@ export class PiRpcClient extends EventEmitter {
     sendCancelled();
   }
 
+  /**
+   * Signal the child AND everything it spawned, by signalling its process group.
+   *
+   * Never falls back to signalling the pid alone while the group exists:
+   * signalling the child by itself is precisely the leak this prevents, because
+   * its descendants outlive it and are then unfindable. The fallback covers only
+   * ESRCH - the group is already gone - so a child that is merely settling still
+   * gets asked to stop.
+   *
+   * Known ceiling: a descendant that calls `setsid()` itself (a tool that
+   * daemonizes) leaves the group and escapes this. Only a cgroup or a systemd
+   * scope contains that, which is a deployment concern (docs/DEPLOYMENT.md).
+   * PID reuse is the other edge: the kernel may recycle the id once the leader
+   * is reaped, so a group signal after the child's exit is best-effort.
+   */
+  private signalChild(signal: NodeJS.Signals): void {
+    this.signalled = true;
+    const pid = this.child.pid;
+    if (pid !== undefined) {
+      try {
+        process.kill(-pid, signal);
+        return;
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== "ESRCH") {
+          this.logger.warn("Unable to signal the child's process group", {
+            pid,
+            signal,
+            error: String(error),
+          });
+        }
+      }
+    }
+    try {
+      this.child.kill(signal);
+    } catch {
+      // Already gone.
+    }
+  }
+
   private fail(error: Error): void {
     if (this.failure !== undefined || this.closed) return;
     this.failure = error;
     this.failPending(error);
     this.emit("protocolError", error);
-    this.child.kill("SIGTERM");
+    this.signalChild("SIGTERM");
     setTimeout(() => {
-      if (!this.closed) this.child.kill("SIGKILL");
+      if (!this.closed) this.signalChild("SIGKILL");
     }, this.shutdownTimeoutMs);
   }
 

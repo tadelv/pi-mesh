@@ -7,6 +7,7 @@ import { stdin, stdout } from "node:process";
 const mode = globalThis.process.env.PI_RPC_STUB_MODE;
 let buffer = "";
 let pendingDialogId;
+let treeChild;
 let pendingPrompt;
 
 function write(value) {
@@ -62,6 +63,23 @@ function handle(line) {
     });
     return;
   }
+  if (mode === "tree") {
+    // A descendant of this session, in this session's process group - the
+    // process a pid-only signal cannot reach. It inherits the group because it
+    // is spawned without `detached`, which is what real tools do.
+    if (treeChild === undefined) {
+      treeChild = spawn(
+        globalThis.process.execPath,
+        ["-e", "setTimeout(() => {}, 60000)"],
+        { stdio: "ignore" },
+      );
+      globalThis.process.stderr.write(
+        `[fixture] grandchild=${treeChild.pid}\n`,
+      );
+    }
+    response(command.id, { value: "spawned" });
+    return;
+  }
   if (mode === "errorstring") {
     // Pi's real failure envelope carries `error` as a STRING, verified against
     // the binary: {"success":false,"error":"Unknown command: shutdown"}.
@@ -92,6 +110,13 @@ function handle(line) {
       ["-e", "setTimeout(() => {}, 60000)"],
       {
         stdio: ["ignore", "inherit", "inherit"],
+        // Its OWN group, so the group signal does not reach it. That is not a
+        // trick to defeat the fix - it is the case the bounded close() exists
+        // for: a descendant that escaped the group (a tool that daemonised)
+        // still holds the pipe, so `close` never fires and an unbounded wait
+        // would hang shutdown forever. Inheriting our group here would let the
+        // group kill clean this up and quietly stop exercising that path.
+        detached: true,
       },
     );
     holder.unref();

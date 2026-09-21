@@ -15,6 +15,25 @@ const fixture = fileURLToPath(
   new URL("./fixtures/rpc-stub.mjs", import.meta.url),
 );
 
+function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/** Poll the real process table: init reaps an orphan slightly later. */
+async function waitForGone(pid: number, ms = 3_000): Promise<boolean> {
+  const deadline = Date.now() + ms;
+  while (isAlive(pid)) {
+    if (Date.now() > deadline) return false;
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+  return true;
+}
+
 describe("Pi RPC client", () => {
   it("preserves U+2028 inside a JSON string", async () => {
     const rpc = makeClient("unicode");
@@ -143,6 +162,35 @@ describe("Pi RPC client", () => {
         /Model not found: fixture-model/,
       );
     } finally {
+      await rpc.close();
+    }
+  });
+
+  it("stops the session's descendants, not just the session", async () => {
+    // The reason the child is spawned in its own process group. A pid-only
+    // signal reaches the session and nothing else, and the leftovers are then
+    // unfindable: the kernel reparents them to init the moment the session dies
+    // (measured, docs/GOTCHAS.md). Reverting signalChild to `child.kill()` fails
+    // here with the grandchild still alive.
+    const rpc = makeClient("tree");
+    let stderr = "";
+    rpc.on("stderr", (text: string) => (stderr += text));
+    try {
+      await rpc.request({ type: "prompt" });
+      const grandchild = Number(/grandchild=(\d+)/.exec(stderr)?.[1]);
+      expect(grandchild).toBeGreaterThan(0);
+      expect(isAlive(grandchild)).toBe(true);
+      await rpc.close();
+      expect(await waitForGone(grandchild)).toBe(true);
+    } finally {
+      const grandchild = Number(/grandchild=(\d+)/.exec(stderr)?.[1]);
+      if (grandchild > 0) {
+        try {
+          process.kill(grandchild, "SIGKILL");
+        } catch {
+          // Already gone.
+        }
+      }
       await rpc.close();
     }
   });

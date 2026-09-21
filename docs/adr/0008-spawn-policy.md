@@ -95,7 +95,16 @@ The research behind this is in `docs/research/process-spawning.md`.
     ```
 
     So the child is started in its **own process group** (`detached: true`, i.e.
-    `setsid()`) and the GROUP is signalled, never the pid alone. This amends
+    `setsid()`) and the GROUP is signalled, never the pid alone. Decided
+    2026-02: always on, not configurable, because a per-run choice would mean the
+    leak depends on which path was taken.
+
+    The group is swept **unconditionally at the end of `close()`**, including
+    after the graceful stage. That is not belt-and-braces: stdin EOF ends the
+    SESSION, not its descendants, so a session that shuts down politely leaves
+    its own children running - and once it is gone they cannot be found. A test
+    caught exactly that gap in the first implementation, which signalled the
+    group only when the session had failed to close. This amends
     this decision's earlier blanket "never `detached`", which was right about the
     danger and wrong about the remedy: a separate group is exactly what makes the
     descendants reachable, and without it they cannot be signalled at all without

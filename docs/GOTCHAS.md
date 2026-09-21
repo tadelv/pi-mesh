@@ -54,6 +54,17 @@ you do not know yet.
   `destroyed` check also passes when the socket dies *during* the write.
   `finish` means "flushed to the kernel", not "received", so the residual window
   is not closable from the application.
+- **A process's children are unidentifiable once it dies.** Measured: the
+  grandchild's `ppid` was the child's pid while the child lived, and `1` four
+  hundred milliseconds after the child was killed — the kernel reparents orphans
+  to init (launchd on macOS), erasing the link. So "find and kill the children
+  of that dead session" is not a thing you can do afterwards: parentage is gone,
+  and the remaining options are matching on command line (which is how you kill
+  somebody else's process) or having recorded the pids *before* the kill, which
+  is a snapshot of a tree that can grow after it. Label the tree at spawn time
+  instead — see the process-group entry below. On Linux,
+  `PR_SET_CHILD_SUBREAPER` or a cgroup is the deterministic version of "be the
+  reaper for my orphaned descendants"; neither exists on macOS.
 - **Killing a child does not kill its descendants.** Measured:
 
   ```

@@ -5,8 +5,10 @@ import { describe, expect, it } from "vitest";
 import {
   PiRpcChildExitError,
   PiRpcClient,
+  PiRpcEofError,
   PiRpcMalformedRecordError,
   PiRpcRecordTooLargeError,
+  PiRpcTimeoutError,
 } from "../src/rpc.js";
 
 const fixture = fileURLToPath(
@@ -78,20 +80,30 @@ describe("Pi RPC client", () => {
   it("reports child death instead of hanging", async () => {
     const rpc = makeClient("death");
     try {
-      await expect(
-        Promise.race([
-          rpc.request({ type: "prompt" }),
-          new Promise((_, reject) =>
-            // Generous enough to survive a contended CI runner (the stub
-            // spawns and parses in tens of ms), but BELOW vitest's default 5s
-            // testTimeout: a bound above the harness timeout is dead code,
-            // because the harness fails the test first and this message never
-            // appears. 500ms was too tight here and made the suite flaky, which
-            // is worse than slow - a flaky gate hides real failures.
-            setTimeout(() => reject(new Error("hung")), 3_000),
-          ),
-        ]),
-      ).rejects.toBeInstanceOf(PiRpcChildExitError);
+      const error = await Promise.race([
+        rpc.request({ type: "prompt" }),
+        new Promise((_, reject) =>
+          // Generous enough to survive a contended CI runner (the stub spawns
+          // and parses in tens of ms), but BELOW vitest's default 5s
+          // testTimeout: a bound above the harness timeout is dead code,
+          // because the harness fails the test first and this message never
+          // appears.
+          setTimeout(() => reject(new Error("hung")), 3_000),
+        ),
+      ]).then(
+        () => undefined,
+        (rejected: unknown) => rejected,
+      );
+      // Which death report arrives is a RACE, not a fact about the client:
+      // the child's `exit` event and its stdout reaching EOF are unordered, and
+      // CI on Linux resolves it the other way round from macOS. Asserting one
+      // of them made this fail on CI while passing locally, which is exactly
+      // what this test is not for. Both are death diagnoses; the property worth
+      // pinning is that a dead child is not mislabelled as a SLOW one.
+      expect(error).not.toBeInstanceOf(PiRpcTimeoutError);
+      expect(
+        error instanceof PiRpcChildExitError || error instanceof PiRpcEofError,
+      ).toBe(true);
     } finally {
       await rpc.close();
     }

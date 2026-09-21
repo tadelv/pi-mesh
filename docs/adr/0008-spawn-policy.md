@@ -87,12 +87,32 @@ The research behind this is in `docs/research/process-spawning.md`.
     that is refused is worse than omitting it — and here the advertisement
     itself is information.
 11. **Supervision is part of the grant.** Killing a child does not kill its
-    descendants (documented by Node, and verified); so: never `detached`, never
-    `unref`; stop is staged (graceful shutdown, then `SIGTERM`, then a bounded
-    wait, then `SIGKILL`); stop is idempotent; and termination is observed via
-    `close`, never inferred from `kill()` returning true. Where a cgroup or
-    systemd scope is available it is preferred, because it contains the whole
-    tree and its resources.
+    descendants (documented by Node, and verified). Measured 2026-02:
+
+    ```
+    { detached: false, childAlive: false, grandchildAlive: true  }   orphan survives
+    { detached: true,  childAlive: false, grandchildAlive: false }   whole group dies
+    ```
+
+    So the child is started in its **own process group** (`detached: true`, i.e.
+    `setsid()`) and the GROUP is signalled, never the pid alone. This amends
+    this decision's earlier blanket "never `detached`", which was right about the
+    danger and wrong about the remedy: a separate group is exactly what makes the
+    descendants reachable, and without it they cannot be signalled at all without
+    signalling the agent itself.
+
+    The cost is real and must be stated: a child in its own session outlives a
+    `SIGKILL`ed agent, and a terminal Ctrl-C no longer reaches it, because it is
+    no longer in the foreground group. This is accepted because the agent's own
+    shutdown path is what reaps the group - so **that wiring is load-bearing, not
+    a nicety**, and a deployment that kills the agent outright will leak the
+    tree. Where a cgroup or systemd scope is available it is preferred, because
+    it contains the whole tree even when the agent is killed outright.
+
+    Never `unref` (it would stop us observing the exit). Never signal a bare pid
+    (decision 6). Stop is staged (graceful shutdown, then `SIGTERM`, then a
+    bounded wait, then `SIGKILL`); stop is idempotent; and termination is
+    observed via `close`, never inferred from `kill()` returning true.
 12. **Bounded everything.** Inbound record size, retained output, concurrent
     jobs and per-peer rate are all capped; stdout is drained continuously lest
     a full pipe block the child (documented by Node, and verified).

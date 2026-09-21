@@ -2,7 +2,7 @@
 
 You are implementing **pi-mesh**, a peer-to-peer mesh for Pi coding agents.
 Read `docs/ARCHITECTURE.md`, `docs/PROTOCOL.md`, and `docs/SECURITY.md`
-before writing code. The requirements are frozen; if you find a gap,
+before writing code, and `docs/GOTCHAS.md` before trusting a green test run. The requirements are frozen; if you find a gap,
 open an ADR in `docs/adr/` rather than improvising.
 
 ## Conventions

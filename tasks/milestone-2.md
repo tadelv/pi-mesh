@@ -215,6 +215,14 @@ Verified against the installed Pi 0.85.1 docs and the research note in
   `cli.ts`'s `cleanup()` does not call `jobs.shutdown()`. Until M2-5 does both,
   M2-4's "after agent shutdown no child survives" holds only in tests, and the
   delivery deadline never fires against a real `pi`.
+- **The child goes in its own process group** (`detached: true`) and stop
+  signals the GROUP, not the pid - measured, and see ADR 0008 decision 11. This
+  is what makes a session's own descendants reachable at all. It also means the
+  `cleanup()` wiring above stops being optional: with the child in its own
+  session, nothing else will ever kill it.
+- **The `pi` binary is resolved to an absolute path** and that literal is
+  recorded, because a systemd/launchd daemon has a minimal `PATH` and a
+  `PATH`-relative spawn that works in a terminal fails there.
 
 ### M2-6 — `process.stop` and `session.abort`
 - Both ungated, both allowed to any member.

@@ -1,0 +1,12 @@
+#!/bin/sh
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# Stands in for the `pi` executable where a test only needs it to RESOLVE.
+# `cli.ts` calls resolvePiBinary() before the listener starts, so a machine with
+# the gate open and no `pi` refuses to start at all - which is every CI runner,
+# and is why capability-honesty could not observe the gate-enabled state there.
+# `resolvePiBinary` only realpaths, stats and checks X_OK; it never runs the
+# binary, and nothing in that test spawns a session. Exiting non-zero means an
+# accidental spawn is loud rather than silent.
+echo "fixtures/pi-binary is a placeholder and must never be executed" >&2
+exit 1

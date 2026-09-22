@@ -1,10 +1,21 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import { createServer } from "node:net";
+import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentCard } from "@pi-mesh/protocol";
 import type { BonjourLike, BonjourPublishOptions } from "../src/index.js";
 
+// The gate cannot OPEN without a resolvable `pi`: cli.ts calls resolvePiBinary()
+// before the listener starts, so on a machine with no `pi` - every CI runner -
+// the enabled state cannot be observed at all and this file errors before a
+// single assertion runs. resolvePiBinary only realpaths, stats and checks X_OK;
+// it never executes the file, and nothing here spawns a session. So this stands
+// in for the real binary at the process boundary rather than skipping the
+// clause, which would leave the delivered behaviour untested in CI.
+const PI_BINARY = fileURLToPath(
+  new URL("./fixtures/pi-binary", import.meta.url),
+);
 const EXECUTION_SKILLS = ["process.spawn", "session.steer"];
 const UNGATED_SKILLS = [
   "mesh.peers",
@@ -92,8 +103,10 @@ async function observe(gate: string | undefined): Promise<Observation> {
   const oldPort = process.env.PI_MESH_PORT;
   const oldGate = process.env.PI_MESH_ALLOW_SPAWN;
   const oldWorkspace = process.env.PI_MESH_WORKSPACE;
+  const oldPiBinary = process.env.PI_MESH_PI_BINARY;
   process.env.PI_MESH_PORT = String(port);
   process.env.PI_MESH_WORKSPACE = process.cwd();
+  process.env.PI_MESH_PI_BINARY = PI_BINARY;
   if (gate === undefined) delete process.env.PI_MESH_ALLOW_SPAWN;
   else process.env.PI_MESH_ALLOW_SPAWN = gate;
 
@@ -149,6 +162,8 @@ async function observe(gate: string | undefined): Promise<Observation> {
     else process.env.PI_MESH_ALLOW_SPAWN = oldGate;
     if (oldWorkspace === undefined) delete process.env.PI_MESH_WORKSPACE;
     else process.env.PI_MESH_WORKSPACE = oldWorkspace;
+    if (oldPiBinary === undefined) delete process.env.PI_MESH_PI_BINARY;
+    else process.env.PI_MESH_PI_BINARY = oldPiBinary;
   }
 }
 

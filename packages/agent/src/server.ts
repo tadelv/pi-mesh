@@ -675,8 +675,59 @@ export class HttpAgentServer implements AgentServer {
         typeof call.input === "object" &&
         call.input !== null &&
         !Array.isArray(call.input)
-          ? { ...(call.input as Record<string, unknown>), _peerId: peerId }
+          ? {
+              ...(call.input as Record<string, unknown>),
+              _peerId: peerId,
+              _localPeerId: this.identity?.peerId,
+            }
           : call.input;
+      if (call.skill === "mesh.handoff") {
+        const task = this.tasks.create(
+          call.contextId === undefined ? {} : { contextId: call.contextId },
+        );
+        try {
+          const outcome = await this.skills.invoke(call.skill, inputWithPeer);
+          if (
+            typeof outcome !== "object" ||
+            outcome === null ||
+            Array.isArray(outcome) ||
+            typeof (outcome as { accepted?: unknown }).accepted !== "boolean"
+          ) {
+            throw new Error("mesh.handoff returned an invalid outcome");
+          }
+          if (!(outcome as { accepted: boolean }).accepted) {
+            return {
+              task: this.tasks.update(task.id, "TASK_STATE_REJECTED"),
+            };
+          }
+          const handoffResult = (outcome as { result?: unknown }).result;
+          const handles =
+            typeof handoffResult === "object" &&
+            handoffResult !== null &&
+            !Array.isArray(handoffResult)
+              ? (handoffResult as {
+                  session_id?: unknown;
+                  job_id?: unknown;
+                })
+              : {};
+          const result = {
+            task_id: task.id,
+            session_id: handles.session_id,
+            job_id: handles.job_id,
+          };
+          const statusMessage = messageFrom(result, call.contextId, task.id);
+          return {
+            task: this.tasks.update(
+              task.id,
+              "TASK_STATE_WORKING",
+              statusMessage,
+            ),
+          };
+        } catch (error) {
+          this.tasks.delete(task.id);
+          throw error;
+        }
+      }
       const result = await this.skills.invoke(call.skill, inputWithPeer);
       return { message: messageFrom(result, call.contextId) };
     }

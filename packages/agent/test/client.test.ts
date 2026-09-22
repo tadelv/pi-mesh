@@ -176,9 +176,10 @@ describe("A2A client", () => {
       // peer routes on the code. Asserting one code for both would pass even if
       // the gate never fired.
       for (const [skill, code] of [
-        ["mesh.handoff", -32004],
+        ["not.implemented", -32004],
         ["process.spawn", -32102],
         ["session.steer", -32102],
+        ["mesh.handoff", -32102],
       ] as const) {
         await expect(
           sendSkill(peer(address.port), skill, {}, options()),

@@ -5,7 +5,7 @@ import { isAbsolute, join } from "node:path";
 import { ErrorCode, PiMeshError } from "@pi-mesh/shared";
 import { PeerRegistry } from "./registry.js";
 import { SessionStore, type SessionStoreOptions } from "./sessions.js";
-import type { JobManager } from "./jobs.js";
+import { JobStartTimeoutError, type JobManager } from "./jobs.js";
 import { assertInsideWorkspace, resolveWorkspaceRoot } from "./spawner.js";
 
 export type SkillInput = Record<string, unknown>;
@@ -40,6 +40,7 @@ const SERVED_SKILLS: readonly Skill[] = [
 export const EXECUTION_SKILLS: readonly Skill[] = [
   "process.spawn",
   "session.steer",
+  "mesh.handoff",
 ];
 
 function objectInput(value: unknown): SkillInput {
@@ -195,16 +196,27 @@ export function createSkillRegistry(
         `process.spawn refused: cwd is outside the workspace accident guard (${error instanceof Error ? error.message : String(error)})`,
       );
     }
+    const deadlineMs = input._acceptanceDeadlineMs;
+    const deadlineAt =
+      typeof deadlineMs === "number" ? Date.now() + deadlineMs : undefined;
     let record;
     try {
-      record = await jobs.startReady({
-        peerId:
-          typeof input._peerId === "string" ? input._peerId : "unknown-peer",
-        project,
-        cwd,
-        name: project,
-      });
+      const remaining =
+        deadlineAt === undefined
+          ? undefined
+          : Math.max(0, deadlineAt - Date.now());
+      record = await jobs.startReady(
+        {
+          peerId:
+            typeof input._peerId === "string" ? input._peerId : "unknown-peer",
+          project,
+          cwd,
+          name: project,
+        },
+        remaining,
+      );
     } catch (error) {
+      if (error instanceof JobStartTimeoutError) throw error;
       if (error instanceof PiMeshError) throw error;
       throw new PiMeshError(
         ErrorCode.SpawnFailed,
@@ -221,10 +233,12 @@ export function createSkillRegistry(
     try {
       // Pi answers when the prompt is accepted, not when its turn finishes;
       // events continue streaming asynchronously so the peer can steer it.
-      const response = await jobs.send(record.id, {
-        type: "prompt",
-        message: prompt,
-      });
+      const response = await sendBeforeDeadline(
+        jobs,
+        record.id,
+        { type: "prompt", message: prompt },
+        deadlineAt,
+      );
       if (response.success === false) {
         throw new Error(
           typeof response.error === "string"
@@ -234,6 +248,7 @@ export function createSkillRegistry(
       }
     } catch (error) {
       await jobs.stop(record.id).catch(() => undefined);
+      if (error instanceof JobStartTimeoutError) throw error;
       throw new PiMeshError(
         ErrorCode.SpawnFailed,
         `process.spawn failed: prompt was not accepted (${error instanceof Error ? error.message : String(error)})`,
@@ -245,6 +260,68 @@ export function createSkillRegistry(
       pid: record.pid,
       session_id: record.sessionId,
     };
+  });
+
+  skills.registerExecution("mesh.handoff", async (input) => {
+    const task = input.task;
+    if (typeof task !== "string" || task.trim().length === 0) {
+      throw new PiMeshError(-32602, "mesh.handoff requires a non-blank task");
+    }
+    const project = input.project;
+    if (typeof project !== "string" || project.trim().length === 0) {
+      throw new PiMeshError(
+        -32602,
+        "mesh.handoff requires a non-blank project",
+      );
+    }
+    const context = input.context;
+    if (
+      typeof context !== "object" ||
+      context === null ||
+      Array.isArray(context)
+    ) {
+      throw new PiMeshError(-32602, "mesh.handoff context must be an object");
+    }
+    const preferredAgent = input.preferred_agent;
+    if (preferredAgent !== null && typeof preferredAgent !== "string") {
+      throw new PiMeshError(
+        -32602,
+        "mesh.handoff preferred_agent must be a peer id or null",
+      );
+    }
+    const deadlineMs = input.deadline_ms;
+    if (
+      typeof deadlineMs !== "number" ||
+      !Number.isInteger(deadlineMs) ||
+      deadlineMs < 0
+    ) {
+      throw new PiMeshError(
+        -32602,
+        "mesh.handoff deadline_ms must be a non-negative integer",
+      );
+    }
+    if (preferredAgent !== null && preferredAgent !== input._localPeerId) {
+      return { accepted: false };
+    }
+    if (deadlineMs === 0) return { accepted: false };
+
+    const prompt =
+      Object.keys(context).length === 0
+        ? task
+        : `${task}\n\nContext:\n${JSON.stringify(context, null, 2)}`;
+    try {
+      const result = await skills.invoke("process.spawn", {
+        project,
+        cwd: project,
+        prompt,
+        _peerId: input._peerId,
+        _acceptanceDeadlineMs: deadlineMs,
+      });
+      return { accepted: true, result };
+    } catch (error) {
+      if (error instanceof JobStartTimeoutError) return { accepted: false };
+      throw error;
+    }
   });
 
   skills.register("process.stop", async (input) => {
@@ -307,6 +384,31 @@ export function createSkillRegistry(
 export function servedSkills(spawnEnabled = false): Skill[] {
   return [
     ...SERVED_SKILLS,
-    ...(spawnEnabled ? (["process.spawn", "session.steer"] as Skill[]) : []),
+    ...(spawnEnabled
+      ? (["process.spawn", "session.steer", "mesh.handoff"] as Skill[])
+      : []),
   ];
+}
+
+async function sendBeforeDeadline(
+  jobs: JobManager,
+  jobId: string,
+  command: Parameters<JobManager["send"]>[1],
+  deadlineAt: number | undefined,
+) {
+  if (deadlineAt === undefined) return jobs.send(jobId, command);
+  const remaining = deadlineAt - Date.now();
+  if (remaining <= 0) throw new JobStartTimeoutError();
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    return await Promise.race([
+      jobs.send(jobId, command),
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new JobStartTimeoutError()), remaining);
+        timer.unref();
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }

@@ -49,7 +49,7 @@ Each skill also declares its **exposure**:
 | `session.abort` | peer (ungated) | `{ job_id (mesh id, not PID) }` | Pi RPC response |
 | `process.spawn` | **gated on the spawn policy** | `{ project, cwd?, prompt }` | `{ job_id, pid, session_id }` |
 | `process.stop` | peer (ungated) | `{ job_id (mesh id, not PID) }` | `{ job_id, state, pid }` |
-| `mesh.handoff` | **not served in M1** | `HandoffPayload` | `{ task_id }` |
+| `mesh.handoff` | **gated on the spawn policy** | `HandoffPayload` | `{ task_id, session_id, job_id }` on acceptance; `{ task: Task }` when rejected; refused with `-32102` when closed |
 
 A peer exposure means the skill is reachable by any swarm member, and never
 means unauthenticated: every request carries a proof (below).
@@ -305,6 +305,20 @@ Extension URI: `https://pi-mesh.dev/extensions/handoff/v1`
       "preferred_agent": "peer-id | null",
       "deadline_ms": 60000
     }
+
+A successful handoff returns an A2A `Task` wrapper whose status message result
+is exactly:
+
+    { "task_id": "…", "session_id": "…", "job_id": "…" }
+
+A peer preference naming another agent, or expiry before acceptance, returns a
+`Task` wrapper instead of an error. Its task status is
+`TASK_STATE_REJECTED`, and `tasks/get` for that task id returns the same settled
+task. A local execution-policy refusal remains `-32102`; it is distinct from a
+peer's ordinary rejection. `task` is the child's initial prompt. When
+`context` is non-empty it is appended to that prompt under the exact `Context:`
+heading. `project` is resolved beneath the configured workspace root and uses
+the same containment check as `process.spawn`.
 
 ## Error codes
 

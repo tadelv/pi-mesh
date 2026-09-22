@@ -325,10 +325,14 @@ describe("A2A HTTP server", () => {
         const response = await httpCallWith(address.port, call(skill), {
           "A2A-Version": "1.0",
         });
-        expect(JSON.parse(response.body).error.code).toBe(
-          skill === "mesh.handoff" ? -32004 : -32102,
-        );
+        expect(JSON.parse(response.body).error.code).toBe(-32102);
       }
+      const unsupported = await httpCallWith(
+        address.port,
+        call("not.implemented"),
+        { "A2A-Version": "1.0" },
+      );
+      expect(JSON.parse(unsupported.body).error.code).toBe(-32004);
     } finally {
       await server.stop();
     }

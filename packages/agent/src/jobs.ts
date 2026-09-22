@@ -164,6 +164,13 @@ class LiveJobStream implements AsyncIterableIterator<LiveStreamEvent> {
   }
 }
 
+export class JobStartTimeoutError extends Error {
+  constructor() {
+    super("Job did not become ready before the acceptance deadline");
+    this.name = "JobStartTimeoutError";
+  }
+}
+
 export interface JobHandle {
   readonly pid: number | undefined;
   readonly argv: readonly string[];
@@ -422,16 +429,41 @@ export class JobManager {
     return record;
   }
 
-  async startReady(spec: JobSpec): Promise<JobRecord> {
+  async startReady(
+    spec: JobSpec,
+    acceptanceTimeoutMs?: number,
+  ): Promise<JobRecord> {
     const record = this.start(spec);
     const handle = this.handles.get(record.id);
+    let timer: NodeJS.Timeout | undefined;
     try {
-      await handle?.ready;
+      const ready = handle?.ready ?? Promise.resolve();
+      if (acceptanceTimeoutMs === undefined) {
+        await ready;
+      } else {
+        if (!Number.isInteger(acceptanceTimeoutMs) || acceptanceTimeoutMs < 0) {
+          throw new RangeError(
+            "acceptanceTimeoutMs must be a non-negative integer",
+          );
+        }
+        await Promise.race([
+          ready,
+          new Promise<never>((_, reject) => {
+            timer = setTimeout(
+              () => reject(new JobStartTimeoutError()),
+              acceptanceTimeoutMs,
+            );
+            timer.unref();
+          }),
+        ]);
+      }
       return record;
     } catch (error) {
       await this.stop(record.id).catch(() => undefined);
       this.remove(record.id);
       throw error;
+    } finally {
+      if (timer !== undefined) clearTimeout(timer);
     }
   }
 
@@ -681,13 +713,16 @@ export function jobIdsIn(result: unknown): string[] {
   fromSkillOutput(result);
   // The unary path wraps a skill's output in an A2A message, so a real response
   // carries it at message.parts[].data.result rather than at the top level.
-  const message = asObject(asObject(result)?.message);
-  const parts = message?.parts;
-  if (Array.isArray(parts)) {
+  const readMessage = (message: Record<string, unknown> | undefined): void => {
+    const parts = message?.parts;
+    if (!Array.isArray(parts)) return;
     for (const part of parts) {
       fromSkillOutput(asObject(asObject(part)?.data)?.result);
     }
-  }
+  };
+  readMessage(asObject(asObject(result)?.message));
+  const task = asObject(asObject(result)?.task);
+  readMessage(asObject(asObject(asObject(task)?.status)?.message));
   return [...new Set(ids)];
 }
 

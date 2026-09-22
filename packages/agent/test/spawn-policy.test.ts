@@ -103,6 +103,10 @@ async function executionServer(
       calls.push(input);
       return { accepted: true };
     });
+    skills.registerExecution("mesh.handoff", async (input) => {
+      calls.push(input);
+      return { accepted: true };
+    });
   }
   const server = createAgentServer({
     host: "127.0.0.1",

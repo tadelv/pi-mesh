@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import { randomUUID } from "node:crypto";
-import type { Task, TaskState } from "@pi-mesh/protocol";
+import type { Message, Task, TaskState } from "@pi-mesh/protocol";
 
 export const TASK_TTL_MS = 15 * 60 * 1_000;
 
@@ -48,12 +48,13 @@ export class TaskStore {
     return entry.task;
   }
 
-  update(id: string, state: TaskState): Task | undefined {
+  update(id: string, state: TaskState, message?: Message): Task | undefined {
     const task = this.get(id);
     if (task === undefined) return undefined;
     task.status = {
       ...task.status,
       state,
+      ...(message === undefined ? {} : { message }),
       timestamp: new Date(this.now()).toISOString(),
     };
     return task;

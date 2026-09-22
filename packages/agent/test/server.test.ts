@@ -309,12 +309,24 @@ describe("A2A HTTP server", () => {
         }
       }
 
+      // Both gated skills answer -32102 on a machine that has not opted in.
+      // The gate can only say "execution is disabled here" for a skill it can
+      // SEE, so both must be REGISTERED for the answer to be about policy
+      // rather than about implementation - and only a genuinely unimplemented
+      // skill reports -32004. The two codes mean different things to a peer
+      // routing on them (ADR 0008): -32102 says "this machine does it, but not
+      // for you"; -32004 says "this machine does not do it at all". This test
+      // previously encoded the opposite for process.spawn
+      // (`skill === "session.steer" ? -32102 : -32004`), which blessed an
+      // inconsistency rather than catching it: measured on real hardware,
+      // process.spawn answered -32004 while session.steer answered -32102, on
+      // the same machine at the same moment.
       for (const skill of ["process.spawn", "session.steer", "mesh.handoff"]) {
         const response = await httpCallWith(address.port, call(skill), {
           "A2A-Version": "1.0",
         });
         expect(JSON.parse(response.body).error.code).toBe(
-          skill === "session.steer" ? -32102 : -32004,
+          skill === "mesh.handoff" ? -32004 : -32102,
         );
       }
     } finally {

@@ -372,9 +372,13 @@ export class HttpAgentServer implements AgentServer {
       securityRequirements: [],
       defaultInputModes: ["application/json"],
       defaultOutputModes: ["application/json"],
-      skills: servedSkills(
-        this.spawnPolicy.enabled && this.skills.has("process.spawn"),
-      ).map(skillInfo),
+      // One expression, shared with the mDNS advertisement in cli.ts. This used
+      // to read `enabled && skills.has("process.spawn")` while `caps` read
+      // `enabled && jobs !== undefined` - different conditions that agreed only
+      // because an invariant in two other files made them equivalent. Now that
+      // every execution skill is registered unconditionally, the gate alone
+      // decides, and the card and `caps` cannot drift apart.
+      skills: servedSkills(this.spawnPolicy.enabled).map(skillInfo),
       signatures: [],
       iconUrl: "",
     };

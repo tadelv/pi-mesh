@@ -163,7 +163,7 @@ describe("A2A client", () => {
     }
   });
 
-  it("refuses every M1-unserved skill with A2A UnsupportedOperationError", async () => {
+  it("separates an unimplemented skill from a skill this machine will not run", async () => {
     const server = createAgentServer({
       port: 0,
       swarmKey: key,
@@ -172,12 +172,19 @@ describe("A2A client", () => {
     });
     const address = await server.start();
     try {
-      for (const skill of ["process.spawn", "mesh.handoff"]) {
+      // A denied spawn and an unimplemented skill are different answers, and a
+      // peer routes on the code. Asserting one code for both would pass even if
+      // the gate never fired.
+      for (const [skill, code] of [
+        ["mesh.handoff", -32004],
+        ["process.spawn", -32102],
+        ["session.steer", -32102],
+      ] as const) {
         await expect(
           sendSkill(peer(address.port), skill, {}, options()),
         ).rejects.toSatisfy((error: unknown) => {
           expect(error).toBeInstanceOf(PiMeshError);
-          expect(error).toHaveProperty("code", -32004);
+          expect(error).toHaveProperty("code", code);
           return true;
         });
       }

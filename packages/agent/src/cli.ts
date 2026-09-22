@@ -250,7 +250,7 @@ async function start(profile: NetworkProfile, io: CliIO): Promise<number> {
           version: process.env.PI_MESH_VERSION ?? "0.0.0",
           agentVersion: process.env.PI_MESH_AGENT_VERSION ?? "0.0.0",
           port: listening.port,
-          capabilities: servedSkills(spawnPolicy.enabled && jobs !== undefined),
+          capabilities: servedSkills(spawnPolicy.enabled),
         },
         {
           profile,

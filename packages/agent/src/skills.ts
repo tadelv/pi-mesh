@@ -135,75 +135,87 @@ export function createSkillRegistry(
   const registry = options.registry ?? new PeerRegistry();
   const skills = new SkillRegistry();
 
-  if (options.jobs !== undefined) {
-    skills.registerExecution("process.spawn", async (input) => {
-      const project = input.project;
-      if (typeof project !== "string" || project.trim().length === 0) {
-        throw new PiMeshError(
-          -32602,
-          "process.spawn requires a non-blank project",
-        );
-      }
-      if (input.cwd !== undefined && typeof input.cwd !== "string") {
-        throw new PiMeshError(-32602, "process.spawn cwd must be a string");
-      }
-      let root: string;
-      try {
-        root = resolveWorkspaceRoot(options.workspaceRoot);
-      } catch (error) {
-        throw new PiMeshError(
-          ErrorCode.SpawnDenied,
-          `process.spawn refused: workspace is not configured (${error instanceof Error ? error.message : String(error)})`,
-        );
-      }
-      let cwd: string;
-      try {
-        // A relative cwd resolves against the workspace ROOT, never against the
-        // agent's incidental process.cwd(): `realpathSync("sub")` would resolve
-        // against whatever directory the daemon was started in, so a legitimate
-        // request would be refused - or worse, silently point somewhere
-        // unrelated. `..` is still caught, by the realpath check inside.
-        const requested = input.cwd ?? root;
-        cwd = assertInsideWorkspace(
-          root,
-          isAbsolute(requested) ? requested : join(root, requested),
-        );
-      } catch (error) {
-        throw new PiMeshError(
-          ErrorCode.SpawnDenied,
-          `process.spawn refused: cwd is outside the workspace (${error instanceof Error ? error.message : String(error)})`,
-        );
-      }
-      let record;
-      try {
-        record = await options.jobs!.startReady({
-          peerId:
-            typeof input._peerId === "string" ? input._peerId : "unknown-peer",
-          project,
-          cwd,
-          name: project,
-        });
-      } catch (error) {
-        if (error instanceof PiMeshError) throw error;
-        throw new PiMeshError(
-          ErrorCode.SpawnFailed,
-          `process.spawn failed: ${error instanceof Error ? error.message : String(error)}`,
-          { cause: error },
-        );
-      }
-      if (record.sessionId === undefined) {
-        throw new PiMeshError(
-          ErrorCode.SpawnFailed,
-          "process.spawn failed: Pi did not report a session id",
-        );
-      }
-      return {
-        job_id: record.id,
-        pid: record.pid,
-        session_id: record.sessionId,
-      };
-    });
-  }
+  // Registered UNCONDITIONALLY, exactly like session.steer - and that is
+  // load-bearing, not a style choice. The gate can only report "execution is
+  // disabled on this machine" (-32102) for a skill it can SEE; registering
+  // process.spawn only when a job manager exists (which is only when the gate
+  // is already open) meant a gate-closed machine answered -32004 "not supported
+  // at all" instead. That contradicts the M2 exit criterion ("a machine with no
+  // opt-in refuses execution with -32102") and left the two gated skills
+  // disagreeing on the one thing a peer routes on. Measured on devpi:
+  // session.steer -32102, process.spawn -32004, same machine, same moment.
+  // -32004 remains correct for a skill that is genuinely not implemented.
+  skills.registerExecution("process.spawn", async (input) => {
+    const jobs = options.jobs;
+    if (jobs === undefined) {
+      throw new PiMeshError(-32004, "process.spawn requires a job manager");
+    }
+    const project = input.project;
+    if (typeof project !== "string" || project.trim().length === 0) {
+      throw new PiMeshError(
+        -32602,
+        "process.spawn requires a non-blank project",
+      );
+    }
+    if (input.cwd !== undefined && typeof input.cwd !== "string") {
+      throw new PiMeshError(-32602, "process.spawn cwd must be a string");
+    }
+    let root: string;
+    try {
+      root = resolveWorkspaceRoot(options.workspaceRoot);
+    } catch (error) {
+      throw new PiMeshError(
+        ErrorCode.SpawnDenied,
+        `process.spawn refused: workspace is not configured (${error instanceof Error ? error.message : String(error)})`,
+      );
+    }
+    let cwd: string;
+    try {
+      // A relative cwd resolves against the workspace ROOT, never against the
+      // agent's incidental process.cwd(): `realpathSync("sub")` would resolve
+      // against whatever directory the daemon was started in, so a legitimate
+      // request would be refused - or worse, silently point somewhere
+      // unrelated. `..` is still caught, by the realpath check inside.
+      const requested = input.cwd ?? root;
+      cwd = assertInsideWorkspace(
+        root,
+        isAbsolute(requested) ? requested : join(root, requested),
+      );
+    } catch (error) {
+      throw new PiMeshError(
+        ErrorCode.SpawnDenied,
+        `process.spawn refused: cwd is outside the workspace (${error instanceof Error ? error.message : String(error)})`,
+      );
+    }
+    let record;
+    try {
+      record = await jobs.startReady({
+        peerId:
+          typeof input._peerId === "string" ? input._peerId : "unknown-peer",
+        project,
+        cwd,
+        name: project,
+      });
+    } catch (error) {
+      if (error instanceof PiMeshError) throw error;
+      throw new PiMeshError(
+        ErrorCode.SpawnFailed,
+        `process.spawn failed: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
+    if (record.sessionId === undefined) {
+      throw new PiMeshError(
+        ErrorCode.SpawnFailed,
+        "process.spawn failed: Pi did not report a session id",
+      );
+    }
+    return {
+      job_id: record.id,
+      pid: record.pid,
+      session_id: record.sessionId,
+    };
+  });
 
   skills.register("process.stop", async (input) => {
     const jobId = requiredString(input, "job_id");

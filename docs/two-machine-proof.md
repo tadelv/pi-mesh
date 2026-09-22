@@ -151,3 +151,62 @@ only because this proof ran against real hardware, and it is fixed.
   hostname is the one path that bypasses it.
 - Both machines' login shells are `fish`, so remote commands go through
   `ssh … bash -s`.
+
+## M3-1 - `mesh.handoff`, Mac to devpi (2026-09-22)
+
+Command from the Mac, to the Pi over the LAN:
+
+    call mesh.handoff '{"task":"In this repository, run git log --oneline -3 and
+    report the three commit subjects, then on a new line write DONE",
+    "project":"pi-mesh","context":{"ticket":"M3-1","note":"handoff from the Mac"},
+    "preferred_agent":null,"deadline_ms":60000}' --peer-host 192.168.12.108:7330
+
+The response is an A2A task in `TASK_STATE_WORKING` whose status message carries
+the three handles at `status.message.parts[0].data.result`:
+
+    task_id    6e287705-bb3e-4309-a135-13433fe38d30
+    session_id 01a0caab-4e89-7788-a8c7-c53eec8ae724
+    job_id     7b235bb6-274a-4f97-ba37-32a101532440
+
+`stream <session_id> --follow` then showed the peer doing the work. Its report is
+verifiable rather than merely plausible, because the commits it listed are the ones
+pushed from the Mac minutes earlier:
+
+    1. `3081d31` - fix(test): T6 stopped racing the pipe that carries its own evidence
+    2. `9703bb5` - feat(m3-1): mesh.handoff transfers a task, and rejection is not an error
+    3. `fbeb6c5` - docs(adr-0010): pin the three response shapes the tests had to assume
+    DONE
+
+The prompt Pi actually received, read back with `session.read`:
+
+    In this repository, run git log --oneline -3 and report the three commit
+    subjects, then on a new line write DONE
+
+    Context:
+    {
+      "ticket": "M3-1",
+      "note": "handoff from the Mac"
+    }
+
+So the task and the context both survive the hop, under the exact heading ADR 0010
+pins, on the real session rather than in a fixture.
+
+**Rejection.** With `preferred_agent` naming another peer, the call returns a task
+in `TASK_STATE_REJECTED` with no JSON-RPC error, and the `pi` process count is 0
+before and after: a peer declining starts nothing.
+
+**Denial.** An agent restarted with the gate closed advertises the six ungated
+skills and drops `mesh.handoff` and `process.spawn` together, and both answer
+`-32102`:
+
+    Application error (-32102): Execution is disabled on this machine (start with
+    --allow-execution or set PI_MESH_ALLOW_SPAWN for a service manager): mesh.handoff
+
+Restarting with `--allow-execution` restores all nine skills. `process.stop` with
+the returned `job_id` answers `{"state":"exited"}` and leaves 0 `pi` processes.
+
+**Not proven on hardware:** `deadline_ms` expiry and the containment refusal for an
+escaping `project`. Both are covered by tests with mutation evidence (removing the
+project cwd fails the containment clause; the deadline test engineers a 10 ms
+deadline against a 150 ms readiness delay), but neither has been seen on a real
+machine, and this section does not claim otherwise.

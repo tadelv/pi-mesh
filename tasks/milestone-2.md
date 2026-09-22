@@ -290,6 +290,33 @@ Verified against the installed Pi 0.85.1 docs and the research note in
   for a denied peer over **both** request methods; and the gate itself lives in
   one method that both routes call.
 
+- **Outcome (M2-9, INCOMPLETE): evidence recorded, one clause unreachable.**
+  Transcripts are in `docs/two-machine-proof.md`. The proof found a REAL DEFECT
+  the fixture never could: with the gate closed, `process.spawn` answered
+  `-32004` while `session.steer` answered `-32102` on the same machine at the
+  same moment, against the exit criterion below. Fixed in `fb5c338` and
+  re-verified on the Pi.
+  The unmet clause is "read its entries" for the SPAWNED session. It is not
+  reachable: `process.spawn` starts Pi with no prompt and `session.steer` only
+  affects a turn already running, so the session never produces a turn, never
+  gets a session file, and `session.read` on the returned `session_id` has
+  nothing to read. That also means the M2-5 cross-path clause and the M2-7
+  clause "a steered session receives the message" are unverifiable against real
+  Pi - M2-7 passed against a stub. **Decision pending:** give `process.spawn` an
+  optional initial prompt (smallest change, and it makes `session.steer` usable
+  at all), add `session.prompt` (new protocol scope, M3), or weaken the DoD.
+- **Outcome (M2-10, already satisfied): the DoD held, but the test was passing
+  on a state production never reached.** The gate is one private method called
+  from both `call()` and `streamMessage()`, and the meta-test iterates
+  `EXECUTION_SKILLS` over `message/send` and `message/stream` asserting `-32102`
+  for each. But it passed only because the TEST server registered
+  `process.spawn` explicitly; production registered it only when a job manager
+  existed, i.e. only when the gate was already open. So the meta-test asserted
+  an answer that a real gate-closed machine does not give - the exact
+  green-for-the-wrong-reason shape. `fb5c338` registers it unconditionally, so
+  the test now describes production. Mutation evidence: making the gate no-op
+  for one skill fails 3 tests.
+
 ## Exit criteria
 
 - CI green on `main`.

@@ -174,6 +174,45 @@ The research behind this is in `docs/research/process-spawning.md`.
 
 ## Amendment — environment, workspace, and gate sources
 
+## Amendment — what "the child's process group" does and does not contain
+
+Decision 11 says every child runs in its own process group, the GROUP is
+signalled, and that this "is what makes a session's own descendants reachable at
+all". That is true of Pi's own children and **false of its tool commands**.
+
+Measured on devpi (Linux, Pi 0.85.1): a spawned session is its own group
+(`pgid == pid`), but a command started by the session's bash tool calls
+`setsid()` and lands in its own group *and* its own session:
+
+```
+  23089   20230   23089   23089 pi          <- the session we signal
+  23181   23169   23181   23181 sleep 300   <- the tool's command, escaped
+```
+
+Consequences, both measured:
+
+- **Graceful stop is complete.** `process.stop` ends with 0 survivors, because Pi
+  kills its own tool children while shutting down. The group signal reaches Pi,
+  and Pi does the rest.
+- **A hard kill is not.** After `kill -9` on the session the command survives as
+  an orphan reparented to init, in a session nothing we send can reach. Our
+  stage-3 `SIGKILL` escalation therefore leaks work: on a 2 GB Pi, one
+  `pnpm -r test` left behind is the resource-exhaustion risk this milestone
+  already names.
+
+The fix is not a wider signal - there is no POSIX signal that reaches a process
+which `setsid()`ed away. It is a **cgroup or a systemd scope with
+`KillMode=control-group`**, which is inclusive regardless of session. That was
+already the answer earmarked for macOS; it is now required on Linux too, and M3's
+`DEPLOYMENT.md` must carry it as the deployment lever rather than a nicety.
+
+This does not change the implementation: signalling the group is still the best
+graft available from the parent side, and it is what makes the graceful path
+work. It changes the CLAIM. "Never outlives the agent" is true only for a
+graceful stop; a hard-killed agent leaves work behind on both platforms, and the
+guarantee belongs to the supervisor (scope/cgroup), not to this process.
+
+
 The original decisions above deliberately chose an environment allowlist, a
 required workspace root, and an environment-only execution gate. They are
 amended as follows:

@@ -147,6 +147,20 @@ you do not know yet.
   `.pi/extensions` as code with the user's permissions. `--no-approve` is passed
   explicitly rather than relying on that default.
 
+- **Pi's bash tool calls `setsid()` per command, so a tool's tree escapes the
+  session's process group - and our reaping is a group signal.** Measured on
+  devpi: a spawned `pi` is its own process group (`pgid == pid`, from
+  `detached: true`), but `sleep 300` started by its bash tool lands in its OWN
+  group AND its own session (`23181 23169 23181 23181`). A graceful
+  `process.stop` still cleans up completely (Pi kills its own tool children:
+  0 survivors), but `kill -9` on the session leaves the command behind,
+  reparented to init (`ppid 1`), in a session that no group sweep can reach.
+  So "the child's own process group contains its tree" holds only while Pi is
+  alive to propagate. On Linux the answer is a cgroup or a systemd scope with
+  `KillMode=control-group`, which is inclusive regardless of `setsid` - not a
+  wider signal. Verify by reaping a tool command after a hard kill, not after a
+  graceful stop, because the graceful path passes either way.
+
 ## Environment / tooling
 
 - **A global `~/.gitignore` containing `/Packages` case-insensitively ignores

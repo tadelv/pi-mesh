@@ -266,9 +266,23 @@ order still work. For v1, `entryId` is this specification's, not Pi's.
 `session.read` accepts `since` as an entry ID and returns entries appended
 after it. `session.stream` emits newly appended entries in append order.
 
-Token-level streaming deltas are deliberately not part of v1: they carry
-neither a stable identifier nor a timestamp and cannot be resumed, so they
-could not participate in replay.
+Token-level streaming deltas are deliberately not part of v1's durable
+replay: they carry neither a stable identifier nor a timestamp and cannot be
+resumed, so they could not participate in replay.
+
+`session.stream` uses a live source when its id belongs to a locally running
+job. Live frames are the raw Pi RPC event with `source: "live"`; they do not
+carry `entryId` and make no resumption promise. A subscriber attaching during
+a turn receives a bounded replay of recent live events (at most 256 events or
+64 KiB, whichever is reached first), followed by the live tail. Events older
+than that bound are dropped; clients must use the durable session file to
+resume after a disconnect.
+
+When the session is not owned by a running local job, `session.stream` remains
+file-backed. Its frame carries `source: "file"` in the streamed Pi entry and
+retains the existing `entryId` cursor semantics, so `session.read` can resume
+after that cursor. Live and file frames are intentionally not interchangeable:
+only file frames promise replay or resumption.
 
 ## Task lifecycle
 

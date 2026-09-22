@@ -135,6 +135,10 @@ export function createPiSpawner(options: PiSpawnerOptions): JobSpawner {
       ...(options.logger === undefined ? {} : { logger: options.logger }),
     });
     rpc.on("exit", report.exited);
+    const onEvent = (event: Record<string, unknown>): void =>
+      report.event?.(event);
+    rpc.on("event", onEvent);
+    rpc.once("exit", () => rpc.off("event", onEvent));
     rpc.on("stderr", (line: string) => report.output(line));
     const ready = (async (): Promise<void> => {
       try {

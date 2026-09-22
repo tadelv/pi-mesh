@@ -33,7 +33,7 @@ function event(entry: SessionFileEntry): Event {
     entryId: entry.id,
     type: entry.type,
     timestamp: entry.timestamp,
-    data: entry,
+    data: { ...entry, source: "file" },
   };
 }
 

@@ -58,7 +58,7 @@ import type { SessionReadRequest } from "./sessions.js";
 import { TaskStore } from "./tasks.js";
 import { loadOrCreateIdentity, type PeerIdentity } from "./identity.js";
 import { loadSwarmKey } from "./swarm-key.js";
-import type { JobManager } from "./jobs.js";
+import type { JobManager, LiveStreamEvent } from "./jobs.js";
 
 const MAX_REPLAY_ENTRIES = 10_000;
 const MAX_PENDING_HANDSHAKES = 1_024;
@@ -731,14 +731,16 @@ export class HttpAgentServer implements AgentServer {
       const task = this.tasks.create(
         call.contextId === undefined ? {} : { contextId: call.contextId },
       );
-      const iterator = (this.options.stream ?? sessionStream)(
-        { id },
-        this.options,
-      );
+      const live = this.options.jobs?.liveStream(id);
+      const iterator =
+        (live as AsyncIterableIterator<LiveStreamEvent> | undefined) ??
+        (this.options.stream ?? sessionStream)({ id }, this.options);
       let closed = false;
       const stop = (): void => {
         closed = true;
-        void iterator.stop();
+        if ("stop" in iterator && typeof iterator.stop === "function")
+          void iterator.stop();
+        else void iterator.return?.();
       };
       incoming.once("aborted", stop);
       response.once("close", stop);

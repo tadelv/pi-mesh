@@ -357,6 +357,26 @@ Verified against the installed Pi 0.85.1 docs and the research note in
   (`it.skipIf` no binary), not only the stub, because a stub chooses its own
   event shapes and cannot contradict us.
 
+- **Outcome (M2-11, done): the live feed works, and verification found a defect the
+  tests were hiding.** Every clause was broken to prove it discriminates, and each
+  break fails the clause it names: removing the live source fails the ordering
+  clause (`expected [] to deeply equal [ 'first-live-delta', ... ]`); disabling the
+  ring's eviction fails the bound (`expected 300 to be less than or equal to 256`);
+  letting live frames carry `entryId` fails the cursor clause (`expected false to be
+  true`); and gating streaming fails 4 clauses at once.
+  Found while verifying, not by the suite: the real-Pi clause guarded on the
+  **binary only**. On a machine with `pi` installed but no model credentials (CI, or
+  a fresh HOME) it did not fail fast - it hung for the full 90 s timeout, and the
+  child wrote a template `auth.json` and `models-store.json` into `$HOME/.pi/agent`,
+  so a suite that is supposed to create zero files created three. The guard now
+  requires credentials as well, so the clause **skips** where it cannot run rather
+  than hanging and polluting: 4 passed on a real HOME, 3 passed + 1 skipped and 0
+  files created under `HOME=$(mktemp -d)`.
+  Known wart, unmeasured: `LiveJobStream.enqueue` and the replay ring recompute total
+  bytes by re-serialising the whole queue on every event - O(n) per event for n up to
+  256, where a running counter would be O(1). Correct, and left alone because it is
+  a cost and not a bound.
+
 ## Exit criteria
 
 - CI green on `main`.

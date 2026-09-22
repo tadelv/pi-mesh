@@ -7,7 +7,7 @@ import {
   PiMeshError,
   type Logger,
 } from "@pi-mesh/shared";
-import type { PiRpcCommand, PiRpcResponse } from "./rpc.js";
+import type { PiRpcCommand, PiRpcEvent, PiRpcResponse } from "./rpc.js";
 
 /**
  * Concurrent jobs per agent. A Pi session is a full model-backed process, so
@@ -26,6 +26,8 @@ const DEFAULT_MAX_JOBS = 4;
  */
 const DEFAULT_UNACKNOWLEDGED_TTL_MS = 30_000;
 const DEFAULT_MAX_RETAINED_OUTPUT_LINES = 200;
+const MAX_LIVE_EVENTS = 256;
+const MAX_LIVE_BYTES = 64 * 1024;
 /** Bytes, not just lines: one stderr chunk can be tens of KB. */
 const DEFAULT_MAX_RETAINED_OUTPUT_BYTES = 32_768;
 /**
@@ -90,6 +92,76 @@ export interface JobReporter {
   output(line: string): void;
   session(sessionId: string): void;
   exited(status: { code: number | null; signal: string | null }): void;
+  event?(event: PiRpcEvent): void;
+}
+
+export interface LiveStreamEvent {
+  readonly data: PiRpcEvent;
+}
+
+class LiveJobStream implements AsyncIterableIterator<LiveStreamEvent> {
+  private readonly queue: LiveStreamEvent[];
+  private readonly waiters: Array<
+    (result: IteratorResult<LiveStreamEvent>) => void
+  > = [];
+  private stopped = false;
+
+  constructor(
+    private readonly remove: () => void,
+    replay: readonly LiveStreamEvent[],
+  ) {
+    this.queue = [...replay];
+  }
+
+  enqueue(event: LiveStreamEvent): void {
+    if (this.stopped) return;
+    const waiter = this.waiters.shift();
+    if (waiter !== undefined) {
+      waiter({ value: event, done: false });
+      return;
+    }
+    this.queue.push(event);
+    let bytes = this.queue.reduce(
+      (total, item) => total + Buffer.byteLength(JSON.stringify(item.data)),
+      0,
+    );
+    while (
+      this.queue.length > MAX_LIVE_EVENTS ||
+      (bytes > MAX_LIVE_BYTES && this.queue.length > 0)
+    ) {
+      const removed = this.queue.shift();
+      if (removed !== undefined)
+        bytes -= Buffer.byteLength(JSON.stringify(removed.data));
+    }
+  }
+
+  async next(): Promise<IteratorResult<LiveStreamEvent>> {
+    const item = this.queue.shift();
+    if (item !== undefined) return { value: item, done: false };
+    if (this.stopped) return { value: undefined, done: true };
+    return new Promise((resolve) => this.waiters.push(resolve));
+  }
+
+  async return(): Promise<IteratorResult<LiveStreamEvent>> {
+    this.stop();
+    return { value: undefined, done: true };
+  }
+
+  [Symbol.asyncIterator](): AsyncIterableIterator<LiveStreamEvent> {
+    return this;
+  }
+
+  stop(): void {
+    if (this.stopped) return;
+    this.stopped = true;
+    this.remove();
+    for (const waiter of this.waiters.splice(0))
+      waiter({ value: undefined, done: true });
+  }
+
+  close(): void {
+    this.stop();
+  }
 }
 
 export interface JobHandle {
@@ -189,6 +261,8 @@ export class JobManager {
   private readonly stopPromises = new Map<string, StopPromise>();
   private readonly retainedOutput = new Map<string, string[]>();
   private readonly retainedOutputBytes = new Map<string, number>();
+  private readonly liveEvents = new Map<string, LiveStreamEvent[]>();
+  private readonly liveSubscribers = new Map<string, Set<LiveJobStream>>();
   private readonly peerStarts = new Map<string, number[]>();
 
   constructor(options: JobManagerOptions) {
@@ -291,6 +365,11 @@ export class JobManager {
         if (record === undefined) return;
         record.sessionId = sessionId;
       },
+      event: (event) => {
+        const record = current.record;
+        if (record === undefined) return;
+        this.publishLiveEvent(record.id, event);
+      },
       exited: (status) => {
         const record = current.record;
         if (record === undefined) {
@@ -319,6 +398,8 @@ export class JobManager {
     this.handles.set(id, handle);
     this.retainedOutput.set(id, []);
     this.retainedOutputBytes.set(id, 0);
+    this.liveEvents.set(id, []);
+    this.liveSubscribers.set(id, new Set());
     starts.push(now);
     this.peerStarts.set(spec.peerId, starts);
     if (earlyExit !== undefined) this.markExited(record, earlyExit);
@@ -361,6 +442,54 @@ export class JobManager {
     this.stopPromises.delete(id);
     this.retainedOutput.delete(id);
     this.retainedOutputBytes.delete(id);
+    this.liveEvents.delete(id);
+    this.closeLiveStreams(id);
+    this.liveSubscribers.delete(id);
+  }
+
+  /** Return the live RPC tail for a currently running session, if any. */
+  liveStream(
+    sessionId: string,
+  ): AsyncIterableIterator<LiveStreamEvent> | undefined {
+    const record = [...this.jobs.values()].find(
+      (job) => job.state === "running" && job.sessionId === sessionId,
+    );
+    if (record === undefined) return undefined;
+    const subscribers = this.liveSubscribers.get(record.id);
+    const replay = this.liveEvents.get(record.id);
+    if (subscribers === undefined || replay === undefined) return undefined;
+    const stream = new LiveJobStream(() => subscribers.delete(stream), replay);
+    subscribers.add(stream);
+    return stream;
+  }
+
+  private publishLiveEvent(id: string, event: PiRpcEvent): void {
+    const withoutEntryId = { ...event };
+    delete withoutEntryId.entryId;
+    const live: LiveStreamEvent = {
+      data: { ...withoutEntryId, source: "live" },
+    };
+    const ring = this.liveEvents.get(id);
+    if (ring === undefined) return;
+    ring.push(live);
+    let bytes = ring.reduce(
+      (total, item) => total + Buffer.byteLength(JSON.stringify(item.data)),
+      0,
+    );
+    while (
+      ring.length > MAX_LIVE_EVENTS ||
+      (bytes > MAX_LIVE_BYTES && ring.length > 0)
+    ) {
+      const removed = ring.shift();
+      if (removed !== undefined)
+        bytes -= Buffer.byteLength(JSON.stringify(removed.data));
+    }
+    for (const subscriber of this.liveSubscribers.get(id) ?? [])
+      subscriber.enqueue(live);
+  }
+
+  private closeLiveStreams(id: string): void {
+    for (const stream of this.liveSubscribers.get(id) ?? []) stream.close();
   }
 
   acknowledge(id: string): boolean {
@@ -419,6 +548,7 @@ export class JobManager {
 
     record.state = "stopping";
     this.clearDeliveryTimer(id);
+    this.closeLiveStreams(id);
     const handle = this.handles.get(id);
     if (handle === undefined) return record;
     const close = Promise.resolve()
@@ -485,6 +615,7 @@ export class JobManager {
     record.state = "exited";
     record.exit = { code: status.code, signal: status.signal, at: this.now() };
     this.clearDeliveryTimer(record.id);
+    this.closeLiveStreams(record.id);
     const handle = this.handles.get(record.id);
     if (handle !== undefined) record.stdioClosed = handle.stdioClosed;
   }

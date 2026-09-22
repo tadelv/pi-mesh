@@ -60,6 +60,18 @@ you do not know yet.
   that has stopped testing. Make doubles REFUSE what the real thing refuses
   (`0526b6b`).
 
+- **A test for a gated feature inherits that feature's startup prerequisites.**
+  Capability honesty drives the real CLI with the gate open, and `cli.ts` calls
+  `resolvePiBinary()` *before* the listener starts - so on a runner with no `pi`
+  the agent dies with "Unable to find executable pi", never advertises, and every
+  clause errors before an assertion runs. Every local gate passed, because this
+  machine has `pi`. Point `PI_MESH_PI_BINARY` at an executable fixture instead of
+  skipping: `resolvePiBinary` only realpaths, stats and checks `X_OK`, so nothing
+  is executed, and skipping would leave the feature untested exactly where it
+  runs unattended (`70df2a8`). Simulate a `pi`-less runner with
+  `env -u PI_MESH_PI_BINARY PATH=<dir containing only node> node \
+  node_modules/.pnpm/vitest@*/node_modules/vitest/vitest.mjs run <file>`.
+
 ## Node / runtime
 
 - **`response.writeHead`/`end` on a destroyed socket does not throw and does not

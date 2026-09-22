@@ -104,7 +104,13 @@ function handle(line) {
     response(command.id, { keys: Object.keys(globalThis.process.env).sort() });
     return;
   }
-  if (mode === "abort" || mode === "steer") {
+  if (
+    mode === "abort" ||
+    mode === "steer" ||
+    mode === "prompt" ||
+    mode === "prompt-refused" ||
+    mode === "prompt-long"
+  ) {
     if (command.type === "get_state") {
       response(command.id, {
         command: "get_state",
@@ -142,6 +148,35 @@ function handle(line) {
       response(command.id, { success: true, accepted: true });
       return;
     }
+    if (
+      (mode === "prompt" ||
+        mode === "prompt-refused" ||
+        mode === "prompt-long") &&
+      command.type === "prompt"
+    ) {
+      if (typeof command.message !== "string") {
+        response(command.id, {
+          success: false,
+          error: "prompt message must be a string",
+        });
+        return;
+      }
+      globalThis.process.stderr.write(`prompt=${command.message}\n`);
+      if (mode === "prompt-refused") {
+        response(command.id, {
+          success: false,
+          error: "prompt refused by fixture",
+        });
+        return;
+      }
+      response(command.id, { success: true, accepted: true });
+      if (mode === "prompt-long") {
+        globalThis.setInterval(() => {
+          globalThis.process.stderr.write("turn-running\n");
+        }, 20);
+      }
+      return;
+    }
     write({
       type: "response",
       id: command.id,
@@ -154,6 +189,10 @@ function handle(line) {
     // Validate the request SHAPE, as real Pi does. Answering regardless of what
     // arrives is how a `{command:"get_state"}` request passed the suite while
     // being unrecognisable to the actual binary.
+    if (command.type === "prompt") {
+      response(command.id, { success: true, accepted: true });
+      return;
+    }
     if (command.type !== "get_state") {
       write({
         type: "response",

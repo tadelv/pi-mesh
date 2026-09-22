@@ -147,9 +147,6 @@ export function createSkillRegistry(
   // -32004 remains correct for a skill that is genuinely not implemented.
   skills.registerExecution("process.spawn", async (input) => {
     const jobs = options.jobs;
-    if (jobs === undefined) {
-      throw new PiMeshError(-32004, "process.spawn requires a job manager");
-    }
     const project = input.project;
     if (typeof project !== "string" || project.trim().length === 0) {
       throw new PiMeshError(
@@ -159,6 +156,16 @@ export function createSkillRegistry(
     }
     if (input.cwd !== undefined && typeof input.cwd !== "string") {
       throw new PiMeshError(-32602, "process.spawn cwd must be a string");
+    }
+    const prompt = input.prompt;
+    if (typeof prompt !== "string" || prompt.trim().length === 0) {
+      throw new PiMeshError(
+        -32602,
+        "process.spawn requires a non-blank prompt",
+      );
+    }
+    if (jobs === undefined) {
+      throw new PiMeshError(-32004, "process.spawn requires a job manager");
     }
     let root: string;
     try {
@@ -208,6 +215,28 @@ export function createSkillRegistry(
       throw new PiMeshError(
         ErrorCode.SpawnFailed,
         "process.spawn failed: Pi did not report a session id",
+      );
+    }
+    try {
+      // Pi answers when the prompt is accepted, not when its turn finishes;
+      // events continue streaming asynchronously so the peer can steer it.
+      const response = await jobs.send(record.id, {
+        type: "prompt",
+        message: prompt,
+      });
+      if (response.success === false) {
+        throw new Error(
+          typeof response.error === "string"
+            ? response.error
+            : "Pi refused the prompt",
+        );
+      }
+    } catch (error) {
+      await jobs.stop(record.id).catch(() => undefined);
+      throw new PiMeshError(
+        ErrorCode.SpawnFailed,
+        `process.spawn failed: prompt was not accepted (${error instanceof Error ? error.message : String(error)})`,
+        { cause: error },
       );
     }
     return {

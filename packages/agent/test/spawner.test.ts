@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import { execFileSync } from "node:child_process";
 import {
   chmod,
   mkdir,
@@ -69,6 +70,25 @@ async function wrapperFor(parent: string, mode: string): Promise<string> {
   return path;
 }
 
+function withDeadline<T>(promise: Promise<T>, ms = 1_000): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error("operation did not settle")), ms),
+    ),
+  ]);
+}
+
+function processStatus(pid: number): string {
+  try {
+    return execFileSync("ps", ["-o", "stat=", "-p", String(pid)], {
+      encoding: "utf8",
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+
 /** The registry the server would build, without an HTTP layer in the way. */
 function registryFor(options: {
   root: string;
@@ -125,7 +145,82 @@ describe("spawn policy primitives", () => {
     expect(result.refused).toEqual(["PI_MESH_SWARM_KEY"]);
   });
 
-  it("refuses a cwd that escapes the workspace, and one that escapes by symlink", async () => {
+  it("T1 sends the supplied initial prompt to the child", async () => {
+    const w = await workspace();
+    const { skills, jobs } = registryFor({
+      root: w.root,
+      binary: await wrapperFor(w.parent, "prompt"),
+      sessionsRoot: w.sessionsRoot,
+    });
+    try {
+      const result = (await skills.invoke("process.spawn", {
+        project: "p",
+        cwd: "project",
+        prompt: "exact initial prompt",
+        _peerId: "peer",
+      })) as { job_id: string };
+      expect(jobs.output(result.job_id)).toContain(
+        "prompt=exact initial prompt\n",
+      );
+    } finally {
+      await jobs.shutdown();
+    }
+  });
+
+  it("T2 refuses missing and blank prompts before starting anything", async () => {
+    const w = await workspace();
+    const { skills, jobs } = registryFor({
+      root: w.root,
+      binary: w.binary,
+      sessionsRoot: w.sessionsRoot,
+    });
+    try {
+      for (const prompt of [undefined, "   "]) {
+        await expect(
+          skills.invoke("process.spawn", {
+            project: "p",
+            cwd: "project",
+            ...(prompt === undefined ? {} : { prompt }),
+            _peerId: "peer",
+          }),
+        ).rejects.toMatchObject({
+          code: -32602,
+          message: "process.spawn requires a non-blank prompt",
+        });
+        expect(jobs.list()).toEqual([]);
+      }
+    } finally {
+      await jobs.shutdown();
+    }
+  });
+
+  it("T3 stops a job when the child refuses its initial prompt", async () => {
+    const w = await workspace();
+    const { skills, jobs } = registryFor({
+      root: w.root,
+      binary: await wrapperFor(w.parent, "prompt-refused"),
+      sessionsRoot: w.sessionsRoot,
+    });
+    try {
+      await expect(
+        skills.invoke("process.spawn", {
+          project: "p",
+          cwd: "project",
+          prompt: "refused prompt",
+          _peerId: "peer",
+        }),
+      ).rejects.toMatchObject({ code: ErrorCode.SpawnFailed });
+      const records = jobs.list();
+      expect(records.filter((record) => record.state !== "exited")).toEqual([]);
+      const pid = records[0]?.pid;
+      expect(pid).toBeTypeOf("number");
+      expect(processStatus(pid!)).toMatch(/^$|^Z/);
+    } finally {
+      await jobs.shutdown();
+    }
+  });
+
+  it("T4 checks containment before starting a valid prompted spawn", async () => {
     // The DoD's two escapes, through the real skill rather than the primitive:
     // a peer that will not take no for an answer should meet the refusal.
     const w = await workspace();
@@ -142,6 +237,7 @@ describe("spawn policy primitives", () => {
         skills.invoke("process.spawn", {
           project: "p",
           cwd: join(w.root, "..", "outside"),
+          prompt: "outside prompt",
           _peerId: "peer",
         }),
       ).rejects.toMatchObject({ code: ErrorCode.SpawnDenied });
@@ -149,10 +245,40 @@ describe("spawn policy primitives", () => {
         skills.invoke("process.spawn", {
           project: "p",
           cwd: join(w.root, "escape"),
+          prompt: "escape prompt",
           _peerId: "peer",
         }),
       ).rejects.toMatchObject({ code: ErrorCode.SpawnDenied });
       expect(jobs.list()).toEqual([]);
+    } finally {
+      await jobs.shutdown();
+    }
+  });
+
+  it("T5 returns after prompt acceptance while the turn is still running", async () => {
+    const w = await workspace();
+    const { skills, jobs } = registryFor({
+      root: w.root,
+      binary: await wrapperFor(w.parent, "prompt-long"),
+      sessionsRoot: w.sessionsRoot,
+    });
+    try {
+      const started = await withDeadline(
+        skills.invoke("process.spawn", {
+          project: "p",
+          cwd: "project",
+          prompt: "long-running prompt",
+          _peerId: "peer",
+        }),
+      );
+      const result = started as { job_id: string };
+      expect(jobs.get(result.job_id)?.state).toBe("running");
+      await new Promise((resolve) => setTimeout(resolve, 40));
+      expect(
+        jobs
+          .output(result.job_id)
+          .some((line) => line.includes("turn-running")),
+      ).toBe(true);
     } finally {
       await jobs.shutdown();
     }
@@ -171,6 +297,7 @@ describe("spawn policy primitives", () => {
       const result = (await skills.invoke("process.spawn", {
         project: "p",
         cwd: "project",
+        prompt: "relative prompt",
         _peerId: "peer",
       })) as { job_id?: string; session_id?: string };
       expect(result.job_id).toBeTypeOf("string");
@@ -179,6 +306,7 @@ describe("spawn policy primitives", () => {
         skills.invoke("process.spawn", {
           project: "p",
           cwd: "../outside",
+          prompt: "escaping prompt",
           _peerId: "peer",
         }),
       ).rejects.toMatchObject({ code: ErrorCode.SpawnDenied });

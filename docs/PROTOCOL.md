@@ -47,7 +47,7 @@ Each skill also declares its **exposure**:
 | `session.stream` | peer | `{ id }` | SSE stream of `Event` |
 | `session.steer` | **gated on the spawn policy** | `{ job_id (mesh id, not PID), message }` | Pi RPC response; refused with `-32102` when closed |
 | `session.abort` | peer (ungated) | `{ job_id (mesh id, not PID) }` | Pi RPC response |
-| `process.spawn` | **gated on the spawn policy** | `{ project, cwd? }` | `{ job_id, pid, session_id }` |
+| `process.spawn` | **gated on the spawn policy** | `{ project, cwd?, prompt }` | `{ job_id, pid, session_id }` |
 | `process.stop` | peer (ungated) | `{ job_id (mesh id, not PID) }` | `{ job_id, state, pid }` |
 | `mesh.handoff` | **not served in M1** | `HandoffPayload` | `{ task_id }` |
 
@@ -58,9 +58,10 @@ means unauthenticated: every request carries a proof (below).
 to execute, and refused with `-32102` otherwise; see ADR 0008. Three details of
 the shapes above are load-bearing:
 
-- `process.spawn` takes **no `argv`**. The server constructs the command line;
-a remote caller chooses a project, not a program. Peer-chosen argv could
-change the provider, the session directory, or which extensions load.
+- `process.spawn` takes a required, non-blank `prompt` that starts the first
+turn. It takes **no `argv`**. The server constructs the command line; a remote
+caller chooses a project, not a program. Peer-chosen argv could change the
+provider, the session directory, or which extensions load.
 - `process.spawn`'s `cwd`, when given, must resolve inside the configured
 workspace root, because it selects what the spawned agent may read and write.
 - `process.stop` takes a **mesh job id**, never a bare PID. The agent stops only

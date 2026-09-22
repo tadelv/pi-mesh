@@ -250,6 +250,30 @@ Verified against the installed Pi 0.85.1 docs and the research note in
   list (disabled ⇒ the names are absent, enabled ⇒ present) from a
   fixed point outside that shared function, or it tests nothing.
 
+- **Outcome (done): the premise was wrong, and no production code changed.** The
+  gate was already wired into both surfaces by M2-5/M2-6, so the deliverable is
+  `packages/agent/test/capability-honesty.test.ts` - five tests that drive the
+  real CLI, fetch the real card over loopback HTTP, and capture `txt.caps` at the
+  DNS-SD boundary - plus this correction. Verified by mutation: making the shared
+  source ignore the gate fails 3 clauses, making the CARD alone unconditional
+  fails 3, making `caps` alone unconditional fails 3, and never advertising the
+  gated skills fails 2.
+- **The DoD as written was satisfiable by a degenerate solution.** Advertising
+  *nothing* when the gate is closed satisfies "neither the card nor `caps`
+  mentions them" while breaking the product. The tests therefore also assert the
+  exact ungated set survives, which is what makes clause 5 load-bearing rather
+  than decorative.
+- **The card and `caps` cannot disagree today, and that is a coupling, not a
+  guarantee.** The card derives the gate as `enabled && skills.has("process.spawn")`
+  and `caps` as `enabled && jobs !== undefined` - different expressions that
+  coincide only because `cli.ts` creates the job manager exactly when the gate is
+  open and `skills.ts` registers `process.spawn` exactly when a job manager
+  exists. The agreement depends on an invariant held in two other files, and the
+  two are not equally honest: the card asks whether the skill is really
+  registered, `caps` trusts a proxy for it. The card-vs-`caps` regression test
+  fails when either surface alone drifts, so it guards the coupling - but it is
+  not evidence of the gate's effect, and it should never be cited as such.
+
 ### M2-9 — Two-machine proof
 - On the real Mac + Pi setup: with the gate open, spawn a session on the Pi,
   steer it, read its entries, abort it; with the gate closed, prove the same

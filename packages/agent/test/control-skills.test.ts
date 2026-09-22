@@ -25,6 +25,23 @@ const logger = {
   error: () => undefined,
 };
 
+/**
+ * Wait for the fixture to have recorded something, bounded.
+ *
+ * The fixture records a request on stderr while the response to it travels on
+ * stdout, so the two pipes can be re-ordered and a line emitted just before an
+ * acknowledgement can be read just after it. Asserting immediately makes the test
+ * flaky rather than wrong: it passed on a laptop and failed on a slower CI runner.
+ * Waiting does not weaken the clause - the recorded message is still asserted
+ * exactly, and a fixture that recorded nothing still fails once the wait expires.
+ */
+async function waitForOutput(output: string[], ms: number): Promise<void> {
+  const deadline = Date.now() + ms;
+  while (output.length === 0 && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+}
+
 async function setup(mode: string): Promise<{
   jobs: JobManager;
   close: () => Promise<void>;
@@ -231,6 +248,8 @@ describe("process and session control skills", () => {
       ).resolves.toMatchObject({ success: true, accepted: true });
       // A real RPC response alone cannot prove which request was sent; the
       // fixture records the exact message on stderr in its explicit steer mode.
+      // Wait for it rather than reading the pipe immediately (see waitForOutput).
+      await waitForOutput(test.output, 2_000);
       expect(test.output).toHaveLength(1);
       expect(test.output[0]).toContain("steer=specific steering message");
     } finally {

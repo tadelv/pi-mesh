@@ -321,6 +321,42 @@ Verified against the installed Pi 0.85.1 docs and the research note in
   the test now describes production. Mutation evidence: making the gate no-op
   for one skill fails 3 tests.
 
+### M2-11 — Watch a running session instead of polling for it
+- Measured in the first dogfooding run: a spawned session worked for minutes on
+  the Pi and the only window into it was one `session.read` afterwards, returning
+  9 entries. Polling shows the answer after the work; a peer wants progress
+  during it. Watching a remote agent work is the product, `session.read` is the
+  log.
+- Pi already streams. `pi --mode rpc` writes events to stdout during operation
+  (`docs/rpc.md` section "Events"): `message_update` carries `text_delta`,
+  `thinking_delta` and `toolcall_*` deltas; `tool_execution_update` streams tool
+  progress; `turn_start`/`turn_end`/`agent_settled` bracket the work.
+  `PiRpcClient` already re-emits them (`rpc.ts:546`) and `jobs.ts` discards them.
+  So this needs no file watching, no new dependency and no new skill (ADR 0009).
+- `session.stream` for a session id owned by a **running job** is served from
+  that job's live event stream; any other id keeps today's durable file source.
+  The job table already carries the join key (`JobRecord.sessionId`,
+  `jobs.ts:292`).
+- **DoD:**
+  - A live session id yields frames tagged `source: "live"`; a non-live id still
+    yields resumable `source: "file"` frames. The two are distinguishable, and
+    live frames make **no** resumption promise - deltas cannot be replayed
+    (ADR 0009 decision 3).
+  - A subscriber attaching mid-turn receives the bounded ring (256 events or
+    64 KiB, whichever comes first) and then the live tail, so a late peer is not
+    blind until the next delta.
+  - Streaming stays **ungated**: a member who may not start work may still watch
+    work (ADR 0008 decision 1).
+  - The live frame discriminator and its non-resumable promise are documented in
+    `docs/PROTOCOL.md`. No invented envelopes.
+- **Evidence (this is the hard part):** the test must prove the stream is a
+  *stream*, not a flush. "Events arrived" passes against a stub that buffers the
+  whole turn and dumps it at the end. The discriminating assertion is that two or
+  more `text_delta` frames are observed **while the turn is still running** - an
+  ordering fact, not a count - and it must be checked against **real Pi**
+  (`it.skipIf` no binary), not only the stub, because a stub chooses its own
+  event shapes and cannot contradict us.
+
 ## Exit criteria
 
 - CI green on `main`.

@@ -100,3 +100,26 @@ declines to add a second, looser way to choose a directory.
 - The `-32004` for `mesh.handoff` that `docs/two-machine-proof.md` recorded on a
   gate-closed Pi becomes `-32102` once it is registered; that transcript is
   historical and stays as written.
+
+## Response shapes, pinned
+
+Writing the M3-1 tests from this ADR forced three choices the decisions above
+left implicit. They are pinned here rather than left to whoever implements it,
+because a test that fails on a formatting coin-flip teaches nobody anything - and
+a test that quietly conforms to whatever the code happens to do is worse.
+
+- **Accepted**: the message result is
+  `{ "task_id": "…", "session_id": "…", "job_id": "…" }` (decision 3).
+- **Rejected**: the message result is `{ "task": <A2A Task> }` whose
+  `status.state` is `TASK_STATE_REJECTED`, and `tasks/get` for that id returns the
+  same task. The rejection therefore travels as a task rather than as an error
+  (decision 4), and a caller that kept the id can always re-read the answer instead
+  of holding the first response.
+- **Deadline expiry is a rejection, not an error.** A handoff that does not start
+  within `deadline_ms` settles `TASK_STATE_REJECTED` like any other decline. It is
+  the same fact - no work started here - and giving it a second shape would make
+  the caller handle one condition twice.
+- **Context rendering**: a non-empty `context` is appended to the prompt under the
+  exact heading `Context:`. This is pinned because nothing else in the protocol
+  fixes it, and an implementation that picked its own wording would fail a test
+  that was right about the requirement and wrong about the spelling.

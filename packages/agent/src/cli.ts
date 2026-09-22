@@ -57,7 +57,7 @@ export const PI_SUPPORTED_FLOOR = "0.85.1";
 const usage =
   "Usage: pi-mesh-agent keygen\n" +
   "Usage: pi-mesh-agent peers [--profile lan|public] [--watch] [--timeout seconds]\n" +
-  "Usage: pi-mesh-agent start [--profile lan|public]\n" +
+  "Usage: pi-mesh-agent start [--profile lan|public] [--allow-execution[=peer-id,peer-id]]\n" +
   "Usage: pi-mesh-agent sessions [--peer id | --peer-host host[:port]] [--timeout seconds]\n" +
   "Usage: pi-mesh-agent stream <session> [--peer id | --peer-host host[:port]] [--timeout seconds]\n" +
   "Usage: pi-mesh-agent call <peer> <skill> [json] [--timeout seconds]\n" +
@@ -104,10 +104,17 @@ export async function run(
         `The public profile cannot use ${parsed.command}; trusted control-plane discovery is not available yet`,
       );
     }
+    if (parsed.allowExecutionFlag && parsed.command !== "start") {
+      throw new CliUsageError("--allow-execution is only valid with start");
+    }
     if (parsed.command === "start") {
       if (parsed.args.length > 0)
         throw new CliUsageError("start takes no arguments");
-      return await start(parsed.profile, io);
+      return await start(
+        parsed.profile,
+        io,
+        parseSpawnPolicy(parsed.allowExecution),
+      );
     }
     if (parsed.command === "sessions") {
       if (parsed.args.length > 0)
@@ -194,7 +201,11 @@ async function peers(
   }
 }
 
-async function start(profile: NetworkProfile, io: CliIO): Promise<number> {
+async function start(
+  profile: NetworkProfile,
+  io: CliIO,
+  spawnPolicy: SpawnPolicy,
+): Promise<number> {
   let swarmKey: Uint8Array | undefined;
   if (profile === "lan") {
     try {
@@ -219,7 +230,6 @@ async function start(profile: NetworkProfile, io: CliIO): Promise<number> {
     // The listener and advertisement must use the same identity and port. A
     // peer learns both from mDNS and signs requests addressed to that identity.
     const identity = io.identity ?? (await loadOrCreateIdentity());
-    const spawnPolicy = parseSpawnPolicy();
     let workspaceRoot: string | undefined;
     if (spawnPolicy.enabled) {
       workspaceRoot = resolveWorkspaceRoot();
@@ -241,6 +251,7 @@ async function start(profile: NetworkProfile, io: CliIO): Promise<number> {
         registry,
         ...(jobs === undefined ? {} : { jobs }),
         ...(workspaceRoot === undefined ? {} : { workspaceRoot }),
+        spawnPolicy,
       });
       const listening = await server.start();
       advertisement = await publishAgent(
@@ -623,8 +634,7 @@ async function doctor(io: CliIO): Promise<number> {
       }
     }
   }
-  const spawnOptedIn =
-    process.env.PI_MESH_ALLOW_SPAWN !== undefined || spawnPolicy.enabled;
+  const spawnOptedIn = spawnPolicy.enabled;
   let piBinary: string | undefined;
   let workspaceRoot: string | undefined;
   let spawnResolutionError: string | undefined;
@@ -660,6 +670,8 @@ async function doctor(io: CliIO): Promise<number> {
       // fail-closed configuration is indistinguishable from a broken agent.
       spawnPolicy: {
         enabled: spawnPolicy.enabled,
+        source:
+          spawnPolicy.source ?? (spawnPolicy.enabled ? "unknown" : "none"),
         ...(spawnPolicy.warning === undefined
           ? {}
           : { warning: spawnPolicy.warning }),
@@ -783,6 +795,8 @@ function parseArguments(argv: string[]):
       command: string | undefined;
       args: string[];
       peer: string | undefined;
+      allowExecution: string | undefined;
+      allowExecutionFlag: boolean;
       peerHost: string | undefined;
       profile: NetworkProfile;
       watch: boolean;
@@ -794,6 +808,8 @@ function parseArguments(argv: string[]):
   let timeoutMs = 5_000;
   let peer: string | undefined;
   let peerHost: string | undefined;
+  let allowExecution: string | undefined;
+  let allowExecutionFlag = false;
   const commands: string[] = [];
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -810,6 +826,14 @@ function parseArguments(argv: string[]):
       if (!Number.isFinite(seconds) || seconds < 0) return undefined;
       timeoutMs = seconds * 1_000;
       index += 1;
+    } else if (argument === "--allow-execution") {
+      if (allowExecutionFlag) return undefined;
+      allowExecutionFlag = true;
+      allowExecution = "*";
+    } else if (argument?.startsWith("--allow-execution=")) {
+      if (allowExecutionFlag) return undefined;
+      allowExecutionFlag = true;
+      allowExecution = argument.slice("--allow-execution=".length);
     } else if (argument === "--peer") {
       const value = argv[index + 1];
       if (value === undefined || value.startsWith("--")) return undefined;
@@ -833,6 +857,8 @@ function parseArguments(argv: string[]):
         args: commands.slice(1),
         peer,
         peerHost,
+        allowExecution,
+        allowExecutionFlag,
         profile,
         watch,
         timeoutMs,

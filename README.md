@@ -36,6 +36,16 @@ On each device that runs Pi:
     chmod 600 ~/.pi-mesh/swarm.key
     pi-mesh-agent start
 
+Starting keeps remote execution disabled. To deliberately grant execution to
+all swarm members, use:
+
+    pi-mesh-agent start --allow-execution
+
+Use `--allow-execution=<peer-id,peer-id>` for a local convenience restriction,
+or set `PI_MESH_ALLOW_SPAWN` as the lower-precedence systemd/service fallback.
+`PI_MESH_WORKSPACE` is optional; it defaults to the user's home directory and
+only guards against accidental outside paths.
+
 Peers are found over mDNS. On a network that blocks multicast — corporate
 Wi-Fi, guest networks, most cloud VMs — dial one directly instead:
 

@@ -114,8 +114,10 @@ Verified against the installed Pi 0.85.1 docs and the research note in
 ## Issues
 
 ### M2-1 — The spawn gate
-- `PI_MESH_ALLOW_SPAWN`: unset means nothing executes; `*` means any member;
-  otherwise a comma-separated list of peer IDs.
+- `start --allow-execution`: alone means any member may execute; with
+  `=peer-id,peer-id` it names the allowed peers. Unset means nothing executes.
+  `PI_MESH_ALLOW_SPAWN` remains the lower-precedence fallback for service
+  managers such as systemd.
 - Authorization runs before any side effect. Denial is `-32102`, reported as
   `PI_MESH_SPAWN_DENIED`, and names the reason.
 - Applies to `process.spawn` and `session.steer`. Does **not** apply to
@@ -193,14 +195,16 @@ Verified against the installed Pi 0.85.1 docs and the research note in
 
 ### M2-5 — `process.spawn`
 - Input `{ project, cwd? }`. `cwd` is resolved with `realpath` and must be the
-  workspace root or beneath it.
+  workspace root or beneath it. The optional workspace defaults to the user's
+  home directory; this is an accident guard, not a sandbox.
 - argv constructed by the agent, and the literal recorded so it can be checked:
   `[<resolved pi binary>, "--mode", "rpc", "--session-dir", <dir>,
   "--no-approve", "--name", <job name>]`. The peer contributes `project` and
   `cwd`; every flag is ours, and `--no-approve` is what stops a peer-spawned
   session from loading project-local extension code.
-- Environment is an explicit allowlist; the swarm key and mesh credentials are
-  **not** inherited. Asserted positively, not by absence.
+- Environment inherits the parent except for every `PI_MESH_*` variable, so
+  the swarm key and mesh credentials are **not** inherited while normal local
+  tooling remains available. Asserted positively, not by absence.
 - Readiness: do not report success until the child answers, or report the
   failure.
 - **DoD:** a `cwd` escaping via `..` and via a symlink is refused; the child

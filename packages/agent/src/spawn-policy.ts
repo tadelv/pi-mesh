@@ -9,9 +9,10 @@ import { EXECUTION_SKILLS } from "./skills.js";
  *
  * Swarm membership grants reading. Starting or steering work on this machine
  * is a separate, larger grant that each machine makes for itself, and it is
- * off unless explicitly enabled. `PI_MESH_ALLOW_SPAWN` has exactly three
- * forms: unset (nothing executes), `*` (any member may), or a comma-separated
- * list of peer IDs.
+ * off unless explicitly enabled. `--allow-execution` has exactly three
+ * forms: absent (nothing executes), alone (any member may), or followed by a
+ * comma-separated list of peer IDs. `PI_MESH_ALLOW_SPAWN` is the same policy
+ * as a lower-precedence service-manager fallback.
  *
  * The peer-ID list is a convenience, NOT an authorisation boundary. A claimed
  * `peer_id` is a routing label rather than an authenticated identity (ADR
@@ -35,12 +36,21 @@ export interface SpawnPolicy {
    * misread policy is either an unwanted grant or a mystery refusal.
    */
   readonly warning?: string;
+  /** Where the policy value came from, for operator diagnostics. */
+  readonly source?: "cli" | "environment" | "none";
 }
 
-const DENY_ALL: SpawnPolicy = { allows: () => false, enabled: false };
+const DENY_ALL: SpawnPolicy = {
+  allows: () => false,
+  enabled: false,
+  source: "none",
+};
 
-function denyWith(warning: string): SpawnPolicy {
-  return { ...DENY_ALL, warning };
+function denyWith(
+  warning: string,
+  source: "cli" | "environment" | "none",
+): SpawnPolicy {
+  return { ...DENY_ALL, warning, source };
 }
 
 /**
@@ -57,19 +67,30 @@ export function parseSpawnPolicy(
   value?: string,
   environmentValue = process.env.PI_MESH_ALLOW_SPAWN,
 ): SpawnPolicy {
+  const source =
+    value !== undefined
+      ? "cli"
+      : environmentValue?.trim().length
+        ? "environment"
+        : "none";
   const raw = (value ?? environmentValue ?? "").trim();
-  if (raw.length === 0) return DENY_ALL;
+  if (raw.length === 0) return { ...DENY_ALL, source };
   const entries = raw
     .split(",")
     .map((entry) => entry.trim())
     .filter((entry) => entry.length > 0);
-  if (entries.length === 0) return DENY_ALL;
+  if (entries.length === 0) return { ...DENY_ALL, source };
   if (entries.includes("*")) {
     if (entries.length === 1) {
-      return { allows: (peerId) => peerId.length > 0, enabled: true };
+      return {
+        allows: (peerId) => peerId.length > 0,
+        enabled: true,
+        source,
+      };
     }
     return denyWith(
       `PI_MESH_ALLOW_SPAWN must be either "*" on its own, or a list of peer IDs. Execution is disabled.`,
+      source,
     );
   }
   const invalid = entries.filter((entry) => !isUuid(entry));
@@ -79,6 +100,7 @@ export function parseSpawnPolicy(
     // capability (ADR 0006 §4) and turns a typo into a silent no-op.
     return denyWith(
       `PI_MESH_ALLOW_SPAWN contains entries that are not peer IDs: ${invalid.join(", ")}. Execution is disabled.`,
+      source,
     );
   }
   // Case-insensitive, matching how the ID is validated: an operator writing a
@@ -87,6 +109,7 @@ export function parseSpawnPolicy(
   return {
     allows: (peerId) => allowed.has(peerId.toLowerCase()),
     enabled: true,
+    source,
   };
 }
 
@@ -103,7 +126,8 @@ export function isExecutionSkill(skill: string): boolean {
  *
  * The message distinguishes "you are not allowed" from "this machine allows
  * nobody", because the fix is different in each case - a different peer, or a
- * local change to `PI_MESH_ALLOW_SPAWN`.
+ * local change to the execution opt-in (`--allow-execution`, or its
+ * `PI_MESH_ALLOW_SPAWN` service-manager fallback).
  */
 export function assertExecutionAllowed(
   policy: SpawnPolicy,
@@ -116,6 +140,6 @@ export function assertExecutionAllowed(
     ErrorCode.SpawnDenied,
     policy.enabled
       ? `Peer is not permitted to execute on this machine: ${skill}`
-      : `Execution is disabled on this machine (set PI_MESH_ALLOW_SPAWN to enable): ${skill}`,
+      : `Execution is disabled on this machine (start with --allow-execution or set PI_MESH_ALLOW_SPAWN for a service manager): ${skill}`,
   );
 }

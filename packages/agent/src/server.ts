@@ -87,8 +87,9 @@ export interface AgentServerOptions extends SkillRegistryOptions {
   skillRegistry?: SkillRegistry;
   /**
    * The local execution policy (ADR 0008). Defaults to the value of
-   * `PI_MESH_ALLOW_SPAWN`, which is unset by default: nothing executes until a
-   * machine says so. Injectable so tests can open and close the gate without
+   * `PI_MESH_ALLOW_SPAWN` when no CLI flag selected it, which is unset by
+   * default: nothing executes until a machine says so. Injectable so tests can
+   * open and close the gate without
    * mutating the process environment.
    */
   spawnPolicy?: SpawnPolicy;

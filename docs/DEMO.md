@@ -85,6 +85,12 @@ Machine B:
 PI_MESH_NAME=agent-b node packages/agent/dist/cli.js start
 ```
 
+Starting leaves remote execution disabled. To deliberately grant it to every
+member, add `--allow-execution`; `--allow-execution=<peer-id,peer-id>` narrows
+that convenience list, and `PI_MESH_ALLOW_SPAWN` remains the lower-precedence
+service-manager fallback. `PI_MESH_WORKSPACE` is optional and defaults to the
+user's home directory; it is an accident guard, not isolation.
+
 `start` advertises this agent and prints each newly discovered peer as one
 JSON line. Leave both running.
 

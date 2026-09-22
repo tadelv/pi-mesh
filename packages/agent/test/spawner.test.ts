@@ -21,6 +21,7 @@ import {
   buildSpawnEnv,
   createPiSpawner,
   resolvePiBinary,
+  resolveWorkspaceRoot,
   sessionDirectory,
 } from "../src/index.js";
 
@@ -130,19 +131,68 @@ describe("spawn policy primitives", () => {
     );
   });
 
-  it("keeps required basics while refusing mesh variables", () => {
-    const result = buildSpawnEnv(
-      {
-        PATH: "/bin",
-        HOME: "/home/test",
-        PI_MESH_SWARM_KEY: "secret",
-        CUSTOM_VALUE: "kept",
-      },
-      "CUSTOM_VALUE,PI_MESH_SWARM_KEY",
-    );
-    expect(result.env).toMatchObject({ PATH: "/bin", HOME: "/home/test" });
-    expect(result.env.PI_MESH_SWARM_KEY).toBeUndefined();
-    expect(result.refused).toEqual(["PI_MESH_SWARM_KEY"]);
+  it("defaults the workspace to home and still contains spawned cwd", async () => {
+    const w = await workspace();
+    const home = join(w.parent, "home");
+    const project = join(home, "project");
+    const outside = join(w.parent, "outside");
+    await mkdir(project, { recursive: true });
+    await mkdir(outside);
+    const oldHome = process.env.HOME;
+    const oldWorkspace = process.env.PI_MESH_WORKSPACE;
+    process.env.HOME = home;
+    delete process.env.PI_MESH_WORKSPACE;
+    try {
+      expect(resolveWorkspaceRoot()).toBe(await realpath(home));
+      const spawner = createPiSpawner({
+        piBinary: w.binary,
+        sessionsRoot: w.sessionsRoot,
+        logger,
+      });
+      const jobs = new JobManager({ spawnJob: spawner, logger });
+      const skills = createSkillRegistry({ jobs });
+      const result = (await skills.invoke("process.spawn", {
+        project: "p",
+        cwd: "project",
+        prompt: "home default",
+        _peerId: "peer",
+      })) as { job_id: string };
+      await expect(
+        skills.invoke("process.spawn", {
+          project: "p",
+          cwd: outside,
+          prompt: "outside home",
+          _peerId: "peer",
+        }),
+      ).rejects.toMatchObject({ code: ErrorCode.SpawnDenied });
+      await jobs.shutdown();
+      expect(result.job_id).toBeTypeOf("string");
+    } finally {
+      if (oldHome === undefined) delete process.env.HOME;
+      else process.env.HOME = oldHome;
+      if (oldWorkspace === undefined) delete process.env.PI_MESH_WORKSPACE;
+      else process.env.PI_MESH_WORKSPACE = oldWorkspace;
+    }
+  });
+
+  it("inherits the normal environment while refusing every mesh variable", () => {
+    const env = buildSpawnEnv({
+      PATH: "/bin",
+      HOME: "/home/test",
+      CC: "/opt/toolchain/cc",
+      PI_MESH_SWARM_KEY: "secret",
+      PI_MESH_SPAWN_ENV_PASSTHROUGH: "PI_MESH_SWARM_KEY",
+      CUSTOM_VALUE: "kept",
+    });
+    expect(env).toMatchObject({
+      PATH: "/bin",
+      HOME: "/home/test",
+      CC: "/opt/toolchain/cc",
+      CUSTOM_VALUE: "kept",
+    });
+    expect(
+      Object.keys(env).filter((key) => key.startsWith("PI_MESH_")),
+    ).toEqual([]);
   });
 
   it("T1 sends the supplied initial prompt to the child", async () => {
@@ -322,8 +372,12 @@ describe("spawn policy primitives", () => {
     const binary = await wrapperFor(w.parent, "env");
     const previous = process.env.PI_MESH_SWARM_KEY;
     const previousKey = process.env.ANTHROPIC_API_KEY;
+    const previousCc = process.env.CC;
+    const previousPassthrough = process.env.PI_MESH_SPAWN_ENV_PASSTHROUGH;
     process.env.PI_MESH_SWARM_KEY = "must-not-be-inherited";
+    process.env.PI_MESH_SPAWN_ENV_PASSTHROUGH = "PI_MESH_SWARM_KEY";
     process.env.ANTHROPIC_API_KEY = "sk-test-credential";
+    process.env.CC = "/opt/toolchain/cc";
     const spawner = createPiSpawner({
       workspaceRoot: w.root,
       piBinary: binary,
@@ -351,12 +405,18 @@ describe("spawn policy primitives", () => {
       expect(keys.filter((key) => key.startsWith("PI_MESH_"))).toEqual([]);
       // A provider credential must survive, or the session cannot do any work.
       expect(keys).toContain("ANTHROPIC_API_KEY");
+      expect(keys).toContain("CC");
       await handle.close();
     } finally {
       if (previous === undefined) delete process.env.PI_MESH_SWARM_KEY;
       else process.env.PI_MESH_SWARM_KEY = previous;
       if (previousKey === undefined) delete process.env.ANTHROPIC_API_KEY;
       else process.env.ANTHROPIC_API_KEY = previousKey;
+      if (previousCc === undefined) delete process.env.CC;
+      else process.env.CC = previousCc;
+      if (previousPassthrough === undefined)
+        delete process.env.PI_MESH_SPAWN_ENV_PASSTHROUGH;
+      else process.env.PI_MESH_SPAWN_ENV_PASSTHROUGH = previousPassthrough;
     }
   });
 

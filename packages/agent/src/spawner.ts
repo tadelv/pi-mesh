@@ -2,6 +2,7 @@
 
 import { accessSync, constants, realpathSync, statSync } from "node:fs";
 import { delimiter, isAbsolute, join, resolve, sep } from "node:path";
+import { homedir } from "node:os";
 import { type Logger } from "@pi-mesh/shared";
 import { PiRpcClient } from "./rpc.js";
 import { buildSpawnEnv } from "./spawn-env.js";
@@ -60,9 +61,9 @@ export function resolveWorkspaceRoot(
   explicit?: string,
   env: NodeJS.ProcessEnv = process.env,
 ): string {
-  const configured = explicit ?? env.PI_MESH_WORKSPACE;
-  if (configured === undefined || configured.trim() === "") {
-    throw new Error("PI_MESH_WORKSPACE is required for process.spawn");
+  const configured = explicit ?? env.PI_MESH_WORKSPACE ?? homedir();
+  if (configured.trim() === "") {
+    return resolveWorkspaceRoot(homedir(), env);
   }
   if (!isAbsolute(configured)) {
     throw new Error(
@@ -98,19 +99,16 @@ export function assertInsideWorkspace(root: string, candidate: string): string {
 }
 
 export interface PiSpawnerOptions {
-  workspaceRoot: string;
+  workspaceRoot?: string;
   piBinary: string;
   sessionsRoot?: string;
   readinessTimeoutMs?: number;
-  passthrough?: string;
   logger?: Logger;
 }
 
 export function createPiSpawner(options: PiSpawnerOptions): JobSpawner {
-  const root = assertInsideWorkspace(
-    options.workspaceRoot,
-    options.workspaceRoot,
-  );
+  const workspaceRoot = resolveWorkspaceRoot(options.workspaceRoot);
+  const root = assertInsideWorkspace(workspaceRoot, workspaceRoot);
   // Binary resolution is separate so a configured but missing binary fails as
   // a SpawnFailed job rather than preventing the manager from starting.
   let piBinary = options.piBinary;
@@ -127,21 +125,13 @@ export function createPiSpawner(options: PiSpawnerOptions): JobSpawner {
 
   return (spec, report) => {
     const cwd = assertInsideWorkspace(root, spec.cwd || root);
-    const environment = buildSpawnEnv(
-      process.env,
-      options.passthrough ?? process.env.PI_MESH_SPAWN_ENV_PASSTHROUGH,
-    );
-    if (environment.refused.length > 0) {
-      options.logger?.warn("Refused spawn environment names", {
-        names: environment.refused,
-      });
-    }
+    const environment = buildSpawnEnv(process.env);
     const rpc = new PiRpcClient({
       piBinary,
       sessionDir: sessionDirectory(cwd, sessionsRoot),
       name: spec.name,
       cwd,
-      env: environment.env,
+      env: environment,
       ...(options.logger === undefined ? {} : { logger: options.logger }),
     });
     rpc.on("exit", report.exited);

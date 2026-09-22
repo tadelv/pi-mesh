@@ -119,10 +119,10 @@ Refusals, and the read path still working (neither starts anything):
 
 ```
 $ call process.spawn '{"project":"m2-9-demo"}' --peer-host …
-Application error (-32102): Execution is disabled on this machine (set PI_MESH_ALLOW_SPAWN to enable): process.spawn
+Application error (-32102): Execution is disabled on this machine (start with --allow-execution or set PI_MESH_ALLOW_SPAWN for a service manager): process.spawn
 
 $ call session.steer '{"job_id":"x","message":"y"}' --peer-host …
-Application error (-32102): Execution is disabled on this machine (set PI_MESH_ALLOW_SPAWN to enable): session.steer
+Application error (-32102): Execution is disabled on this machine (start with --allow-execution or set PI_MESH_ALLOW_SPAWN for a service manager): session.steer
 
 $ call mesh.handoff '{}' --peer-host …
 Application error (-32004): Skill is not supported: mesh.handoff

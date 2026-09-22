@@ -68,8 +68,10 @@ rather than left to be discovered.
 **It does not grant execution.** Process control and steering are a separate,
 larger grant that each machine makes locally (ADR 0008): `process.spawn` and
 `session.steer` are denied by default and refused with `-32102` unless the
-machine has explicitly allowed that peer to execute. A stolen swarm key
-should therefore yield read access, not code execution.
+machine has explicitly allowed that peer to execute. Start with
+`--allow-execution` (or use `PI_MESH_ALLOW_SPAWN` as the lower-precedence
+service-manager fallback); the flag wins when both are present. A stolen swarm
+key should therefore yield read access, not code execution.
 
 That distinction is not conservatism about peers. Pi is not a sandbox - its
 `security.md` says so directly: built-in tools read, write, edit and run shell
@@ -84,12 +86,31 @@ Stopping is deliberately ungated: `session.abort`, and `process.stop` for a
 job the agent started, are allowed to any member. `process.stop` never accepts
 a bare PID, so a peer cannot signal arbitrary processes.
 
-**One limit to be clear about.** `PI_MESH_ALLOW_SPAWN` may name the peer IDs
-allowed to execute. That list is a convenience, not a security boundary: a
-claimed `peer_id` is not authenticated (ADR 0007), and every member holds the
-same swarm key, so a malicious member can claim an allowed peer's ID. It
-scopes *your own* agents, and it is the machine-wide opt-in — not the list —
-that keeps a stolen key from becoming code execution.
+**One limit to be clear about.** The optional peer list supplied to
+`--allow-execution=<peer-id,peer-id>` (or its environment fallback) is a
+convenience, not a security boundary: a claimed `peer_id` is not authenticated
+(ADR 0007), and every member holds the same swarm key, so a malicious member
+can claim an allowed peer's ID. It scopes *your own* agents, and it is the
+machine-wide opt-in — not the list — that keeps a stolen key from becoming code
+execution.
+
+## Boundaries and accident guards
+
+The swarm key and per-request HMAC are the mesh's authentication boundary:
+anyone holding the key is a trusted member and can call the other members'
+read skills. The execution gate is an explicit local grant, not a sandbox.
+The child environment inherits the parent's credentials and tooling except for
+`PI_MESH_*` mesh secrets; that exclusion prevents the swarm key from being
+handed to a child, but is not isolation. `--no-approve` prevents project-local
+extension CODE from loading; it does not restrict what the spawned session can
+do.
+
+`PI_MESH_WORKSPACE` is optional and defaults to the user's home directory. Its
+realpath containment check is an accident guard and project selector: it
+rejects accidental `..` and outside-resolving symlink paths, but a spawned Pi
+can leave the directory at will. Neither the environment exclusion nor the
+workspace check is a security boundary. Real process isolation requires a
+systemd scope or a container, which is the M3 answer.
 
 ## Pairing with the control plane
 

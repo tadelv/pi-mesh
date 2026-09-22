@@ -171,3 +171,37 @@ The research behind this is in `docs/research/process-spawning.md`.
   stop - consistent with decision 5, and worth stating when it happens.
 - `mesh.handoff` will need the same treatment when it lands, since it starts
   work on a peer's behalf; it is deliberately not decided here.
+
+## Amendment — environment, workspace, and gate sources
+
+The original decisions above deliberately chose an environment allowlist, a
+required workspace root, and an environment-only execution gate. They are
+amended as follows:
+
+- The child environment is now **inherit-except-mesh**: it inherits the parent
+  environment except for every variable whose name starts with `PI_MESH_`.
+  The allowlist made a spawned session behave unlike a locally launched one
+  (`SSH_AUTH_SOCK`, toolchain variables, proxies) without providing security:
+  a spawned Pi can read the same files from the filesystem with its own tools,
+  and Pi is not a sandbox. An environment filter that a shell command walks
+  around is not a boundary.
+- `PI_MESH_WORKSPACE` is now optional and defaults to the user's home directory.
+  The realpath containment check remains unchanged, including its refusal of
+  `..` escapes and symlinks resolving outside the root. Its role is an
+  accident guard and project selector, not a security boundary: a spawned Pi
+  can leave that directory at will.
+- The gate is now **flag-first**. `start --allow-execution` permits any member,
+  while `start --allow-execution=<peer-id,peer-id>` permits only the listed
+  peers. `PI_MESH_ALLOW_SPAWN` remains a lower-precedence fallback for service
+  managers such as systemd. The flag wins when both are present; parsing and
+  fail-closed validation remain those of `parseSpawnPolicy`.
+
+This reversal is deliberate. The relaxed controls did not bind: the
+allowlist was not a sandbox, the workspace was not a sandbox, and a hidden
+environment variable made granting execution less explicit than the act
+warrants. The symmetric-mesh argument still justifies the swarm key and
+per-request HMAC as the door, and an explicit execution opt-in remains a
+separate act from installing an agent. The accepted cost is that a spawned
+session now inherits credentials and tooling from its parent environment, and
+that workspace containment guards against accidents only. Real isolation
+requires a systemd scope or a container; that is deferred to M3.

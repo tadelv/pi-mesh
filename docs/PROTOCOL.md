@@ -55,18 +55,25 @@ A peer exposure means the skill is reachable by any swarm member, and never
 means unauthenticated: every request carries a proof (below).
 
 **Gated** means reachable only from a peer the machine has explicitly allowed
-to execute, and refused with `-32102` otherwise; see ADR 0008. Three details of
-the shapes above are load-bearing:
+to execute, and refused with `-32102` otherwise; see ADR 0008. Start enables the
+local grant with `--allow-execution` (or, for a service manager, the lower-
+precedence `PI_MESH_ALLOW_SPAWN` fallback). Three details of the shapes above
+are load-bearing:
 
 - `process.spawn` takes a required, non-blank `prompt` that starts the first
 turn. It takes **no `argv`**. The server constructs the command line; a remote
 caller chooses a project, not a program. Peer-chosen argv could change the
 provider, the session directory, or which extensions load.
-- `process.spawn`'s `cwd`, when given, must resolve inside the configured
-workspace root, because it selects what the spawned agent may read and write.
+- `process.spawn`'s `cwd`, when given, must resolve inside the workspace root
+  (which defaults to the user's home directory), because the realpath check is
+  an accident guard and project selector. It is not a sandbox: the spawned
+  agent can leave that directory at will.
+- The child inherits the parent's environment except for every `PI_MESH_*`
+  variable. This keeps mesh secrets out of the child without pretending to
+  provide process isolation; Pi is not a sandbox.
 - `process.stop` takes a **mesh job id**, never a bare PID. The agent stops only
-jobs it started and still tracks, so a peer cannot signal arbitrary processes
-on the machine.
+  jobs it started and still tracks, so a peer cannot signal arbitrary processes
+  on the machine.
 
 Steering is gated with spawning because injected prompts cause tool
 execution. Stopping is not gated: `session.abort` and `process.stop` are

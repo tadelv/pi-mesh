@@ -173,7 +173,7 @@ export function createSkillRegistry(
     } catch (error) {
       throw new PiMeshError(
         ErrorCode.SpawnDenied,
-        `process.spawn refused: workspace is not configured (${error instanceof Error ? error.message : String(error)})`,
+        `process.spawn refused: workspace root is unusable (${error instanceof Error ? error.message : String(error)})`,
       );
     }
     let cwd: string;
@@ -182,7 +182,8 @@ export function createSkillRegistry(
       // agent's incidental process.cwd(): `realpathSync("sub")` would resolve
       // against whatever directory the daemon was started in, so a legitimate
       // request would be refused - or worse, silently point somewhere
-      // unrelated. `..` is still caught, by the realpath check inside.
+      // unrelated. The root is an accident guard and project selector, not a
+      // sandbox; `..` is still caught by the realpath check inside.
       const requested = input.cwd ?? root;
       cwd = assertInsideWorkspace(
         root,
@@ -191,7 +192,7 @@ export function createSkillRegistry(
     } catch (error) {
       throw new PiMeshError(
         ErrorCode.SpawnDenied,
-        `process.spawn refused: cwd is outside the workspace (${error instanceof Error ? error.message : String(error)})`,
+        `process.spawn refused: cwd is outside the workspace accident guard (${error instanceof Error ? error.message : String(error)})`,
       );
     }
     let record;

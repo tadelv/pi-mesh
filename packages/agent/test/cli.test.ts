@@ -3,12 +3,14 @@
 import { chmod, mkdtemp, readdir, mkdir, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { run } from "../src/cli.js";
 import {
   createAgentServer,
   PeerRegistry,
   servedSkills,
+  signedHeaders,
   type BonjourLike,
 } from "../src/index.js";
 
@@ -181,6 +183,40 @@ describe("agent CLI", () => {
       else process.env.HOME = oldHome;
       if (oldPath === undefined) delete process.env.PATH;
       else process.env.PATH = oldPath;
+    }
+  });
+
+  it("reports the environment as the doctor execution source", async () => {
+    const home = await mkdtemp(join(tmpdir(), "pi-mesh-doctor-policy-home-"));
+    const oldHome = process.env.HOME;
+    const oldPath = process.env.PATH;
+    const oldGate = process.env.PI_MESH_ALLOW_SPAWN;
+    const oldBinary = process.env.PI_MESH_PI_BINARY;
+    process.env.HOME = home;
+    process.env.PATH = "";
+    process.env.PI_MESH_ALLOW_SPAWN = "*";
+    process.env.PI_MESH_PI_BINARY = fileURLToPath(
+      new URL("./fixtures/pi-binary", import.meta.url),
+    );
+    try {
+      const captured = output();
+      await expect(run(["doctor"], captured.io)).resolves.toBe(0);
+      const report = JSON.parse(captured.read().stdout) as {
+        spawnPolicy: { enabled: boolean; source: string };
+      };
+      expect(report.spawnPolicy).toEqual({
+        enabled: true,
+        source: "environment",
+      });
+    } finally {
+      if (oldHome === undefined) delete process.env.HOME;
+      else process.env.HOME = oldHome;
+      if (oldPath === undefined) delete process.env.PATH;
+      else process.env.PATH = oldPath;
+      if (oldGate === undefined) delete process.env.PI_MESH_ALLOW_SPAWN;
+      else process.env.PI_MESH_ALLOW_SPAWN = oldGate;
+      if (oldBinary === undefined) delete process.env.PI_MESH_PI_BINARY;
+      else process.env.PI_MESH_PI_BINARY = oldBinary;
     }
   });
 
@@ -466,6 +502,107 @@ describe("agent CLI", () => {
       else process.env.HOME = oldHome;
       if (oldPath === undefined) delete process.env.PATH;
       else process.env.PATH = oldPath;
+      if (oldPort === undefined) delete process.env.PI_MESH_PORT;
+      else process.env.PI_MESH_PORT = oldPort;
+    }
+  });
+
+  it("uses the CLI flag before the environment fallback for the execution gate", async () => {
+    const oldGate = process.env.PI_MESH_ALLOW_SPAWN;
+    const oldBinary = process.env.PI_MESH_PI_BINARY;
+    const oldPort = process.env.PI_MESH_PORT;
+    const key = Buffer.alloc(32, 7);
+    const identity = {
+      peerId: "22222222-2222-4222-8222-222222222222",
+      name: "agent",
+    };
+    const caller = {
+      peerId: "33333333-3333-4333-8333-333333333333",
+      name: "caller",
+    };
+    const piBinary = fileURLToPath(
+      new URL("./fixtures/pi-binary", import.meta.url),
+    );
+    const requestSkill = async (port: number): Promise<number> => {
+      const body = JSON.stringify({
+        jsonrpc: "2.0",
+        id: 1,
+        method: "message/send",
+        params: {
+          message: {
+            messageId: "message-1",
+            role: "ROLE_USER",
+            parts: [
+              {
+                data: {
+                  skill: "session.steer",
+                  input: { job_id: "missing", message: "hello" },
+                },
+              },
+            ],
+          },
+        },
+      });
+      const headers = signedHeaders(key, caller, {
+        method: "POST",
+        path: "/",
+        body,
+        recipientPeerId: identity.peerId,
+      });
+      const response = await fetch(`http://127.0.0.1:${port}/`, {
+        method: "POST",
+        headers: { "A2A-Version": "1.0", ...headers },
+        body,
+      });
+      const value = (await response.json()) as {
+        error?: { code?: number };
+      };
+      return value.error?.code ?? 0;
+    };
+    const waitForPublish = async (bonjour: FakeBonjour): Promise<number> => {
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const port = bonjour.published[0]?.port;
+        if (port !== undefined) return port;
+        await new Promise((resolve) => setTimeout(resolve, 5));
+      }
+      throw new Error("agent did not publish");
+    };
+    process.env.PI_MESH_ALLOW_SPAWN = "99999999-9999-4999-8999-999999999999";
+    process.env.PI_MESH_PI_BINARY = piBinary;
+    process.env.PI_MESH_PORT = "47932";
+    try {
+      const deniedBonjour = new FakeBonjour();
+      const denied = run(["start"], {
+        ...output().io,
+        bonjour: deniedBonjour,
+        identity,
+        swarmKey: key,
+      });
+      const deniedPort = await waitForPublish(deniedBonjour);
+      await expect(requestSkill(deniedPort)).resolves.toBe(-32102);
+      process.emit("SIGINT");
+      await expect(denied).resolves.toBe(0);
+
+      process.env.PI_MESH_PORT = "47933";
+      const allowedBonjour = new FakeBonjour();
+      const allowed = run(["start", "--allow-execution"], {
+        ...output().io,
+        bonjour: allowedBonjour,
+        identity,
+        swarmKey: key,
+      });
+      const allowedPort = await waitForPublish(allowedBonjour);
+      // The environment names a different peer, but the CLI flag is wildcard
+      // and therefore wins. An unknown job proves the gate opened before the
+      // job lookup without attempting to execute the placeholder binary.
+      await expect(requestSkill(allowedPort)).resolves.toBe(-32103);
+      process.emit("SIGINT");
+      await expect(allowed).resolves.toBe(0);
+    } finally {
+      if (oldGate === undefined) delete process.env.PI_MESH_ALLOW_SPAWN;
+      else process.env.PI_MESH_ALLOW_SPAWN = oldGate;
+      if (oldBinary === undefined) delete process.env.PI_MESH_PI_BINARY;
+      else process.env.PI_MESH_PI_BINARY = oldBinary;
       if (oldPort === undefined) delete process.env.PI_MESH_PORT;
       else process.env.PI_MESH_PORT = oldPort;
     }

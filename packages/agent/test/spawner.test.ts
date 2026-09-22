@@ -10,7 +10,7 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ErrorCode } from "@pi-mesh/shared";
@@ -362,6 +362,52 @@ describe("spawn policy primitives", () => {
       ).rejects.toMatchObject({ code: ErrorCode.SpawnDenied });
     } finally {
       await jobs.shutdown();
+    }
+  });
+
+  it("defaults the workspace to the home directory when none is configured", async () => {
+    // The root is optional now, and this is the only thing that would notice if
+    // it silently became required again (spawn would start refusing everything)
+    // or if the default moved somewhere useless. Both directions matter, so the
+    // test asserts an acceptance AND a refusal.
+    const w = await workspace();
+    const previous = process.env.PI_MESH_WORKSPACE;
+    delete process.env.PI_MESH_WORKSPACE;
+    const spawner = createPiSpawner({
+      piBinary: w.binary,
+      sessionsRoot: w.sessionsRoot,
+      logger,
+    });
+    const jobs = new JobManager({
+      spawnJob: spawner,
+      logger,
+      unacknowledgedTtlMs: 5_000,
+    });
+    // No `workspaceRoot` option at all, which is the case a daemon hits when the
+    // operator never sets the variable.
+    const skills = createSkillRegistry({ jobs });
+    try {
+      await expect(
+        skills.invoke("process.spawn", {
+          project: "p",
+          prompt: "default root",
+          _peerId: "peer",
+        }),
+      ).resolves.toBeDefined();
+      // The parent of the home directory is outside it, so the default root must
+      // still refuse this. If the default ever became "/" this would pass and the
+      // guard would be gone.
+      await expect(
+        skills.invoke("process.spawn", {
+          project: "p",
+          cwd: join(homedir(), ".."),
+          prompt: "outside the default root",
+          _peerId: "peer",
+        }),
+      ).rejects.toMatchObject({ code: ErrorCode.SpawnDenied });
+    } finally {
+      await jobs.shutdown();
+      if (previous !== undefined) process.env.PI_MESH_WORKSPACE = previous;
     }
   });
 

@@ -31,6 +31,7 @@ import { servedSkills } from "./skills.js";
 import { parseSpawnPolicy, type SpawnPolicy } from "./spawn-policy.js";
 import { SessionStore } from "./sessions.js";
 import { sessionStream } from "./stream.js";
+import { renderFollowFrame } from "./follow.js";
 import { JobManager } from "./jobs.js";
 import {
   createPiSpawner,
@@ -59,7 +60,7 @@ const usage =
   "Usage: pi-mesh-agent peers [--profile lan|public] [--watch] [--timeout seconds]\n" +
   "Usage: pi-mesh-agent start [--profile lan|public] [--allow-execution[=peer-id,peer-id]]\n" +
   "Usage: pi-mesh-agent sessions [--peer id | --peer-host host[:port]] [--timeout seconds]\n" +
-  "Usage: pi-mesh-agent stream <session> [--peer id | --peer-host host[:port]] [--timeout seconds]\n" +
+  "Usage: pi-mesh-agent stream <session> [--follow] [--peer id | --peer-host host[:port]] [--timeout seconds]\n" +
   "Usage: pi-mesh-agent call <peer> <skill> [json] [--timeout seconds]\n" +
   "       pi-mesh-agent call <skill> [json] --peer-host host[:port]\n" +
   "Usage: pi-mesh-agent doctor\n";
@@ -107,6 +108,9 @@ export async function run(
     if (parsed.allowExecutionFlag && parsed.command !== "start") {
       throw new CliUsageError("--allow-execution is only valid with start");
     }
+    if (parsed.follow && parsed.command !== "stream") {
+      throw new CliUsageError("--follow is only valid with stream");
+    }
     if (parsed.command === "start") {
       if (parsed.args.length > 0)
         throw new CliUsageError("start takes no arguments");
@@ -129,6 +133,7 @@ export async function run(
         parsed.peer,
         parsed.peerHost,
         parsed.timeoutMs,
+        parsed.follow,
         io,
       );
     }
@@ -382,9 +387,23 @@ async function stream(
   peerId: string | undefined,
   peerHost: string | undefined,
   timeoutMs: number,
+  follow: boolean,
   io: CliIO,
 ): Promise<number> {
   const abort = new AbortController();
+  // Follow mode is for a human watching work, raw frames are for a program
+  // reading it, and the two want the same bytes rendered differently rather than
+  // two commands to remember.
+  const emit = (frame: unknown): void => {
+    if (!follow) {
+      writeSse(io, frame);
+      return;
+    }
+    renderFollowFrame(frame, {
+      stdout: (value) => io.stdout.write(value),
+      stderr: (value) => io.stderr.write(value),
+    });
+  };
   let stopLocal: (() => void) | undefined;
   const onSignal = (): void => {
     abort.abort();
@@ -404,7 +423,7 @@ async function stream(
         for (;;) {
           const next = await iterator.next();
           if (next.done || abort.signal.aborted) return 0;
-          writeSse(io, { message: localStreamMessage(next.value.data) });
+          emit({ message: localStreamMessage(next.value.data) });
         }
       } finally {
         await iterator.stop();
@@ -428,7 +447,7 @@ async function stream(
     );
     for await (const event of events) {
       if (abort.signal.aborted) return 0;
-      writeSse(io, event);
+      emit(event);
     }
     return 0;
   } finally {
@@ -797,6 +816,7 @@ function parseArguments(argv: string[]):
       peer: string | undefined;
       allowExecution: string | undefined;
       allowExecutionFlag: boolean;
+      follow: boolean;
       peerHost: string | undefined;
       profile: NetworkProfile;
       watch: boolean;
@@ -810,6 +830,7 @@ function parseArguments(argv: string[]):
   let peerHost: string | undefined;
   let allowExecution: string | undefined;
   let allowExecutionFlag = false;
+  let follow = false;
   const commands: string[] = [];
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -821,6 +842,8 @@ function parseArguments(argv: string[]):
       index += 1;
     } else if (argument === "--watch") {
       watch = true;
+    } else if (argument === "--follow") {
+      follow = true;
     } else if (argument === "--timeout") {
       const seconds = Number(argv[index + 1]);
       if (!Number.isFinite(seconds) || seconds < 0) return undefined;
@@ -859,6 +882,7 @@ function parseArguments(argv: string[]):
         peerHost,
         allowExecution,
         allowExecutionFlag,
+        follow,
         profile,
         watch,
         timeoutMs,

@@ -160,6 +160,25 @@ node packages/agent/dist/cli.js stream SESSION_ID_FROM_MACHINE_B \
 cat stream.sse | jq -R 'select(startswith("data: ")) | sub("^data: "; "") | fromjson'
 ```
 
+That mode prints one `data:` frame per event, with the raw Pi payload, and is
+what you want when scripting or when something looks wrong. For watching a
+session work, add `--follow`: the same stream rendered for a person - assistant
+text as it is produced, `[tool]` as each tool starts, and the model's thinking
+kept on stderr so redirecting stdout captures the answer rather than the
+reasoning.
+
+```sh
+node packages/agent/dist/cli.js stream SESSION_ID_FROM_MACHINE_B \
+  --follow --peer "$PEER_B"
+```
+
+A session this machine is running itself (`process.spawn`) streams live events
+the moment they are produced, so a peer attaches mid-turn and sees text arrive
+while the session is still working. Any other session id stays on the durable
+session file, where frames carry a resumable cursor and `session.read` can pick
+up after it. Live frames are deliberately not resumable - see ADR 0009 - so
+reconnect by resuming the durable log.
+
 The stream is authenticated and emits SSE `data:` records on stdout only;
 Ctrl-C ends the client cleanly. The runbook can prove discovery, handshake,
 remote session data, and a live event only when two machines share a LAN and

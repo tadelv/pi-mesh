@@ -55,17 +55,28 @@ The peer's identity is learned from the authenticated handshake, so the direct
 path is exactly as trustworthy as discovery and works with no multicast at
 all. See [docs/SECURITY.md](docs/SECURITY.md).
 
-### Status of the control plane
+### The control plane
 
-The `packages/control-plane` package currently does discovery only: it
-publishes a service record and has no dashboard, no database and no pairing
-flow yet. Those are milestone 3. `docker compose -f
+`packages/control-plane` now serves a dashboard (ADR 0011). Run it on the
+machine that should hold the fleet view:
 
-examples/docker-compose.yml up -d` starts the placeholder, and there is
-nothing to open at `http://localhost:7331` — it does not serve HTTP yet.
+    node packages/control-plane/dist/cli.js serve
 
-The agent alone (read, stream, and gated execution of sessions over the mesh)
-is complete for what it claims.
+It prints a dashboard URL (with its access token) and a one-time pairing token.
+On each device you want it to see:
+
+    pi-mesh-agent pair <pairing-token>
+
+The agent pairs once, stores its credential, and from then on the dashboard can
+list that device's sessions and cache them for offline viewing. The control
+plane never holds the swarm key, and the mesh works with it absent.
+
+`docker compose -f examples/docker-compose.yml up -d` runs the control plane and
+serves the dashboard on `http://localhost:7331`; `docker logs` prints the URL and
+token. The dashboard's command bar can route plain-language requests to
+dashboard actions using TypeSafe's Jev — an **optional** integration, enabled
+only when `TYPESAFE_API_KEY` is set (ADR 0012). With it unset the command bar is
+hidden and no request leaves the machine.
 
 ## Security model
 
@@ -89,10 +100,11 @@ See [docs/SECURITY.md](docs/SECURITY.md).
 ## Status
 
 Pre-alpha. The **agent** is a working LAN mesh for reading, streaming and
-(review-gated) executing Pi sessions across machines; milestone 1 is complete
-and verified across two hosts, and milestone 2 adds controlled execution. The
-**control plane** is a discovery placeholder with no UI, database or pairing
-yet. See [tasks/milestone-2.md](tasks/milestone-2.md) for the current scope.
+(review-gated) executing Pi sessions across machines; milestones 1 and 2 are
+complete and verified across two hosts. The **control plane** now serves a
+dashboard with pairing and an SQLite session cache (milestone 3), and depends on
+no agent to start. See [tasks/milestone-3.md](tasks/milestone-3.md) for the
+current scope.
 
 ## License
 

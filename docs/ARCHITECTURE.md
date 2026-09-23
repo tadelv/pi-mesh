@@ -5,7 +5,7 @@
 | Node | Role |
 |---|---|
 | **Agent** | Runs on every device with Pi. Speaks A2A, manages local Pi processes, joins the mesh. |
-| **Control Plane** | Optional. An agent plus a web UI, SQLite store, and project aggregators. |
+| **Control Plane** | Optional. A dashboard, SQLite store and pairing, reaching agents with a paired credential over their normal listener. |
 
 The agent is the only required component. The control plane is a peer
 with extra skills.
@@ -54,6 +54,25 @@ with extra skills.
   On reconnect, it replays from the last cached **entry ID**, which is the
   cursor for a session's durable entries (ADR 0006's sibling decision; see
   `docs/PROTOCOL.md`). There is no numeric sequence to resume from.
+
+## Control plane (M3-2)
+
+The control plane is a separate package, not a privileged channel: it reaches an
+agent over the same authenticated listener a peer does, with a credential it
+earned by pairing rather than the swarm key (ADR 0011). It serves a web
+dashboard on its advertised port, keeps paired agents and cached sessions in
+SQLite (`node:sqlite`), and requires a dashboard token on its `/api/*` routes
+because that port is LAN-facing. With the control plane absent, every agent
+behaves exactly as it does with one present; the pairing and cache are additive.
+
+Pairing is `pi-mesh-agent pair <token>` against a token the control plane
+mints; the token is never transmitted and both sides derive the credential over
+the handshake transcript. `docs/PROTOCOL.md` carries the wire detail and
+`docs/SECURITY.md` the storage and revocation limits.
+
+Natural-language routing of dashboard requests is an **optional** integration
+(ADR 0012): it is off unless `TYPESAFE_API_KEY` is set, and its absence or an
+outage changes nothing on the read path.
 
 ## Work handoff
 

@@ -5,3 +5,4 @@ export * from "./a2a.js";
 export * from "./types.js";
 export * from "./handshake.js";
 export * from "./auth.js";
+export * from "./pairing.js";

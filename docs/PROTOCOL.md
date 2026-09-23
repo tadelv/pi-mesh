@@ -155,7 +155,7 @@ a JSON-RPC error code.
 
 Which routes are unauthenticated, and why
 
-Exactly three routes are reachable without a proof: `POST /handshake`,
+On the agent's listener exactly three routes are reachable without a proof: `POST /handshake`,
 `POST /handshake/verify` (both below), and `GET /.well-known/agent-card.json`.
 The card is public by necessity - a peer cannot sign a request for an agent whose
 identity and transport it has not yet discovered - and it discloses the agent's
@@ -213,6 +213,52 @@ that contains one.
 
 The `hmac` field is standard base64 (RFC 4648 section 4: 44 characters ending
 in one `=`), and `nonce` is the base64 encoding of 32 random bytes.
+
+## Control-plane pairing
+
+The control plane does **not** share the swarm key. It pairs with each agent
+separately and then authenticates with a per-agent credential (ADR 0011). The
+pairing handshake is an HTTP exchange on the control plane's listener, like the
+agent handshake and for the same reason: it happens before either side can sign
+an A2A request.
+
+A token is minted by the control plane (32 random bytes, base64, 10-minute TTL,
+single use, bounded pending table). `pi-mesh-agent pair <token>` performs:
+
+1. `POST /pair/hello` with `{ agent_id, agent_name, token_id, nonce, agent_port }`.
+   `token_id` is a non-secret handle (`pairTokenId`) so a control plane holding
+   several outstanding tokens finds the right one without the token crossing the
+   wire. The response is `{ control_id, control_name, nonce: <server nonce>, hmac }`,
+   where `hmac = HMAC-SHA256(token, "pi-mesh-pair-hello" || NUL || transcript)` over
+   the transcript below. Unknown or expired `token_id` is `401 {"error":"invalid_token"}`; a full
+   pending table is `503 {"error":"too_many_pending_pairings"}` and evicts nothing.
+2. `POST /pair/verify` with `{ agent_id, nonce: <server nonce>, hmac }`, the
+   agent's `HMAC-SHA256(token, "pi-mesh-pair-verify" || NUL || transcript)`.
+   Success consumes the token and answers `{ ok: true, control_id }`; a failed
+   proof does not consume it. Both sides then derive the credential:
+
+       credential = HMAC-SHA256(token, "pi-mesh-control-credential" || NUL || transcript)
+
+   The domain prefixes keep the credential and the two pairing proofs from being
+   interchangeable. Direction separation matters because the hello response is
+   observable: it must not double as the verify proof, or an observer could
+   consume the single-use token and register its own address as the agent.
+
+The transcript is the **handshake transcript verbatim** — `clientPeerId =
+agent_id`, `clientNonce`, `serverPeerId = control_id`, `serverNonce`, NUL-joined
+per [Transcript encoding](#transcript-encoding). The token is never transmitted.
+
+**The credential is a request-proof key.** A paired control plane signs every
+request exactly as a swarm peer does (same headers, same transcript, same
+replay rules), with the credential as the key, its own id in `X-Pi-Mesh-Peer`,
+and the agent's id as the recipient. The agent verifies with the credential
+recorded for that id and does **not** fall back to the swarm key: a control
+plane's id is credential-bound, unlike a swarm peer's routing label. A control
+plane is otherwise an ordinary principal and meets the same spawn gate (ADR 0008).
+
+`agent_port` is the port the agent will listen on; the control plane records it
+with the address the hello arrived from, since an ephemeral HTTP connection
+does not reveal the agent's listener port.
 
 ## Session listing and replay
 

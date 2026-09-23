@@ -8,7 +8,9 @@ open an ADR in `docs/adr/` rather than improvising.
 ## Conventions
 
 - **Language:** TypeScript, ESM only (`"type": "module"`).
-- **Runtime:** Node.js >= 22. Do not use Bun-specific APIs.
+- **Runtime:** Node.js >= 22.13.0. Do not use Bun-specific APIs. The control
+  plane uses the builtin `node:sqlite`, which is only available without a flag
+  from 22.13.0 (`docs/adr/0011`).
 - **Package manager:** pnpm workspaces. Run `pnpm install` first.
 - **Build:** `tsc -b` for each package, project references at the root.
 - **Tests:** `vitest` for unit tests, `playwright` for the control plane UI.
@@ -83,9 +85,12 @@ and gated execution over Pi's RPC mode (`process.spawn`, `session.steer`,
 `mesh.handoff`.
 
 **Milestone 3 is in progress.** `mesh.handoff` (M3-1) is implemented, tested and
-verified Mac-to-Pi. `tasks/milestone-3.md` carries the remaining work and its
-order, which is deliberate: a thin user-visible control-plane slice, then
-packaging, then `docs/DEPLOYMENT.md`.
+verified Mac-to-Pi. The control-plane vertical slice (M3-2) is implemented and
+tested on one machine — a dashboard, an SQLite cache and token pairing (ADR 0011),
+plus an optional Jev intent router (ADR 0012) — but its two-machine path is not
+yet proven on hardware. Packaging (M3-3) and `docs/DEPLOYMENT.md` (M3-4) remain.
+`tasks/milestone-3.md` carries the work and its order, which is deliberate: a thin
+user-visible control-plane slice, then packaging, then `docs/DEPLOYMENT.md`.
 
 Read order for picking up M3 - nothing here needs context beyond these files:
 

@@ -24,4 +24,4 @@ RUN pnpm -r build
 ENV NODE_ENV=production
 
 ENTRYPOINT ["node", "packages/control-plane/dist/cli.js"]
-CMD ["help"]
+CMD ["serve"]

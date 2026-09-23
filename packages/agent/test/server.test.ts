@@ -487,6 +487,58 @@ describe("A2A HTTP server", () => {
     }
   });
 
+  it("authenticates paired controls without swarm-key fallback", async () => {
+    const root = await fixtureRoot();
+    const controlId = "paired-control";
+    const controlKey = Buffer.alloc(32, 9);
+    const server = createAgentServer({
+      port: 0,
+      sessionsRoot: root,
+      swarmKey: testKey,
+      identity: testIdentity,
+      controlCredentials: [
+        {
+          controlId,
+          credential: controlKey.toString("base64"),
+          pairedAt: new Date().toISOString(),
+        },
+      ],
+    });
+    const address = await server.start();
+    const body = call("session.list");
+    const send = (key: Uint8Array) =>
+      httpCallWith(address.port, body, {
+        "A2A-Version": "1.0",
+        ...signedHeaders(
+          key,
+          { peerId: controlId, name: "control" },
+          {
+            method: "POST",
+            path: "/",
+            recipientPeerId: testIdentity.peerId,
+            body: JSON.stringify(body),
+          },
+        ),
+      });
+    try {
+      const swarmClaim = JSON.parse((await send(testKey)).body);
+      expect(
+        swarmClaim.error?.code,
+        "swarm key must not authenticate a stored control id",
+      ).toBe(-32100);
+      expect(
+        JSON.parse((await send(controlKey)).body).result.message.parts[0].data
+          .result.sessions,
+      ).toHaveLength(1);
+      expect(
+        JSON.parse((await httpCall(address.port, body)).body).result.message
+          .parts[0].data.result.sessions,
+      ).toHaveLength(1);
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("still stops while a peer holds a stream open", async () => {
     // The sibling test above aborts the client, which is exactly what hid this:
     // server.close() only stops accepting and then WAITS for existing sockets, so

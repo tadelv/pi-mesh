@@ -109,6 +109,41 @@ the agent signals (measured; see the ADR 0008 amendment and `docs/GOTCHAS.md`). 
 must also say plainly that the workspace root is an accident guard rather than
 isolation.
 
+## Outcome (M3-2)
+
+`@pi-mesh/control-plane` is no longer discovery-only. The slice landed as one
+end-to-end path, with the shape frozen in `docs/adr/0011-control-plane-vertical-slice.md`
+and the optional intent router in `docs/adr/0012-jev-intent-routing.md` before
+any code.
+
+- **Agent:** accepts a paired control plane as a second authenticated principal
+  on its existing listener (no new socket), and gains
+  `pi-mesh-agent pair <token>`. The swarm path is unchanged, and a control id is
+  credential-bound with no swarm-key fallback.
+- **Control plane:** `serve` starts an HTTP dashboard, a `node:sqlite` store and
+  the pairing handshake, and advertises itself over mDNS. `/api/*` requires a
+  dashboard token; a token-authenticated pair derives a per-agent credential.
+- **Optional:** a Jev intent router behind the dashboard command bar, off unless
+  `TYPESAFE_API_KEY` is set (`/api/intent` is `501` otherwise and `503` on a Jev
+  outage). Nothing on the read path depends on it.
+- **Verified locally:** `pnpm -r build`, `typecheck`, every package's tests
+  (shared 15, protocol 24, control-plane 37, agent 194), `lint` and
+  `format:check` pass; a mutation removes each of the load-bearing behaviours and
+  fails the clause naming it. On one machine, `serve` → `agent pair` →
+  `GET /api/state` returns the paired agent with no credential exposed.
+- **Review:** an independent read-only reviewer found four blocking defects that
+  the gates did not — credentials returned by `/api/state`, an empty model
+  choice read as session index 0, a hello proof replayable as the verify proof,
+  and cached events rewriting history — plus a disabled command bar that stayed
+  visible. All were fixed; the pairing proof is now direction-separated and the
+  address is recorded at hello.
+- **Not proven on hardware:** the two-machine path. mDNS discovery of the
+  control plane by `pi-mesh-agent pair` (i.e. without `--control-host`) is
+  implemented and type-checked but has not been run against real multicast, and
+  the offline cache has only been exercised against a stopped agent in-process.
+  Until that runs, this section claims a working one-machine vertical slice, not
+  a verified two-machine one.
+
 ## Exit criteria
 
 - A member can hand a bounded task to a peer that opted in, watch it work, and

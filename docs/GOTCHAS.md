@@ -198,6 +198,16 @@ you do not know yet.
 - **The agent package imports `@pi-mesh/protocol` from its built `dist`**, so
   editing `packages/protocol/src` has no effect on agent tests until protocol is
   rebuilt.
+- **Vitest 2.1 cannot resolve the `node:sqlite` builtin as a bare ESM import.**
+  Measured: a test with `import { DatabaseSync } from "node:sqlite"` fails at
+  collection with `Failed to load url sqlite (resolved id: sqlite)` on both a
+  direct run and the full suite, while the same code runs under plain `node`.
+  `packages/control-plane/src/db.ts` therefore loads it with
+  `createRequire(import.meta.url)("node:sqlite")` and takes the type from a
+  type-only `import type`. It is still the builtin and the package still has no
+  SQLite dependency; only the loader differs. A bare import is a regression that
+  is green locally under `node` and red under `vitest`, which is every gate CI
+  runs.
 - **`pnpm -r lint` catches unused imports that `tsc` does not.**
 - **`(cmd)` in fish is command substitution, not a subshell.** Every
   `(umask 077 && ...)` instruction in the docs was silently wrong on both dev

@@ -115,16 +115,52 @@ systemd scope or a container, which is the M3 answer.
 ## Pairing with the control plane
 
 The control plane does not share the swarm key. It pairs with each
-agent separately:
+agent separately and then holds a per-agent credential (ADR 0011):
 
-1. Control plane generates a short-lived token (TTL 10 min, single use).
+1. Control plane mints a short-lived token (TTL 10 min, single use, base64 of 32
+   random bytes) and prints it.
 2. User runs `pi-mesh-agent pair <token>` on the target device.
-3. Agent and control plane exchange fingerprints over an ephemeral
-   channel, then persist a per-agent credential.
-4. Subsequent connections use the credential, not the token.
+3. The agent and control plane prove knowledge of the token with an HMAC
+   challenge over the handshake transcript (see `docs/PROTOCOL.md`). **The token
+   is never transmitted**, so a passive LAN observer learns nothing replayable; a
+   plaintext bearer POST would have handed the credential to anyone sniffing
+   HTTP.
+4. Both sides derive the same credential, and subsequent requests are signed with
+   it exactly as swarm requests are signed with the swarm key. The agent verifies
+   a control plane's id against its credential and does not fall back to the swarm
+   key.
 
-Revoking an agent from the control plane UI invalidates the credential
-without affecting mesh membership.
+Revoking an agent from the control plane invalidates its credential without
+affecting mesh membership. Note the limit in this revision: there is no
+revocation UI. Removing the pairing invalidates it only once the agent's
+`~/.pi-mesh/control-credentials.json` entry is removed as well; the credential is
+stored in the control plane's SQLite database and on the agent, **unencrypted**,
+protected by file mode `0600`. Encryption at rest is deferred and stated here
+rather than implied.
+
+The pairing token is typed on the command line and can therefore land in shell
+history on the target device. Redacting it from history is the operator's job in
+this revision.
+
+### Dashboard access
+
+The control plane's HTTP listener is LAN-facing (it is advertised over mDNS), so
+its `/api/*` routes require a **dashboard token** generated on first run and
+stored in the control plane's database. Without it, anyone on the LAN could mint
+a pairing token and read every paired agent's sessions. The token is accepted as
+`Authorization: Bearer`, `X-Pi-Mesh-Ui`, or `?token=`; `serve` prints the URL that
+carries it. It is compared in constant time. There is one token and one operator;
+there is no account model.
+
+## Optional third-party integration: Jev intent routing
+
+When `TYPESAFE_API_KEY` is set, the dashboard's command bar sends the operator's
+text, plus the names and ids of the paired agents and their sessions, to
+TypeSafe's hosted `api.typesafe.ai` to route the request to a dashboard action.
+This is **off by default**: with the variable unset the route answers `501` and
+the command bar is hidden, and a Jev outage answers `503` without affecting any
+other control-plane feature. Nothing in the mesh depends on it. Enabling it is a
+deliberate disclosure and is the operator's choice.
 
 ## What the swarm key protects against
 
@@ -141,6 +177,12 @@ without affecting mesh membership.
 ## What it does not protect against
 
 - Eavesdropping on session content (plaintext HTTP).
+- **On-path denial of pairing.** The pairing exchange is plaintext HTTP like the
+  rest of v1, so an attacker who can inject packets can drop or replay the
+  pairing POSTs and deny a pairing. That is the same denial as dropping any
+  packet; direction-separated proofs (ADR 0011) stop a *passive* observer from
+  replaying the token, and the success response carries no credential either
+  way. Closing this needs Noise or TLS, which is deferred.
 - Malicious peers who already possess the swarm key. Such a peer is fully
   trusted: it can claim any peer ID (a claimed ID is a routing label, not an
   authenticated identity - see ADR 0007), and it can replay a captured request

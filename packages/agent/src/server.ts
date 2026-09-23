@@ -58,13 +58,25 @@ import type { SessionReadRequest } from "./sessions.js";
 import { TaskStore } from "./tasks.js";
 import { loadOrCreateIdentity, type PeerIdentity } from "./identity.js";
 import { loadSwarmKey } from "./swarm-key.js";
+import {
+  controlCredentialBytes,
+  loadControlCredentials,
+  type ControlCredential,
+} from "./control-credentials.js";
 import type { JobManager, LiveStreamEvent } from "./jobs.js";
 
 const MAX_REPLAY_ENTRIES = 10_000;
 const MAX_PENDING_HANDSHAKES = 1_024;
 const MAX_BODY_BYTES = 10 * 1024 * 1024;
 
+export interface Principal {
+  id: string;
+  kind: "peer" | "control";
+}
+
 export interface AgentServerOptions extends SkillRegistryOptions {
+  controlCredentials?: readonly ControlCredential[];
+  controlCredentialsPath?: string;
   port?: number;
   host?: string;
   name?: string;
@@ -255,6 +267,7 @@ export class HttpAgentServer implements AgentServer {
   private listening = false;
   private actualPort: number | undefined;
   private swarmKey: Uint8Array | undefined;
+  private controlCredentials: readonly ControlCredential[] = [];
   private identity: PeerIdentity | undefined;
   private readonly replay = new Map<string, number>();
   private readonly maxReplayEntries: number;
@@ -303,6 +316,13 @@ export class HttpAgentServer implements AgentServer {
       return { address: this.host, port: this.actualPort };
     }
     this.swarmKey = this.options.swarmKey ?? (await loadSwarmKey());
+    this.controlCredentials =
+      this.options.controlCredentials ??
+      (await loadControlCredentials(
+        this.options.controlCredentialsPath === undefined
+          ? {}
+          : { path: this.options.controlCredentialsPath },
+      ));
     if (this.swarmKey.byteLength === 0) {
       throw new Error("A swarm key is required to start the agent");
     }
@@ -409,8 +429,8 @@ export class HttpAgentServer implements AgentServer {
     }
 
     const rawBody = await readBody(request);
-    const peerId = this.verifyRequest(request, rawBody);
-    if (peerId === undefined) {
+    const principal = this.verifyRequest(request, rawBody);
+    if (principal === undefined) {
       this.unauthorized(response);
       return;
     }
@@ -441,11 +461,11 @@ export class HttpAgentServer implements AgentServer {
       return;
     }
     if (body.method === "message/stream") {
-      await this.streamMessage(body, peerId, request, response);
+      await this.streamMessage(body, principal.id, request, response);
       return;
     }
     try {
-      const result = await this.call(body, peerId);
+      const result = await this.call(body, principal.id);
       // Acknowledge on `finish`, not on a flag read before the write. `finish`
       // never fires for a response whose socket was destroyed (verified: only
       // `close` fires), so it is positive evidence the payload actually left.
@@ -482,7 +502,7 @@ export class HttpAgentServer implements AgentServer {
   private verifyRequest(
     request: IncomingMessage,
     body: Uint8Array,
-  ): string | undefined {
+  ): Principal | undefined {
     const peerId = header(request, PI_MESH_HEADERS.peer);
     const nonce = header(request, PI_MESH_HEADERS.nonce);
     const timestamp = header(request, PI_MESH_HEADERS.timestamp);
@@ -500,9 +520,14 @@ export class HttpAgentServer implements AgentServer {
     // acceptance window and the cache entry cannot disagree.
     const accepted = acceptTimestamp(timestamp, new Date(now));
     if (accepted === undefined) return undefined;
-    const key = this.swarmKey;
     const identity = this.identity;
-    if (key === undefined || identity === undefined) return undefined;
+    if (identity === undefined) return undefined;
+    const control = this.controlCredentials.find(
+      (entry) => entry.controlId === peerId,
+    );
+    const key =
+      control === undefined ? this.swarmKey : controlCredentialBytes(control);
+    if (key === undefined) return undefined;
     if (
       !verifyRequestSignature(
         key,
@@ -540,7 +565,7 @@ export class HttpAgentServer implements AgentServer {
     // instant plus the window; expiring at receipt-plus-window would leave it
     // replayable after its documented acceptance window had already closed.
     this.replay.set(replayKey, Math.max(accepted, now) + REPLAY_WINDOW_MS);
-    return peerId;
+    return { id: peerId, kind: control === undefined ? "peer" : "control" };
   }
 
   private pruneReplay(now: number): void {

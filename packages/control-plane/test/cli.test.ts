@@ -3,6 +3,7 @@
 import { describe, expect, it } from "vitest";
 import {
   run,
+  ControlStore,
   SERVICE_TYPE_CONTROL,
   type BonjourLike,
   type CliIO,
@@ -35,7 +36,7 @@ describe("control-plane CLI", () => {
 
     await expect(run(argv, output.io)).resolves.toBe(0);
     expect(output.read().stdout).toMatch(
-      /Usage: pi-mesh-control-plane <publish\|help>/,
+      /Usage: pi-mesh-control-plane <serve\|publish\|help>/,
     );
     expect(output.read().stderr).toBe("");
   });
@@ -46,8 +47,48 @@ describe("control-plane CLI", () => {
     await expect(run(["bogus"], output.io)).resolves.toBe(2);
     expect(output.read().stdout).toBe("");
     expect(output.read().stderr).toMatch(
-      /Usage: pi-mesh-control-plane <publish\|help>/,
+      /Usage: pi-mesh-control-plane <serve\|publish\|help>/,
     );
+  });
+
+  it("serves and stops injected resources on SIGINT", async () => {
+    let stoppedServer = false;
+    let stoppedBonjour = false;
+    const store = new ControlStore(":memory:");
+    const output = captured({
+      publish() {
+        return undefined;
+      },
+      destroy() {
+        stoppedBonjour = true;
+      },
+    });
+    output.io.store = store;
+    output.io.server = {
+      async start() {
+        return { address: "127.0.0.1", port: 7445 };
+      },
+      async stop() {
+        stoppedServer = true;
+      },
+      dashboardUrl() {
+        return "http://127.0.0.1:7445/?token=dashboard";
+      },
+    };
+    try {
+      const result = run(["serve"], output.io);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(output.read().stderr).toContain(
+        "http://127.0.0.1:7445/?token=dashboard",
+      );
+      expect(output.read().stderr).toMatch(/Pairing token: [A-Za-z0-9+/]+=*/);
+      process.emit("SIGINT");
+      await expect(result).resolves.toBe(0);
+      expect(stoppedServer).toBe(true);
+      expect(stoppedBonjour).toBe(true);
+    } finally {
+      store.close();
+    }
   });
 
   it("publishes through an injected bonjour instance until SIGINT", async () => {

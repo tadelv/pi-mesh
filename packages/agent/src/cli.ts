@@ -39,6 +39,7 @@ import {
   resolveWorkspaceRoot,
 } from "./spawner.js";
 import { PiMeshError, ErrorCode } from "@pi-mesh/shared";
+import { pair as pairCommand } from "./pair.js";
 import type { StreamResponse } from "@pi-mesh/protocol";
 
 export type CliIO = {
@@ -51,12 +52,17 @@ export type CliIO = {
   sessionsRoot?: string;
   /** Injected so a test can exercise a rejected policy without the environment. */
   spawnPolicy?: SpawnPolicy;
+  controlCredentialsPath?: string;
+  /** The listener port the agent will run on; sent during pairing so the control plane can call it back. */
+  agentPort?: number;
+  fetch?: typeof globalThis.fetch;
 };
 
 // Pi 0.85.1 is the oldest session format this milestone supports.
 export const PI_SUPPORTED_FLOOR = "0.85.1";
 const usage =
   "Usage: pi-mesh-agent keygen\n" +
+  "Usage: pi-mesh-agent pair <token> [--control-host host:port] [--timeout seconds]\n" +
   "Usage: pi-mesh-agent peers [--profile lan|public] [--watch] [--timeout seconds]\n" +
   "Usage: pi-mesh-agent start [--profile lan|public] [--allow-execution[=peer-id,peer-id]]\n" +
   "Usage: pi-mesh-agent sessions [--peer id | --peer-host host[:port]] [--timeout seconds]\n" +
@@ -110,6 +116,22 @@ export async function run(
     }
     if (parsed.follow && parsed.command !== "stream") {
       throw new CliUsageError("--follow is only valid with stream");
+    }
+    if (parsed.controlHost !== undefined && parsed.command !== "pair") {
+      throw new CliUsageError("--control-host is only valid with pair");
+    }
+    if (parsed.command === "pair") {
+      return await pairCommand(
+        [
+          ...parsed.args,
+          ...(parsed.controlHost === undefined
+            ? []
+            : ["--control-host", parsed.controlHost]),
+          "--timeout",
+          String(parsed.timeoutMs / 1_000),
+        ],
+        io,
+      );
     }
     if (parsed.command === "start") {
       if (parsed.args.length > 0)
@@ -821,6 +843,7 @@ function parseArguments(argv: string[]):
       profile: NetworkProfile;
       watch: boolean;
       timeoutMs: number;
+      controlHost: string | undefined;
     }
   | undefined {
   let profile: NetworkProfile = "lan";
@@ -828,6 +851,7 @@ function parseArguments(argv: string[]):
   let timeoutMs = 5_000;
   let peer: string | undefined;
   let peerHost: string | undefined;
+  let controlHost: string | undefined;
   let allowExecution: string | undefined;
   let allowExecutionFlag = false;
   let follow = false;
@@ -862,6 +886,11 @@ function parseArguments(argv: string[]):
       if (value === undefined || value.startsWith("--")) return undefined;
       peer = value;
       index += 1;
+    } else if (argument === "--control-host") {
+      const value = argv[index + 1];
+      if (value === undefined || value.startsWith("--")) return undefined;
+      controlHost = value;
+      index += 1;
     } else if (argument === "--peer-host") {
       const value = argv[index + 1];
       if (value === undefined || value.startsWith("--")) return undefined;
@@ -886,6 +915,7 @@ function parseArguments(argv: string[]):
         profile,
         watch,
         timeoutMs,
+        controlHost,
       }
     : undefined;
 }

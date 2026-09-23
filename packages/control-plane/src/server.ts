@@ -11,7 +11,12 @@ import {
 import { configuredMeshPort } from "@pi-mesh/shared";
 import { ControlStore, type PairedAgent } from "./db.js";
 import { PairingService } from "./pairing.js";
-import { callAgent, fetchSessionList } from "./client.js";
+import {
+  AgentSkillError,
+  AgentUnreachableError,
+  callAgent,
+  fetchSessionList,
+} from "./client.js";
 import { dashboard } from "./dashboard.js";
 import { routeIntent } from "./intent.js";
 
@@ -143,10 +148,96 @@ export function createControlServer(
           // browser needs the identity and address, nothing more.
           agents: store.listAgents().map(publicAgent),
           sessions: store.listSessions(),
+          jobs: store.listJobs(),
           intent_enabled: Boolean(
             options.typesafeApiKey ?? process.env.TYPESAFE_API_KEY,
           ),
         });
+        return;
+      }
+      const executionMatch =
+        /^\/api\/agents\/([^/]+)\/(spawn|steer|stop|abort)$/.exec(url.pathname);
+      if (request.method === "POST" && executionMatch !== null) {
+        const body = await readJson(request, true);
+        if (
+          body === INVALID ||
+          typeof body !== "object" ||
+          body === null ||
+          Array.isArray(body)
+        ) {
+          json(response, 400, { error: "invalid_input" });
+          return;
+        }
+        let peerId: string;
+        try {
+          peerId = decodeURIComponent(executionMatch[1]!);
+        } catch {
+          json(response, 400, { error: "invalid_input" });
+          return;
+        }
+        const agent = store.getAgent(peerId);
+        if (agent === undefined) {
+          json(response, 404, { error: "unknown_agent" });
+          return;
+        }
+        const action = executionMatch[2]!;
+        const skill = {
+          spawn: "process.spawn",
+          steer: "session.steer",
+          stop: "process.stop",
+          abort: "session.abort",
+        }[action]!;
+        try {
+          const result = await callAgent<Record<string, unknown>>(
+            {
+              peerId: agent.peer_id,
+              host: agent.host,
+              port: agent.port,
+              credential: agent.credential,
+            },
+            skill,
+            body,
+            {
+              controlId: store.controlId(),
+              ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+            },
+          );
+          if (action === "spawn") {
+            const spawn = body as { project: string };
+            store.upsertJob({
+              agent_id: agent.peer_id,
+              job_id: result.job_id as string,
+              session_id:
+                (result.session_id as string | null | undefined) ?? null,
+              pid: (result.pid as number | null | undefined) ?? null,
+              project: spawn.project,
+              created_at: new Date((options.now ?? Date.now)()).toISOString(),
+              state: "running",
+            });
+          } else if (action === "stop") {
+            store.setJobState(
+              agent.peer_id,
+              (body as { job_id: string }).job_id,
+              result.state as string,
+            );
+          }
+          json(response, 200, { ok: true, result });
+        } catch (error) {
+          if (error instanceof AgentSkillError) {
+            json(response, 200, {
+              ok: false,
+              code: error.code,
+              message: error.message,
+            });
+          } else if (error instanceof AgentUnreachableError) {
+            json(response, 502, {
+              error: "agent_unreachable",
+              message: error.message,
+            });
+          } else {
+            throw error;
+          }
+        }
         return;
       }
       if (request.method === "POST" && url.pathname === "/api/pair/token") {
@@ -346,6 +437,7 @@ function publicAgent(agent: PairedAgent): Omit<PairedAgent, "credential"> {
 
 async function readJson(
   request: IncomingMessage,
+  emptyInvalid = false,
 ): Promise<unknown | typeof INVALID> {
   const chunks: Buffer[] = [];
   let length = 0;
@@ -355,7 +447,7 @@ async function readJson(
     if (length > MAX_BODY_BYTES) return INVALID;
     chunks.push(bytes);
   }
-  if (length === 0) return {};
+  if (length === 0) return emptyInvalid ? INVALID : {};
   try {
     return JSON.parse(Buffer.concat(chunks).toString("utf8")) as unknown;
   } catch {

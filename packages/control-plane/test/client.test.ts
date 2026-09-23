@@ -4,7 +4,12 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { describe, expect, it } from "vitest";
 import { PI_MESH_HEADERS, verifyRequestSignature } from "@pi-mesh/protocol";
-import { fetchSessionList, type AgentTarget } from "../src/client.js";
+import {
+  AgentSkillError,
+  AgentUnreachableError,
+  fetchSessionList,
+  type AgentTarget,
+} from "../src/client.js";
 
 const controlId = "control-id";
 const agentId = "agent-id";
@@ -140,9 +145,13 @@ describe("control-plane A2A client", () => {
           ...target,
           credential: Buffer.alloc(32, 9).toString("base64"),
         };
-        await expect(fetchSessionList(wrong, { controlId })).rejects.toThrow(
-          "-32100: Unauthorized",
-        );
+        await expect(
+          fetchSessionList(wrong, { controlId }),
+        ).rejects.toMatchObject({
+          name: "AgentSkillError",
+          code: -32100,
+          message: "Unauthorized",
+        });
       },
     );
   });
@@ -154,9 +163,61 @@ describe("control-plane A2A client", () => {
         response.end("offline");
       },
       async (target) => {
-        await expect(fetchSessionList(target, { controlId })).rejects.toThrow(
-          "HTTP 503",
+        const result = fetchSessionList(target, { controlId });
+        await expect(result).rejects.toBeInstanceOf(AgentUnreachableError);
+        await expect(result).rejects.not.toBeInstanceOf(AgentSkillError);
+      },
+    );
+  });
+
+  it("classifies network failures as unreachable rather than skill refusals", async () => {
+    const result = fetchSessionList(
+      { peerId: agentId, host: "127.0.0.1", port: 1, credential },
+      {
+        controlId,
+        fetch: async () => {
+          throw new Error("connection refused");
+        },
+      },
+    );
+    await expect(result).rejects.toBeInstanceOf(AgentUnreachableError);
+    await expect(result).rejects.not.toBeInstanceOf(AgentSkillError);
+  });
+
+  it("classifies malformed JSON-RPC envelopes as unreachable", async () => {
+    await withServer(
+      (_request, body, response) => {
+        response.end(
+          JSON.stringify({ jsonrpc: "2.0", id: JSON.parse(body).id }),
         );
+      },
+      async (target) => {
+        const result = fetchSessionList(target, { controlId });
+        await expect(result).rejects.toBeInstanceOf(AgentUnreachableError);
+        await expect(result).rejects.not.toBeInstanceOf(AgentSkillError);
+      },
+    );
+  });
+
+  it("preserves an agent JSON-RPC refusal code", async () => {
+    await withServer(
+      (_request, body, response) => {
+        response.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: JSON.parse(body).id,
+            error: { code: -32102, message: "Execution disabled" },
+          }),
+        );
+      },
+      async (target) => {
+        await expect(
+          fetchSessionList(target, { controlId }),
+        ).rejects.toMatchObject({
+          name: "AgentSkillError",
+          code: -32102,
+          message: "Execution disabled",
+        });
       },
     );
   });

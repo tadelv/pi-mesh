@@ -39,6 +39,16 @@ export interface CachedEvent {
   data: string;
 }
 
+export interface CachedJob {
+  agent_id: string;
+  job_id: string;
+  session_id: string | null;
+  pid: number | null;
+  project: string;
+  created_at: string;
+  state: string;
+}
+
 export class ControlStore {
   private readonly db: DatabaseSyncType;
   private readonly now: () => number;
@@ -55,6 +65,7 @@ export class ControlStore {
       CREATE TABLE IF NOT EXISTS agents (peer_id TEXT PRIMARY KEY, name TEXT NOT NULL, host TEXT NOT NULL, port INTEGER NOT NULL, credential TEXT NOT NULL, paired_at TEXT NOT NULL) STRICT;
       CREATE TABLE IF NOT EXISTS sessions (agent_id TEXT NOT NULL, session_id TEXT NOT NULL, project TEXT NOT NULL, name TEXT, started_at TEXT NOT NULL, updated_at TEXT NOT NULL, synced_at TEXT NOT NULL, PRIMARY KEY(agent_id, session_id)) STRICT;
       CREATE TABLE IF NOT EXISTS events (agent_id TEXT NOT NULL, session_id TEXT NOT NULL, entry_id TEXT NOT NULL, type TEXT NOT NULL, timestamp TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(agent_id, session_id, entry_id)) STRICT;
+      CREATE TABLE IF NOT EXISTS jobs (agent_id TEXT NOT NULL, job_id TEXT NOT NULL, session_id TEXT, pid INTEGER, project TEXT NOT NULL, created_at TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(agent_id, job_id)) STRICT;
     `);
     if (path !== ":memory:") {
       // chmod after opening also tightens permissions on a pre-existing database.
@@ -174,6 +185,38 @@ export class ControlStore {
       this.db.exec("ROLLBACK");
       throw error;
     }
+  }
+
+  upsertJob(job: CachedJob): void {
+    this.db
+      .prepare(
+        "INSERT INTO jobs(agent_id,job_id,session_id,pid,project,created_at,state) VALUES(?,?,?,?,?,?,?) ON CONFLICT(agent_id,job_id) DO UPDATE SET session_id=excluded.session_id,pid=excluded.pid,project=excluded.project,created_at=excluded.created_at,state=excluded.state",
+      )
+      .run(
+        job.agent_id,
+        job.job_id,
+        job.session_id,
+        job.pid,
+        job.project,
+        job.created_at,
+        job.state,
+      );
+  }
+
+  listJobs(agentId?: string): CachedJob[] {
+    const sql =
+      "SELECT agent_id, job_id, session_id, pid, project, created_at, state FROM jobs";
+    return (agentId === undefined
+      ? this.db.prepare(`${sql} ORDER BY agent_id, job_id`).all()
+      : this.db
+          .prepare(`${sql} WHERE agent_id = ? ORDER BY job_id`)
+          .all(agentId)) as unknown as CachedJob[];
+  }
+
+  setJobState(agentId: string, jobId: string, state: string): void {
+    this.db
+      .prepare("UPDATE jobs SET state = ? WHERE agent_id = ? AND job_id = ?")
+      .run(state, agentId, jobId);
   }
 
   listEvents(agentId: string, sessionId: string): CachedEvent[] {

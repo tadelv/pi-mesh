@@ -28,6 +28,15 @@ describe("ControlStore", () => {
       assert.equal(store.listSessions(agent.peer_id).find(s => s.session_id === 's2').name, '');
       store.upsertSessions(agent.peer_id, [{ ...first, id:'s3' }], 'sync3');
       assert.equal(store.listSessions(agent.peer_id).find(s => s.session_id === 's3').name, null);
+      const job = { agent_id:'agent-1', job_id:'j1', session_id:'s1', pid:123, project:'/p', created_at:'created', state:'running' };
+      store.upsertJob(job);
+      assert.deepEqual(store.listJobs().map(j => ({ ...j })), [job]);
+      store.upsertJob({ ...job, state:'stopping' });
+      assert.deepEqual(store.listJobs(agent.peer_id).map(j => ({ ...j })), [{ ...job, state:'stopping' }]);
+      store.upsertJob({ ...job, agent_id:'agent-2', job_id:'j2' });
+      assert.deepEqual(store.listJobs(agent.peer_id).map(j => ({ ...j })), [{ ...job, state:'stopping' }]);
+      store.setJobState(agent.peer_id, 'j1', 'exited');
+      assert.equal(store.listJobs(agent.peer_id)[0].state, 'exited');
       store.upsertEvents(agent.peer_id, 's1', [{ entryId:'e1', type:'message', timestamp:'t', data:{ n:1 } }]);
       assert.deepEqual(store.listEvents(agent.peer_id, 's1').map(e => [e.entry_id,e.data]), [['e1','{"n":1}']]);
       // Re-caching the same entry id must not rewrite it: session entries are

@@ -70,9 +70,10 @@ export class ControlStore {
     this.db.exec("DROP TABLE IF EXISTS agent_caps");
     // Prune on open as well as on write: a database written by an earlier
     // version can already hold more than the retention limit, and waiting for
-    // the next spawn would leave it unbounded until then.
+    // the next spawn would leave it unbounded until then. Per agent, matching
+    // upsertJob.
     this.db.exec(
-      "DELETE FROM jobs WHERE rowid IN (SELECT rowid FROM jobs ORDER BY created_at DESC LIMIT -1 OFFSET 50)",
+      "DELETE FROM jobs WHERE rowid NOT IN (SELECT rowid FROM (SELECT rowid, ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY created_at DESC, rowid DESC) AS rn FROM jobs) WHERE rn <= 50)",
     );
     if (path !== ":memory:") {
       // chmod after opening also tightens permissions on a pre-existing database.
@@ -208,9 +209,14 @@ export class ControlStore {
         job.created_at,
         job.state,
       );
-    this.db.exec(
-      "DELETE FROM jobs WHERE rowid IN (SELECT rowid FROM jobs ORDER BY created_at DESC LIMIT -1 OFFSET 50)",
-    );
+    // Per AGENT, not global. A global bound let one agent's spawn evict
+    // another agent's mirrored rows while that agent's freshness mark stayed
+    // set, so the dashboard showed a "from the agent" list with rows missing.
+    this.db
+      .prepare(
+        "DELETE FROM jobs WHERE agent_id = ? AND rowid NOT IN (SELECT rowid FROM jobs WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 50)",
+      )
+      .run(job.agent_id, job.agent_id);
   }
 
   replaceJobs(

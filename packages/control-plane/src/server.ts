@@ -66,6 +66,13 @@ export function createControlServer(
   let actualPort = port;
   const agentCaps = new Map<string, string[]>();
   const jobsSyncedAt = new Map<string, number>();
+  /**
+   * When this control plane last wrote a job row itself. A row it wrote is its
+   * own record, not a copy of the agent's list, so freshness has to be dropped:
+   * otherwise the dashboard keeps saying "from the agent" about a set that is
+   * no longer a verbatim mirror.
+   */
+  const jobsWrittenAt = new Map<string, number>();
   const confidential = options.confidential ?? isConfidential;
   const allowInsecure = options.allowInsecureExecution === true;
 
@@ -220,6 +227,7 @@ export function createControlServer(
               "Agent returned a malformed process.stop result",
             );
           }
+          let wroteJobs = false;
           if (action === "spawn") {
             const spawn = body as { project: string };
             store.upsertJob({
@@ -232,12 +240,24 @@ export function createControlServer(
               created_at: new Date((options.now ?? Date.now)()).toISOString(),
               state: "running",
             });
+            wroteJobs = true;
           } else if (action === "stop") {
             store.setJobState(
               agent.peer_id,
               (body as { job_id: string }).job_id,
               result.state as string,
             );
+            wroteJobs = true;
+          }
+          // Only a write to the jobs TABLE invalidates the mirror: steer and
+          // abort answer the agent without touching a row, so withdrawing the
+          // claim for them would report as cached a list that is still the
+          // agent's. The rows for this agent are no longer a verbatim copy of
+          // what the agent reported, so the freshness claim is withdrawn until
+          // the next sync restores it.
+          if (wroteJobs) {
+            jobsWrittenAt.set(agent.peer_id, (options.now ?? Date.now)());
+            jobsSyncedAt.delete(agent.peer_id);
           }
           json(response, 200, { ok: true, result });
         } catch (error) {
@@ -289,6 +309,7 @@ export function createControlServer(
             if (card === undefined) agentCaps.delete(agent.peer_id);
             else agentCaps.set(agent.peer_id, card.skills);
             if (card?.skills.includes("process.list")) {
+              const listedAt = (options.now ?? Date.now)();
               try {
                 const result = await callAgent<{
                   jobs: Array<{
@@ -300,18 +321,26 @@ export function createControlServer(
                     started_at: string;
                   }>;
                 }>(target, "process.list", {}, callOptions);
-                store.replaceJobs(
-                  agent.peer_id,
-                  result.jobs.map((job) => ({
-                    job_id: job.job_id,
-                    session_id: job.session_id,
-                    pid: job.pid,
-                    project: job.project,
-                    created_at: job.started_at,
-                    state: job.state,
-                  })),
-                );
-                jobsSyncedAt.set(agent.peer_id, (options.now ?? Date.now)());
+                // A spawn or stop that landed while this listing was in flight is
+                // NEWER than the answer in hand, so applying the answer would
+                // silently revert a job the agent does have. Keep the current
+                // rows and leave them unmarked rather than mislabelling them.
+                if ((jobsWrittenAt.get(agent.peer_id) ?? 0) > listedAt) {
+                  jobsSyncedAt.delete(agent.peer_id);
+                } else {
+                  store.replaceJobs(
+                    agent.peer_id,
+                    result.jobs.map((job) => ({
+                      job_id: job.job_id,
+                      session_id: job.session_id,
+                      pid: job.pid,
+                      project: job.project,
+                      created_at: job.started_at,
+                      state: job.state,
+                    })),
+                  );
+                  jobsSyncedAt.set(agent.peer_id, (options.now ?? Date.now)());
+                }
               } catch {
                 jobsSyncedAt.delete(agent.peer_id);
               }

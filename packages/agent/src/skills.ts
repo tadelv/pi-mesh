@@ -425,13 +425,36 @@ export function createSkillRegistry(
 }
 
 /**
- * cli.ts builds the JobManager iff spawnPolicy.enabled, which is why every
- * call site passes that flag.
+ * The execution skills whose handler ALSO needs a job manager. `mesh.handoff` is
+deliberately absent: it routes work to another agent and touches no local job.
+ *
+ * Kept next to EXECUTION_SKILLS and asserted to partition it, so adding an
+ * execution skill cannot silently land on the wrong side of this line.
  */
-export function servedSkills(jobManagerAvailable = false): Skill[] {
+export const EXECUTION_SKILLS_NEEDING_JOBS: readonly Skill[] = [
+  "process.spawn",
+  "session.steer",
+];
+
+/**
+ * What this agent advertises, as a function of two separate facts.
+ *
+ * `jobsAvailable` is whether a JobManager exists; `gateOpen` is the spawn policy
+ * (ADR 0008). cli.ts constructs the manager iff the policy is enabled, so in
+ * production these always agree - but the exported server constructor accepts
+ * them independently, and a single flag made a server built with a manager and a
+ * closed policy advertise execution it answers with -32102. That is the same
+ * class of lie M2-8 exists to prevent, one level down.
+ */
+export function servedSkills(jobsAvailable = false, gateOpen = false): Skill[] {
   return [
     ...ALWAYS_SERVED_SKILLS,
-    ...(jobManagerAvailable ? [...JOB_SKILLS, ...EXECUTION_SKILLS] : []),
+    ...(jobsAvailable ? JOB_SKILLS : []),
+    ...EXECUTION_SKILLS.filter(
+      (skill) =>
+        gateOpen &&
+        (!EXECUTION_SKILLS_NEEDING_JOBS.includes(skill) || jobsAvailable),
+    ),
   ];
 }
 

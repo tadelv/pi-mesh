@@ -43,8 +43,12 @@ describe("ControlStore", () => {
       assert.equal(store.listJobs(agent.peer_id)[0].state, 'exited');
       const retentionStore = new ControlStore(':memory:');
       for (let i = 0; i < 60; i++) retentionStore.upsertJob({ ...job, job_id:'j'+String(i).padStart(2, '0'), created_at:new Date(i * 1000).toISOString() });
-      assert.equal(retentionStore.listJobs().length, 50, 'jobs retention clause: keep at most 50 rows overall');
+      assert.equal(retentionStore.listJobs().length, 50, 'jobs retention clause: keep at most 50 rows per agent');
       assert.deepEqual(retentionStore.listJobs().map(j => j.job_id).sort(), Array.from({length:50}, (_, i) => 'j'+String(i + 10).padStart(2, '0')), 'jobs retention clause: retain the newest 50 by created_at');
+      retentionStore.upsertJob({ ...job, agent_id:'agent-b', job_id:'b1', created_at:'1969-01-01T00:00:00.000Z' });
+      for (let i = 0; i < 60; i++) retentionStore.upsertJob({ ...job, job_id:'k'+String(i).padStart(2, '0'), created_at:new Date(i * 1000).toISOString() });
+      assert.equal(retentionStore.listJobs('agent-b').length, 1, 'per-agent retention clause: another agent rows are not evicted');
+      assert.equal(retentionStore.listJobs(agent.peer_id).length, 50, 'per-agent retention clause: the writing agent still trims to 50');
       retentionStore.close();
       store.upsertEvents(agent.peer_id, 's1', [{ entryId:'e1', type:'message', timestamp:'t', data:{ n:1 } }]);
       assert.deepEqual(store.listEvents(agent.peer_id, 's1').map(e => [e.entry_id,e.data]), [['e1','{"n":1}']]);

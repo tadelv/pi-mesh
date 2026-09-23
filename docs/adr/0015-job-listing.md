@@ -111,3 +111,23 @@ was already telling the operator one click too late.
 - **Add `process.list` without fixing the stop/abort advertisement.** Rejected:
   that would have shipped a third skill that lies on a gate-closed machine, and
   the fix is the same rule the M2-8 work already established.
+
+## Amendment 1 — the execution group splits by whether the handler needs a job
+
+Decision 2's table lists one condition per group. That was too coarse for the
+execution group, and the review of the first implementation found it.
+
+`process.spawn` and `session.steer` drive a local job, so their handlers need a
+`JobManager` as well as the open gate - without one they answer `-32004`.
+`mesh.handoff` routes work to *another* agent and touches no local job, so it
+needs only the gate. Serving all three behind one flag meant a server built with
+a manager and a closed policy advertised execution the dispatch gate refuses
+(`-32102`) - which is reachable, because `createAgentServer` takes `jobs` and
+`spawnPolicy` independently. In the CLI the two always agree, which is exactly why
+the mistake survived the first pass.
+
+`servedSkills(jobsAvailable, gateOpen)` therefore takes two facts, not one, and
+`EXECUTION_SKILLS_NEEDING_JOBS` names the two that need a manager.
+`EXECUTION_SKILLS` is unchanged and remains the list the gate reads; a test
+asserts the classification partitions it, so a new execution skill cannot inherit
+the wrong side by default.

@@ -391,8 +391,8 @@ describe("capability honesty and the gate", () => {
     ] as const) {
       expect(served).not.toContain(skill);
     }
-    expect(servedSkills(true)).toHaveLength(10);
-    expect(servedSkills(true)).toContain("process.list");
+    expect(servedSkills(true, true)).toHaveLength(10);
+    expect(servedSkills(true, true)).toContain("process.list");
   });
 
   it("refuses to register an executing skill without the gate, and only that", () => {

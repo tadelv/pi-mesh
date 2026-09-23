@@ -418,9 +418,13 @@ export class HttpAgentServer implements AgentServer {
       defaultInputModes: ["application/json"],
       defaultOutputModes: ["application/json"],
       // One expression, shared with the mDNS advertisement in cli.ts. This used
-      // cli.ts builds the JobManager iff the spawn policy is enabled; the job
-      // skills and execution skills therefore share this advertisement flag.
-      skills: servedSkills(this.options.jobs !== undefined).map(skillInfo),
+      // cli.ts constructs the JobManager iff the spawn policy is enabled, so
+      // these agree in production - they are passed separately because the
+      // constructor accepts them independently.
+      skills: servedSkills(
+        this.options.jobs !== undefined,
+        this.spawnPolicy.enabled,
+      ).map(skillInfo),
       signatures: [],
       iconUrl: "",
     };

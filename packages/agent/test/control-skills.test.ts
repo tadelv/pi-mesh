@@ -7,7 +7,12 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { ErrorCode } from "@pi-mesh/shared";
 import {
+  ALWAYS_SERVED_SKILLS,
+  createAgentServer,
   createSkillRegistry,
+  EXECUTION_SKILLS,
+  EXECUTION_SKILLS_NEEDING_JOBS,
+  JOB_SKILLS,
   JobManager,
   servedSkills,
   type JobRecord,
@@ -257,15 +262,80 @@ describe("process and session control skills", () => {
     }
   });
 
-  it("T8 advertises only always-served skills without a job manager", () => {
+  it("T8 advertises only what the machine can serve, from two separate facts", () => {
+    // No job manager: the job skills are absent, and so are the execution skills
+    // whose handler needs one.
     expect(servedSkills(false)).toHaveLength(4);
     for (const skill of ["process.list", "process.stop", "session.abort"]) {
       expect(servedSkills(false)).not.toContain(skill);
-      expect(servedSkills(true)).toContain(skill);
+      expect(servedSkills(true, true)).toContain(skill);
     }
-    expect(servedSkills(false)).not.toContain("session.steer");
-    expect(servedSkills(true)).toContain("session.steer");
-    expect(servedSkills(true)).toHaveLength(10);
+    // A manager WITHOUT an open gate: the job skills are honest, because the
+    // manager really can serve them, but execution is not advertised because the
+    // gate would refuse it. This is the combination the exported server
+    // constructor allows, and the reason servedSkills takes two flags.
+    const managerOnly = servedSkills(true, false);
+    expect(managerOnly).toEqual([...ALWAYS_SERVED_SKILLS, ...JOB_SKILLS]);
+    for (const skill of EXECUTION_SKILLS) {
+      expect(managerOnly).not.toContain(skill);
+    }
+    // An open gate WITHOUT a manager: mesh.handoff routes to another agent and
+    // needs no local job, so it survives; process.spawn and session.steer need
+    // one and do not.
+    expect(servedSkills(false, true)).toEqual([
+      ...ALWAYS_SERVED_SKILLS,
+      "mesh.handoff",
+    ]);
+    expect(servedSkills(true, true)).toHaveLength(10);
+    expect(servedSkills(true, true)).toContain("session.steer");
+  });
+
+  it("T12 keeps every execution skill classified by whether it needs a job manager", () => {
+    // A tripwire on the two constants, not a test of behaviour: a NEW execution
+    // skill defaults to the gate-only side, which is the wrong side if it needs a
+    // manager. Forcing the count and the exact membership makes the author
+    // classify it instead of inheriting a default.
+    expect([...EXECUTION_SKILLS_NEEDING_JOBS].sort()).toEqual([
+      "process.spawn",
+      "session.steer",
+    ]);
+    expect(EXECUTION_SKILLS).toHaveLength(
+      EXECUTION_SKILLS_NEEDING_JOBS.length + 1,
+    );
+    for (const skill of EXECUTION_SKILLS_NEEDING_JOBS) {
+      expect(EXECUTION_SKILLS).toContain(skill);
+    }
+  });
+
+  it("T13 advertises no execution skill when a manager exists but the gate is closed", async () => {
+    // The exported constructor takes jobs and spawnPolicy independently, so this
+    // state is reachable outside the CLI. It must not advertise execution the
+    // dispatch gate would answer with -32102.
+    const test = await setup("abort");
+    const server = createAgentServer({
+      port: 0,
+      swarmKey: Buffer.alloc(32, 7),
+      identity: {
+        peerId: "22222222-2222-4222-8222-222222222222",
+        name: "capability-honesty",
+      },
+      jobs: test.jobs,
+    });
+    try {
+      const address = await server.start();
+      const response = await fetch(
+        `http://127.0.0.1:${address.port}/.well-known/agent-card.json`,
+      );
+      const card = (await response.json()) as { skills: Array<{ id: string }> };
+      const advertised = card.skills.map((skill) => skill.id);
+      expect(advertised).toContain("process.list");
+      for (const skill of EXECUTION_SKILLS) {
+        expect(advertised).not.toContain(skill);
+      }
+    } finally {
+      await server.stop();
+      await test.close();
+    }
   });
 
   it("T10 process.list requires a job manager and exposes only the reduced job shape", async () => {

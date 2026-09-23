@@ -32,11 +32,12 @@ describe("mesh.peers capability summaries", () => {
     // capabilities a caller routes on (issue #3).
     await expect(
       advertised(
-        "mesh.peers,session.list,process.spawn,session.steer,mesh.handoff",
+        "mesh.peers,session.list,process.list,process.spawn,session.steer,mesh.handoff",
       ),
     ).resolves.toEqual([
       "mesh.peers",
       "session.list",
+      "process.list",
       "process.spawn",
       "session.steer",
       "mesh.handoff",

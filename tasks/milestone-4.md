@@ -155,6 +155,25 @@ in `docs/two-machine-proof.md` under "M4 - dashboard control".
   refusal rendering. No browser test was added this milestone, deliberately;
   the DOM was exercised by hand and the milestone does not claim more.
 
+### Post-milestone audit fixes (2026-09-23)
+
+Four issues filed against the M4 result were fixed after it was pushed:
+
+- **#1 (P0).** The dashboard token was a reusable bearer over plaintext LAN HTTP,
+  printed in the URL, and M4 had just made it an execution grant. ADR 0014 now
+  requires a confidential request (TLS or loopback) for the four execution
+  routes, takes the token out of the URL and the normal log, and adds the
+  documented `--allow-insecure-execution` override. The transport tests refuse a
+  replayed captured request and assert no agent is contacted.
+- **#2.** A pairing completed against a running agent was ignored until restart,
+  because the server read `control-credentials.json` once. The auth path now
+  retries after a failed verification when the file's mtime changed.
+- **#3.** `mesh.peers` filtered a remote peer's advertised caps through the
+  local ungated skill list, deleting `process.spawn`, `session.steer` and
+  `mesh.handoff` from the PeerSummary that ADR 0010 routing depends on.
+- **#4.** README advertised a PR overview that does not exist; the bullet now
+  says sessions and projects and "Someday" records the deferred integration.
+
 ## Exit criteria
 
 - An operator can start a session on a paired agent from the dashboard, steer it,

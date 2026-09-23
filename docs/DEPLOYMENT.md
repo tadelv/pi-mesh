@@ -85,6 +85,79 @@ A `LaunchAgent` is enough for a user-session agent. There is no cgroup
 equivalent, so a hard kill of the agent leaves tool commands behind exactly as on
 Linux; keep the process supervised rather than killing it outright.
 
+`~/Library/LaunchAgents/net.tadel.pi-mesh-agent.plist`:
+
+```xml
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>net.tadel.pi-mesh-agent</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/opt/homebrew/bin/node</string>
+    <string>/Users/vid/development/repos/pi-mesh/packages/agent/dist/cli.js</string>
+    <string>start</string>
+    <!-- The explicit control id, NOT a bare --allow-execution: bare means "*"
+         (any paired control plane). See ADR 0013 decision 3. -->
+    <string>--allow-execution=4903a35d-815f-4a2c-9eaf-f5af5593e394</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>/Users/vid/development/repos/pi-mesh</string>
+  <!-- Load-bearing. launchd's PATH is /usr/bin:/bin:/usr/sbin:/sbin, which has
+       neither node nor pi. With --allow-execution a missing `pi` is a startup
+       FAILURE, not a degraded mode: resolvePiBinary() runs before the listener,
+       so the agent exits rather than refusing execution at request time. -->
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>/Users/vid/.pi-mesh/agent.log</string>
+  <key>StandardErrorPath</key><string>/Users/vid/.pi-mesh/agent.err.log</string>
+</dict>
+</plist>
+```
+
+```sh
+launchctl bootstrap gui/$UID ~/Library/LaunchAgents/net.tadel.pi-mesh-agent.plist  # load and start
+launchctl kickstart -k gui/$UID/net.tadel.pi-mesh-agent                           # restart
+launchctl bootout gui/$UID/net.tadel.pi-mesh-agent                                # stop
+```
+
+`kickstart -k` is what makes a rebuild take effect: the file on disk is the code,
+and the process is restarted onto it.
+
+### Manually, without a supervisor
+
+`start` runs in the foreground and shuts down on `SIGINT`/`SIGTERM`, and it writes
+no pidfile - so nothing can find it for you, which is why there is no `stop`
+command. The supervised paths above are the supported way; a pidfile would be a
+second source of truth that can outlive the process it names. When you run it by
+hand anyway:
+
+```sh
+pgrep -f 'agent/dist/cli[.]js start'        # find it
+kill <pid>                                  # SIGTERM: stops mDNS and the listener
+cd ~/development/repos/pi-mesh
+nohup node packages/agent/dist/cli.js start \
+  --allow-execution=4903a35d-815f-4a2c-9eaf-f5af5593e394 \
+  > ~/.pi-mesh/agent.log 2>&1 &
+```
+
+Two traps, both observed while doing exactly this:
+
+- **`--allow-execution` with no value means `*`** - any paired control plane, not
+the one this machine is paired with. Pass the id. A bare flag looks harmless and
+widens the grant to every control plane that has ever completed a pairing.
+- **`pgrep -f` matches your own shell** when your command line contains the
+pattern, which it does precisely while you are starting the agent, because the
+start command *is* the pattern. It reports two pids; check with `ps` before
+killing. The `[.]` above stops `pkill` from matching the pattern's own text, not
+from matching a real command containing `cli.js start`.
+
 ### Windows
 
 Not supported. The swarm-key permission model relies on POSIX file modes, which

@@ -72,6 +72,29 @@ you do not know yet.
   `env -u PI_MESH_PI_BINARY PATH=<dir containing only node> node \
   node_modules/.pnpm/vitest@*/node_modules/vitest/vitest.mjs run <file>`.
 
+- **Verifying against a machine that is still running the previous commit produces
+  failures that look like product defects.** Measured twice in one session, both
+  while checking newly committed work on the Pi: a `stream` died with
+  `Peer … is unreachable` because the Pi had not been rebuilt since the
+  live-streaming commit, and a restart "failed" with `MODULE_NOT_FOUND` because the
+  command ran without `cd ~/pi-mesh`. Neither was a bug in the change under test.
+  Before believing a hardware check: `git pull && pnpm -r build`, restart the agent,
+  and read its log (`/tmp/<name>.log`). The log is what separates "the feature is
+  broken" from "the feature is not there yet" - and in the second case, from "the
+  command was wrong".
+- **A real-Pi test can hang instead of failing when the machine has the binary but
+  not the credentials.** Measured: the live-streaming real-Pi clause had no model
+  credentials under a fresh `HOME`, so it hung for the full 90 s timeout and the
+  child wrote a template `auth.json` and `models-store.json` into `HOME` - a suite
+  that is supposed to create no files created three. A real-Pi clause must guard on
+  the credentials as well as the binary, so it *skips* where it cannot run.
+- **A test may read a pipe that is not ordered against the response it just got.**
+  Measured: `session.steer`'s T6 asserted the fixture's stderr record immediately
+  after the acknowledgement arrived on stdout. It passed five times out of five on a
+  laptop and failed on CI with `expected [] to have a length of 1`. Wait for the
+  record with a bound rather than sleeping a fixed interval - "long enough" is a
+  property of the machine that ran it, and a fixed sleep just moves the flake.
+
 ## Node / runtime
 
 - **`response.writeHead`/`end` on a destroyed socket does not throw and does not

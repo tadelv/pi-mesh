@@ -60,6 +60,55 @@ collaboration.
   process never started. Both need a positive observation (a settled rejected
   task; a process table before and after that is genuinely non-empty before).
 
+## Outcome
+
+`mesh.handoff` (M3-1) is **done and verified on hardware**, and this section is
+what M3-2 should read before starting.
+
+- Implemented in `9703bb5`; the CI race it exposed in `3081d31`; the hardware
+transcript in `docs/two-machine-proof.md` (`913569a`).
+- A handoff from the Mac started a real session on the Pi, which did the work and
+  reported it - and the report is verifiable, because the commits it listed are the
+  ones pushed from the Mac minutes earlier.
+- The prompt the real session received carried the task *and* the context under the
+  heading ADR 0010 pins, read back with `session.read`.
+- A rejection settles `TASK_STATE_REJECTED` with no JSON-RPC error and starts
+  nothing (0 `pi` processes before and after).
+- A gate-closed machine drops `mesh.handoff` and `process.spawn` from the card
+  together and answers `-32102` for both.
+- Verified by breaking four things and confirming each break fails the clause
+  naming it: neutering the gate (clause 3), dropping the project `cwd` (clause 5),
+  reporting a rejection as `TASK_STATE_WORKING` (clauses 2, 4, 6), and dropping the
+  context from the prompt (clause 1).
+- **Not proven on hardware:** `deadline_ms` expiry, and the containment refusal for
+  an escaping `project`. Both are covered by tests with mutation evidence, and
+  neither should be described as verified on a real machine until it is.
+
+### M3-2 - the control-plane vertical slice (write an ADR first)
+
+`@pi-mesh/control-plane` exists as a stub. This issue asks for ONE narrow
+end-to-end path - dashboard, SQLite and pairing - rather than three layers built
+side by side, with the loopback listener arriving as the first real consumer of
+ADR 0006 decision 3. Nothing about its shape is frozen yet, so **open an ADR before
+writing code.** The constraint that will bite is the no-cloud rule in AGENTS.md:
+any control-plane feature that assumes outbound internet is out of scope, and the
+mesh must keep working with the control plane absent (constraint 1).
+
+### M3-3 - packaging
+
+`@pi-mesh/agent` is `"private": true` while `README.md` gives install
+instructions. Either publish it or make the README honest. Do not leave the two
+disagreeing, and do not publish as a side effect of another change.
+
+### M3-4 - `docs/DEPLOYMENT.md`
+
+Still a placeholder. It must carry the systemd unit with `KillMode=control-group`
+and explain why: a hard-killed agent leaves tool commands behind on Linux as well
+as macOS, because Pi's bash tool `setsid()`s each command out of the process group
+the agent signals (measured; see the ADR 0008 amendment and `docs/GOTCHAS.md`). It
+must also say plainly that the workspace root is an accident guard rather than
+isolation.
+
 ## Exit criteria
 
 - A member can hand a bounded task to a peer that opted in, watch it work, and

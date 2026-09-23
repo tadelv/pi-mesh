@@ -311,11 +311,23 @@ export function createControlServer(
               controlId: store.controlId(),
               ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
             };
+            // One sequence number per agent per sync, taken BEFORE the card is
+            // fetched, so every path below - including a card that never arrives
+            // and a listing that fails - is ordered against the others. Without
+            // this an older sync that failed would erase the mark a newer sync
+            // had just established, and the label would say "cached" about rows
+            // that are exactly the agent's list.
+            const sequence = ++jobsListingSeq;
+            const superseded = (): boolean =>
+              (jobsListingApplied.get(agent.peer_id) ?? 0) > sequence;
             const card = await fetchAgentCard(target, callOptions);
-            if (card === undefined) agentCaps.delete(agent.peer_id);
-            else agentCaps.set(agent.peer_id, card.skills);
+            if (card === undefined) {
+              agentCaps.delete(agent.peer_id);
+              if (!superseded()) jobsSyncedAt.delete(agent.peer_id);
+            } else {
+              agentCaps.set(agent.peer_id, card.skills);
+            }
             if (card?.skills.includes("process.list")) {
-              const sequence = ++jobsListingSeq;
               const writesAtStart = jobsWrites.get(agent.peer_id) ?? 0;
               try {
                 const result = await callAgent<{
@@ -334,9 +346,7 @@ export function createControlServer(
                 // freshness claim that a newer listing established.
                 const overtakenByWrite =
                   (jobsWrites.get(agent.peer_id) ?? 0) !== writesAtStart;
-                const overtakenByListing =
-                  (jobsListingApplied.get(agent.peer_id) ?? 0) > sequence;
-                if (!overtakenByWrite && !overtakenByListing) {
+                if (!overtakenByWrite && !superseded()) {
                   store.replaceJobs(
                     agent.peer_id,
                     result.jobs.map((job) => ({
@@ -352,9 +362,13 @@ export function createControlServer(
                   jobsSyncedAt.set(agent.peer_id, (options.now ?? Date.now)());
                 }
               } catch {
-                jobsSyncedAt.delete(agent.peer_id);
+                // A failure may withdraw the claim only if nothing newer has
+                // already established one. The rows themselves are untouched.
+                if (!superseded()) jobsSyncedAt.delete(agent.peer_id);
               }
-            } else {
+            } else if (!superseded()) {
+              // This agent cannot report jobs, so whatever is cached is not a
+              // mirror of anything - unless a newer listing just made it one.
               jobsSyncedAt.delete(agent.peer_id);
             }
             try {

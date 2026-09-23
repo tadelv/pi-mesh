@@ -47,6 +47,11 @@ async function setup(
   options: {
     jobsFor?: (index: number) => Job[];
     gates?: Array<Promise<void>>;
+    /** Indices of process.list calls that fail, and of card fetches that do. */
+    failListings?: number[];
+    failCards?: number[];
+    /** Holds the Nth card fetch open, so it can complete after a later sync. */
+    cardGates?: Array<Promise<void>>;
   } = {},
 ) {
   const store = new ControlStore(":memory:");
@@ -62,7 +67,17 @@ async function setup(
     paired_at: "now",
   });
   let listing = 0;
+  let cards = 0;
   const arrived: Array<() => void> = [];
+  const cardArrived: Array<() => void> = [];
+  const cardWaiters: Array<Promise<void>> = [];
+  /** Create this BEFORE starting the sync it belongs to. */
+  const waitForCard = (index: number): Promise<void> => {
+    cardWaiters[index] ??= new Promise<void>((resolve) => {
+      cardArrived[index] = resolve;
+    });
+    return cardWaiters[index];
+  };
   const started: Array<Promise<void>> = [];
   /** Create this BEFORE starting the sync it belongs to, or the signal is missed. */
   const waitForListing = (index: number): Promise<void> => {
@@ -77,6 +92,14 @@ async function setup(
     port: 0,
     fetch: async (input: string | URL | Request, init?: RequestInit) => {
       if ((init?.method ?? "GET") === "GET") {
+        const cardIndex = cards++;
+        cardArrived[cardIndex]?.();
+        if (options.cardGates?.[cardIndex] !== undefined) {
+          await options.cardGates[cardIndex];
+        }
+        if (options.failCards?.includes(cardIndex)) {
+          return new Response(null, { status: 500 });
+        }
         return new Response(
           JSON.stringify({
             name: "agent",
@@ -92,6 +115,9 @@ async function setup(
           const index = listing++;
           arrived[index]?.();
           if (options.gates?.[index] !== undefined) await options.gates[index];
+          if (options.failListings?.includes(index)) {
+            return new Response(null, { status: 500 });
+          }
           const jobs = (
             options.jobsFor ?? (() => [{ job_id: "job-1", state: "running" }])
           )(index);
@@ -128,7 +154,7 @@ async function setup(
   const address = await control.start();
   const base = `http://127.0.0.1:${address.port}`;
   const headers = { "content-type": "application/json", "X-Pi-Mesh-Ui": token };
-  return { store, base, headers, waitForListing };
+  return { store, base, headers, waitForListing, waitForCard };
 }
 
 async function state(base: string, headers: Record<string, string>) {
@@ -236,4 +262,58 @@ it("applies concurrent listings in order, not by completion", async () => {
   const after = await state(base, headers);
   expect(after.jobs.map((job) => job.job_id)).toEqual(["from-second"]);
   expect(after.agents[0]!.jobs_synced_at).not.toBeNull();
+});
+
+it("does not let an older failed listing erase a newer listing's freshness", async () => {
+  // Listing 0 is held open and will FAIL. Listing 1 completes first and applies,
+  // claiming freshness. The older failure must not withdraw that claim: the rows
+  // are still exactly what the agent reported.
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { base, headers, waitForListing } = await setup({
+    gates: [gate],
+    failListings: [0],
+    jobsFor: (index) =>
+      index === 0 ? [] : [{ job_id: "from-second", state: "running" }],
+  });
+  const firstListed = waitForListing(0);
+  const first = sync(base, headers);
+  await firstListed;
+  // Started only once the first listing is in flight, so its sequence is newer.
+  const second = sync(base, headers);
+  expect((await second).status).toBe(200);
+  expect((await state(base, headers)).agents[0]!.jobs_synced_at).not.toBeNull();
+
+  release();
+  expect((await first).status).toBe(200);
+  const after = await state(base, headers);
+  expect(after.agents[0]!.jobs_synced_at).not.toBeNull();
+  expect(after.jobs.map((job) => job.job_id)).toEqual(["from-second"]);
+});
+
+it("does not let an older failed card fetch erase a newer listing's freshness", async () => {
+  // The same ordering rule must cover a failure BEFORE any listing starts. The
+  // first sync's card fetch is held open and then fails; the second sync starts
+  // later, lists, and claims freshness. The older failure must not withdraw it.
+  let release!: () => void;
+  const cardGate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { base, headers, waitForCard } = await setup({
+    cardGates: [cardGate],
+    failCards: [0],
+  });
+  const firstCard = waitForCard(0);
+  const first = sync(base, headers);
+  await firstCard;
+
+  const second = sync(base, headers);
+  expect((await second).status).toBe(200);
+  expect((await state(base, headers)).agents[0]!.jobs_synced_at).not.toBeNull();
+
+  release();
+  expect((await first).status).toBe(200);
+  expect((await state(base, headers)).agents[0]!.jobs_synced_at).not.toBeNull();
 });

@@ -14,12 +14,14 @@ const { DatabaseSync } = createRequire(import.meta.url)(
 /**
  * Rows kept per agent in the jobs mirror.
  *
- * 64 is not arbitrary: it is the agent's own retention limit
- * (DEFAULT_MAX_RETAINED_JOBS in packages/agent/src/jobs.ts). A smaller bound made
- * the control plane silently drop jobs the agent still reported, so "from the
- * agent" listed fewer rows than the agent had. Matching it means the mirror never
- * discards a row the agent would answer with. Total capacity is therefore 64 per
- * paired agent, and the agent - which bounds itself - is the authority.
+ * 64 is the agent's DEFAULT retention limit (DEFAULT_MAX_RETAINED_JOBS in
+ * packages/agent/src/jobs.ts), and it bounds the rows THIS control plane writes.
+ * A smaller bound made the control plane silently drop jobs the agent still
+ * reported, so "from the agent" listed fewer rows than the agent had. An agent
+ * configured with a larger maxRetainedJobs can report more, and replaceJobs
+ * stores what it is told: a mirror is never truncated silently, and a later
+ * trimming write withdraws the freshness claim rather than leaving a short list
+ * labelled current.
  */
 const MAX_JOBS_PER_AGENT = 64;
 

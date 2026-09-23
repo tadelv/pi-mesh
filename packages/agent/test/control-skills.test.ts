@@ -310,10 +310,17 @@ describe("process and session control skills", () => {
       },
     };
     for (const skill of EXECUTION_SKILLS) {
+      // Registered, so the refusal below cannot be the registry's own "Skill is
+      // not supported" - which is ALSO -32004, and would let an unregistered
+      // skill satisfy this test without ever needing a manager.
+      expect(skills.has(skill), `${skill} must be registered`).toBe(true);
       await expect(
         skills.invoke(skill, inputs[skill]),
         `${skill} must need a job manager`,
-      ).rejects.toMatchObject({ code: -32004 });
+      ).rejects.toMatchObject({
+        code: -32004,
+        message: expect.stringContaining("requires a job manager"),
+      });
     }
   });
 

@@ -95,7 +95,15 @@ export async function routeIntent(
           },
         }),
   };
-  const answers = await systemOne({ text, ...context }, questions, options);
+  // Only the candidates actually being judged go into the state. Sending the
+  // whole fleet blew TypeSafe's token budget (measured: 400
+  // max_tokens_exceeded with 435 sessions), which the option cap alone did not
+  // fix because the state, not the choices, was the cost.
+  const answers = await systemOne(
+    { text, devices, sessions },
+    questions,
+    options,
+  );
   if (answers === undefined) return undefined;
   const actionAnswer = answers.action;
   if (actionAnswer === undefined || actionAnswer.type !== "choice")

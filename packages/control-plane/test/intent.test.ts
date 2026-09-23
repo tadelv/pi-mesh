@@ -146,6 +146,7 @@ describe("intent routing", () => {
       })),
     };
     const captured = new Map<string, JevQuestion>();
+    let capturedState: { sessions?: unknown[] } | undefined;
     const answers = {
       ...baseAnswers,
       action: choice("open_session", 0.9),
@@ -153,8 +154,10 @@ describe("intent routing", () => {
     };
     const fetchStub = (async (_url: unknown, init?: RequestInit) => {
       const body = JSON.parse(String(init?.body)) as {
+        state: { sessions?: unknown[] };
         questions: Record<string, JevQuestion>;
       };
+      capturedState = body.state;
       for (const [key, question] of Object.entries(body.questions))
         captured.set(key, question);
       return new Response(JSON.stringify({ answers }), { status: 200 });
@@ -171,6 +174,9 @@ describe("intent routing", () => {
       sessionQuestion?.type === "choice" ? sessionQuestion.criteria : {};
     expect(Object.keys(criteria)).toHaveLength(MAX_INTENT_SESSIONS);
     expect(Object.keys(criteria).length).toBeLessThanOrEqual(255);
+    // The state must be trimmed too: sending all 300 sessions blew TypeSafe's
+    // token budget (400 max_tokens_exceeded) even after the option cap.
+    expect(capturedState?.sessions).toHaveLength(MAX_INTENT_SESSIONS);
     expect(result).toEqual({
       action: "open_session",
       confidence: 0.9,

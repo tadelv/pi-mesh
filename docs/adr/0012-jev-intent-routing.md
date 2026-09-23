@@ -57,10 +57,13 @@ a Choice over the actions, a Noul per candidate device that the sentence names,
 and a Noul per candidate session. Candidate values come from the control
 plane's own store, so the model selects from strings the code can then copy
 verbatim — it never invents an id. **The session candidates are capped at the 50
-most recently updated.** That is a hard protocol requirement, not a cost tweak:
-TypeSafe rejects a Choice with more than 255 options (measured: 300 options →
-HTTP 400 "Too many choices"), and the first real fleet held 435 sessions, which
-took the whole route down until the cap existed.
+most recently updated, and the request's `state` carries only those candidates,
+not the whole fleet.** Both are hard protocol requirements rather than cost
+tweaks: TypeSafe rejects a Choice with more than 255 options (measured: 300
+options → HTTP 400 "Too many choices"), and it rejects an oversized request
+(measured: 435 sessions as `state` → HTTP 400 `max_tokens_exceeded`, which the
+option cap alone did not fix because the state was the cost). The first real
+fleet held 435 sessions and took the whole route down until both existed.
 
 ### 3. Code owns the threshold and the argument fill
 

@@ -126,6 +126,92 @@ describe("control server", () => {
     expect(all.hasEarlier).toBe(false);
   });
 
+  it("keeps the default session response bounded when the cache exceeds the maximum tail", async () => {
+    const { base, store, token } = await setup();
+    store.upsertAgent({
+      peer_id: "agent-x",
+      name: "Agent X",
+      host: "127.0.0.1",
+      port: 1,
+      credential: Buffer.alloc(32, 3).toString("base64"),
+      paired_at: "now",
+    });
+    store.upsertEvents(
+      "agent-x",
+      "session-x",
+      Array.from({ length: 1200 }, (_, i) => ({
+        entryId: `entry-${i}`,
+        type: "message",
+        timestamp: new Date(i * 1000).toISOString(),
+        data: { index: i },
+      })),
+    );
+    const response = await fetch(`${base}/api/sessions/agent-x/session-x`, {
+      headers: { "X-Pi-Mesh-Ui": token },
+    });
+    const tail = (await response.json()) as {
+      events: Array<{ entry_id: string }>;
+      hasEarlier: boolean;
+      total: number;
+    };
+    expect(
+      tail.events,
+      "default response bound clause: return only the newest 200 even above the maximum tail",
+    ).toHaveLength(200);
+    expect(tail.events[0]!.entry_id).toBe("entry-1000");
+    expect(tail.events.at(-1)!.entry_id).toBe("entry-1199");
+    expect(tail).toMatchObject({ hasEarlier: true, total: 1200 });
+  });
+
+  it("pages backward without duplicating or dropping entries at page boundaries", async () => {
+    const { base, store, token } = await setup();
+    store.upsertAgent({
+      peer_id: "agent-x",
+      name: "Agent X",
+      host: "127.0.0.1",
+      port: 1,
+      credential: Buffer.alloc(32, 3).toString("base64"),
+      paired_at: "now",
+    });
+    store.upsertEvents(
+      "agent-x",
+      "session-x",
+      Array.from({ length: 450 }, (_, i) => ({
+        entryId: `entry-${i}`,
+        type: "message",
+        timestamp: new Date(i * 1000).toISOString(),
+        data: { index: i },
+      })),
+    );
+    const headers = { "X-Pi-Mesh-Ui": token };
+    const newest = (await (
+      await fetch(`${base}/api/sessions/agent-x/session-x`, { headers })
+    ).json()) as { events: Array<{ entry_id: string }>; hasEarlier: boolean };
+    const middle = (await (
+      await fetch(`${base}/api/sessions/agent-x/session-x?before=entry-250`, {
+        headers,
+      })
+    ).json()) as { events: Array<{ entry_id: string }>; hasEarlier: boolean };
+    const oldest = (await (
+      await fetch(`${base}/api/sessions/agent-x/session-x?before=entry-50`, {
+        headers,
+      })
+    ).json()) as { events: Array<{ entry_id: string }>; hasEarlier: boolean };
+
+    expect(newest.events).toHaveLength(200);
+    expect(newest.hasEarlier).toBe(true);
+    expect(middle.events).toHaveLength(200);
+    expect(middle.hasEarlier).toBe(true);
+    expect(oldest.events).toHaveLength(50);
+    expect(oldest.hasEarlier).toBe(false);
+    expect(
+      [...oldest.events, ...middle.events, ...newest.events].map(
+        (event) => event.entry_id,
+      ),
+      "page join clause: all cached entries appear exactly once in original order",
+    ).toEqual(Array.from({ length: 450 }, (_, i) => `entry-${i}`));
+  });
+
   it("requires dashboard token for API state", async () => {
     const { base, token } = await setup();
     const unauthorized = await fetch(`${base}/api/state`);

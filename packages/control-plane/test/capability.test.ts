@@ -3,7 +3,12 @@
 import { afterEach, expect, it } from "vitest";
 import { createAgentServer } from "../../agent/src/server.js";
 import { parseSpawnPolicy } from "../../agent/src/spawn-policy.js";
-import { ControlStore, createControlServer, dashboard } from "../src/index.js";
+import {
+  agentControls,
+  ControlStore,
+  createControlServer,
+  dashboard,
+} from "../src/index.js";
 
 const controlId = "33333333-3333-4333-8333-333333333333";
 const credential = Buffer.alloc(32, 7).toString("base64");
@@ -63,7 +68,6 @@ it("reports advertised capabilities and unknown for an unreachable agent", async
     credential,
     paired_at: "now",
   });
-  store.setAgentCaps("unreachable-agent", ["session.list"], "previous-sync");
 
   const headers = { "X-Pi-Mesh-Ui": "dashboard-token" };
   const sync = await fetch(`http://127.0.0.1:${controlAddress.port}/api/sync`, {
@@ -76,7 +80,16 @@ it("reports advertised capabilities and unknown for an unreachable agent", async
     { headers },
   );
   const state = (await stateResponse.json()) as {
-    agents: Array<{ peer_id: string; skills: string[] | null }>;
+    agents: Array<{
+      peer_id: string;
+      skills: string[] | null;
+      controls: {
+        spawn: boolean;
+        steer: boolean;
+        stop: boolean;
+        abort: boolean;
+      };
+    }>;
   };
   const skills = Object.fromEntries(
     state.agents.map((agent) => [agent.peer_id, agent.skills]),
@@ -87,7 +100,35 @@ it("reports advertised capabilities and unknown for an unreachable agent", async
   ).toBe(false);
   expect(skills[agents[1]!]!.includes("process.spawn")).toBe(true);
   expect(skills["unreachable-agent"]).toBeNull();
-  expect(store.agentCaps()["unreachable-agent"]).toEqual(["session.list"]);
+  const controls = Object.fromEntries(
+    state.agents.map((agent) => [agent.peer_id, agent.controls]),
+  );
+  expect(controls[agents[0]!]).toMatchObject({ spawn: false });
+  expect(controls[agents[1]!]).toEqual({
+    spawn: true,
+    steer: true,
+    stop: true,
+    abort: true,
+  });
+  expect(controls["unreachable-agent"]).toEqual({
+    spawn: false,
+    steer: false,
+    stop: false,
+    abort: false,
+  });
+
+  const restarted = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  resources.push(restarted);
+  const restartedAddress = await restarted.start();
+  const restartedState = (await (
+    await fetch(`http://127.0.0.1:${restartedAddress.port}/api/state`, {
+      headers,
+    })
+  ).json()) as { agents: Array<{ peer_id: string; skills: string[] | null }> };
+  expect(
+    restartedState.agents.find((agent) => agent.peer_id === agents[1]!)!.skills,
+    "restart clause: capabilities must be unknown until this server instance syncs",
+  ).toBeNull();
 
   // A freshly paired agent has no cached capabilities and has not been reached.
   // It must read as unknown, not capable: offering execution for an agent we
@@ -111,6 +152,41 @@ it("reports advertised capabilities and unknown for an unreachable agent", async
     freshState.agents.find((agent) => agent.peer_id === "fresh-agent")!.skills,
     "never-synced clause: an agent with no fetched capabilities must be unknown, not capable",
   ).toBeNull();
+});
+
+it("derives each control from its advertised skill", () => {
+  expect(
+    agentControls([
+      "process.spawn",
+      "session.steer",
+      "process.stop",
+      "session.abort",
+    ]),
+  ).toEqual({
+    spawn: true,
+    steer: true,
+    stop: true,
+    abort: true,
+  });
+  expect(agentControls(["process.spawn", "process.stop"])).toEqual({
+    spawn: true,
+    steer: false,
+    stop: true,
+    abort: false,
+  });
+  expect(agentControls(null)).toEqual({
+    spawn: false,
+    steer: false,
+    stop: false,
+    abort: false,
+  });
+});
+
+it("guards every dashboard control by its corresponding capability", () => {
+  for (const action of ["spawn", "steer", "stop", "abort"])
+    expect(dashboard, `dashboard controls.${action} guard clause`).toContain(
+      `controls.${action}`,
+    );
 });
 
 it("does not load external resources or disclose credentials in the dashboard", () => {

@@ -47,7 +47,7 @@ export const dashboard = `<!doctype html>
     for (const agent of state.agents.filter(a => !agentFilter || a.peer_id === agentFilter)) {
       const section = document.createElement('article'); root.append(section);
       node('h2', agent.name, section); node('small', agent.host + ':' + agent.port, section);
-      const capable = Array.isArray(agent.skills) && agent.skills.includes('process.spawn');
+      const capable = agent.controls.spawn;
       if(capable) node('p', 'Execution enabled on this agent.', section);
       else {
         const status = agent.skills === null ? 'Execution capability unknown (agent has not been reached).' : 'Execution is not advertised by this agent.';
@@ -80,13 +80,17 @@ export const dashboard = `<!doctype html>
       if(jobs.length === 0) node('p', 'No cached jobs.', section);
       for(const job of jobs) {
         const item = document.createElement('div'); section.append(item);
-        node('p', job.project+' — '+job.job_id+' ('+job.state+')', item);
+        node('p', job.project+' — '+job.job_id+' ('+job.state+' (last known))', item);
         const key = agent.peer_id+':'+job.job_id;
-        const stop = node('button', 'Stop', item);
-        stop.addEventListener('click', () => void act(agent, 'stop', {job_id:job.job_id}, key+':stop'));
-        const abort = node('button', 'Abort', item);
-        abort.addEventListener('click', () => void act(agent, 'abort', {job_id:job.job_id}, key+':abort'));
-        if(job.state === 'running' && agent.skills?.includes('session.steer')) {
+        if(agent.controls.stop) {
+          const stop = node('button', 'Stop', item);
+          stop.addEventListener('click', () => void act(agent, 'stop', {job_id:job.job_id}, key+':stop'));
+        }
+        if(agent.controls.abort) {
+          const abort = node('button', 'Abort', item);
+          abort.addEventListener('click', () => void act(agent, 'abort', {job_id:job.job_id}, key+':abort'));
+        }
+        if(job.state === 'running' && agent.controls.steer) {
           const steer = document.createElement('form'); item.append(steer);
           const messageLabel = node('label', 'Steer ', steer); const message = node('input', undefined, messageLabel); message.required = true;
           node('button', 'Send', steer);

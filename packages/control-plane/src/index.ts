@@ -5,6 +5,7 @@ export const PACKAGE_NAME = "@pi-mesh/control-plane";
 export * from "./mdns.js";
 export * from "./cli.js";
 export * from "./db.js";
+export * from "./controls.js";
 export * from "./pairing.js";
 export * from "./client.js";
 export * from "./jev.js";

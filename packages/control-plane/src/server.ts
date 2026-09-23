@@ -19,6 +19,7 @@ import {
   fetchSessionList,
 } from "./client.js";
 import { dashboard } from "./dashboard.js";
+import { agentControls } from "./controls.js";
 import { routeIntent } from "./intent.js";
 
 const MAX_BODY_BYTES = 64 * 1024;
@@ -55,7 +56,7 @@ export function createControlServer(
       ...(options.now === undefined ? {} : { now: options.now }),
     });
   let actualPort = port;
-  const unreachableAgentCaps = new Set<string>();
+  const agentCaps = new Map<string, string[]>();
 
   const server = createServer((request, response) => {
     void route(request, response).catch(() =>
@@ -142,19 +143,20 @@ export function createControlServer(
         return;
       }
       if (request.method === "GET" && url.pathname === "/api/state") {
-        const caps = store.agentCaps();
         json(response, 200, {
           control: { id: store.controlId(), name },
           // Never the credential. It is a signing key for the agents; a
           // dashboard-token holder is an operator, not a mesh member, and must
           // not be able to read sessions by calling agents directly. The
           // browser needs the identity and address, nothing more.
-          agents: store.listAgents().map((agent) => ({
-            ...publicAgent(agent),
-            skills: unreachableAgentCaps.has(agent.peer_id)
-              ? null
-              : (caps[agent.peer_id] ?? null),
-          })),
+          agents: store.listAgents().map((agent) => {
+            const skills = agentCaps.get(agent.peer_id) ?? null;
+            return {
+              ...publicAgent(agent),
+              skills,
+              controls: agentControls(skills),
+            };
+          }),
           sessions: store.listSessions(),
           jobs: store.listJobs(),
           intent_enabled: Boolean(
@@ -210,6 +212,21 @@ export function createControlServer(
               ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
             },
           );
+          if (
+            action === "spawn" &&
+            (typeof result.job_id !== "string" ||
+              typeof result.session_id !== "string" ||
+              (typeof result.pid !== "number" && result.pid !== null))
+          ) {
+            throw new AgentUnreachableError(
+              "Agent returned a malformed process.spawn result",
+            );
+          }
+          if (action === "stop" && typeof result.state !== "string") {
+            throw new AgentUnreachableError(
+              "Agent returned a malformed process.stop result",
+            );
+          }
           if (action === "spawn") {
             const spawn = body as { project: string };
             store.upsertJob({
@@ -276,15 +293,8 @@ export function createControlServer(
               ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
             };
             const card = await fetchAgentCard(target, callOptions);
-            if (card === undefined) unreachableAgentCaps.add(agent.peer_id);
-            else {
-              unreachableAgentCaps.delete(agent.peer_id);
-              store.setAgentCaps(
-                agent.peer_id,
-                card.skills,
-                new Date((options.now ?? Date.now)()).toISOString(),
-              );
-            }
+            if (card === undefined) agentCaps.delete(agent.peer_id);
+            else agentCaps.set(agent.peer_id, card.skills);
             try {
               const sessions = await fetchSessionList(target, callOptions);
               store.upsertSessions(

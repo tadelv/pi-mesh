@@ -60,7 +60,13 @@ function jobsFixture(existing = false) {
   return { manager, effects, starts: () => sequence };
 }
 
-async function setup(options: { enabled?: boolean; existing?: boolean } = {}) {
+async function setup(
+  options: {
+    enabled?: boolean;
+    existing?: boolean;
+    malformedSpawn?: boolean;
+  } = {},
+) {
   const store = new ControlStore(":memory:");
   resources.push({ stop: async () => undefined, close: () => store.close() });
   store.setMeta("control_id", controlId);
@@ -73,7 +79,26 @@ async function setup(options: { enabled?: boolean; existing?: boolean } = {}) {
     credential,
     paired_at: "now",
   });
-  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const control = createControlServer({
+    store,
+    host: "127.0.0.1",
+    port: 0,
+    ...(options.malformedSpawn
+      ? {
+          fetch: async (_input: string | URL | Request, init?: RequestInit) => {
+            const request = JSON.parse(String(init?.body)) as { id: string };
+            return new Response(
+              JSON.stringify({
+                jsonrpc: "2.0",
+                id: request.id,
+                result: { message: { parts: [{ data: { result: {} } }] } },
+              }),
+              { status: 200, headers: { "content-type": "application/json" } },
+            );
+          },
+        }
+      : {}),
+  });
   resources.push(control);
   const controlAddress = await control.start();
   const jobFixture = jobsFixture(options.existing);
@@ -151,6 +176,20 @@ it("spawns through the gated agent skill and publishes the cached job", async ()
     }),
   );
   expect(store.listJobs(agentId)).toHaveLength(1);
+});
+
+it("maps malformed successful spawn results to agent_unreachable without caching a job", async () => {
+  const { store, post } = await setup({ malformedSpawn: true });
+  const response = await post("spawn", {
+    project: "synthetic-project",
+    prompt: "Say hello",
+  });
+  expect(response.status).toBe(502);
+  expect(response.body).toMatchObject({
+    error: "agent_unreachable",
+    message: expect.any(String),
+  });
+  expect(store.listJobs(agentId)).toEqual([]);
 });
 
 it("passes a closed-gate refusal through without starting or caching a job", async () => {

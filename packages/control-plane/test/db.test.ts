@@ -37,10 +37,11 @@ describe("ControlStore", () => {
       assert.deepEqual(store.listJobs(agent.peer_id).map(j => ({ ...j })), [{ ...job, state:'stopping' }]);
       store.setJobState(agent.peer_id, 'j1', 'exited');
       assert.equal(store.listJobs(agent.peer_id)[0].state, 'exited');
-      store.setAgentCaps(agent.peer_id, ['session.list', 'process.spawn'], 'first');
-      assert.deepEqual(store.agentCaps(), { 'agent-1': ['session.list', 'process.spawn'] });
-      store.setAgentCaps(agent.peer_id, ['session.list'], 'second');
-      assert.deepEqual(store.agentCaps(), { 'agent-1': ['session.list'] });
+      const retentionStore = new ControlStore(':memory:');
+      for (let i = 0; i < 60; i++) retentionStore.upsertJob({ ...job, job_id:'j'+String(i).padStart(2, '0'), created_at:new Date(i * 1000).toISOString() });
+      assert.equal(retentionStore.listJobs().length, 50, 'jobs retention clause: keep at most 50 rows overall');
+      assert.deepEqual(retentionStore.listJobs().map(j => j.job_id).sort(), Array.from({length:50}, (_, i) => 'j'+String(i + 10).padStart(2, '0')), 'jobs retention clause: retain the newest 50 by created_at');
+      retentionStore.close();
       store.upsertEvents(agent.peer_id, 's1', [{ entryId:'e1', type:'message', timestamp:'t', data:{ n:1 } }]);
       assert.deepEqual(store.listEvents(agent.peer_id, 's1').map(e => [e.entry_id,e.data]), [['e1','{"n":1}']]);
       // Re-caching the same entry id must not rewrite it: session entries are

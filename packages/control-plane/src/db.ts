@@ -66,8 +66,8 @@ export class ControlStore {
       CREATE TABLE IF NOT EXISTS sessions (agent_id TEXT NOT NULL, session_id TEXT NOT NULL, project TEXT NOT NULL, name TEXT, started_at TEXT NOT NULL, updated_at TEXT NOT NULL, synced_at TEXT NOT NULL, PRIMARY KEY(agent_id, session_id)) STRICT;
       CREATE TABLE IF NOT EXISTS events (agent_id TEXT NOT NULL, session_id TEXT NOT NULL, entry_id TEXT NOT NULL, type TEXT NOT NULL, timestamp TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(agent_id, session_id, entry_id)) STRICT;
       CREATE TABLE IF NOT EXISTS jobs (agent_id TEXT NOT NULL, job_id TEXT NOT NULL, session_id TEXT, pid INTEGER, project TEXT NOT NULL, created_at TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(agent_id, job_id)) STRICT;
-      CREATE TABLE IF NOT EXISTS agent_caps (peer_id TEXT PRIMARY KEY, skills TEXT NOT NULL, fetched_at TEXT NOT NULL) STRICT;
     `);
+    this.db.exec("DROP TABLE IF EXISTS agent_caps");
     if (path !== ":memory:") {
       // chmod after opening also tightens permissions on a pre-existing database.
       chmodSync(path, 0o600);
@@ -202,6 +202,9 @@ export class ControlStore {
         job.created_at,
         job.state,
       );
+    this.db.exec(
+      "DELETE FROM jobs WHERE rowid IN (SELECT rowid FROM jobs ORDER BY created_at DESC LIMIT -1 OFFSET 50)",
+    );
   }
 
   listJobs(agentId?: string): CachedJob[] {
@@ -218,27 +221,6 @@ export class ControlStore {
     this.db
       .prepare("UPDATE jobs SET state = ? WHERE agent_id = ? AND job_id = ?")
       .run(state, agentId, jobId);
-  }
-
-  setAgentCaps(
-    peerId: string,
-    skills: readonly string[],
-    fetchedAt: string,
-  ): void {
-    this.db
-      .prepare(
-        "INSERT INTO agent_caps(peer_id,skills,fetched_at) VALUES(?,?,?) ON CONFLICT(peer_id) DO UPDATE SET skills=excluded.skills,fetched_at=excluded.fetched_at",
-      )
-      .run(peerId, JSON.stringify(skills), fetchedAt);
-  }
-
-  agentCaps(): Record<string, string[]> {
-    const rows = this.db
-      .prepare("SELECT peer_id, skills FROM agent_caps ORDER BY peer_id")
-      .all() as unknown as Array<{ peer_id: string; skills: string }>;
-    return Object.fromEntries(
-      rows.map((row) => [row.peer_id, JSON.parse(row.skills) as string[]]),
-    );
   }
 
   listEvents(agentId: string, sessionId: string): CachedEvent[] {

@@ -20,7 +20,7 @@ The dashboard borrows Pi's exported session transcript grammar; the stylesheet s
 ## Typography and layout
 
 - Monospace stack: `ui-monospace`, Cascadia Code, Source Code Pro, Menlo, Consolas, DejaVu Sans Mono.
-- Transcript base: 12px / 18px. Timestamps and navigation metadata: 10px. Tabular numerals for times and IDs.
+- Transcript base: 12px / 18px. Transcript entry metadata, including timestamps: 10px; session-list metadata inherits the 12px base. Tabular numerals for times and IDs.
 - A 320px fixed, independently scrolling session sidebar sits beside the main scrolling column; below 760px the sidebar becomes a shallow top region.
 - Session text measures at most 75ch and wraps long tokens and paths.
 

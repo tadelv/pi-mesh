@@ -215,6 +215,11 @@ you do not know yet.
 - **Always `ssh host bash -s <<'EOF'` for remote scripts.** A POSIX loop dies
   with `fish: Expected end of the statement` under a fish login shell.
 - **`timeout` is not present on macOS by default.**
+- **The dashboard's inline script is a TypeScript template literal**, so a
+  backtick or `${` inside it - even in a comment - ends the string. Measured: a
+  comment marking up `owner` with backticks produced
+  `src/dashboard.ts(358,7): error TS1005: ',' expected.` from `tsc`, `eslint`
+  and `prettier` alike, each pointing at the comment rather than the cause.
 - **`cd X && node ... &` backgrounds the whole chain**; `cd` on its own line.
 
 ## Process / delegation

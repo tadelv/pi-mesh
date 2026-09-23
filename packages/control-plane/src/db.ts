@@ -213,6 +213,34 @@ export class ControlStore {
     );
   }
 
+  replaceJobs(
+    agentId: string,
+    rows: readonly Omit<CachedJob, "agent_id">[],
+  ): void {
+    const statement = this.db.prepare(
+      "INSERT INTO jobs(agent_id,job_id,session_id,pid,project,created_at,state) VALUES(?,?,?,?,?,?,?)",
+    );
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare("DELETE FROM jobs WHERE agent_id = ?").run(agentId);
+      for (const row of rows) {
+        statement.run(
+          agentId,
+          row.job_id,
+          row.session_id,
+          row.pid,
+          row.project,
+          row.created_at,
+          row.state,
+        );
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   listJobs(agentId?: string): CachedJob[] {
     const sql =
       "SELECT agent_id, job_id, session_id, pid, project, created_at, state FROM jobs";

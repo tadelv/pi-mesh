@@ -65,6 +65,7 @@ export function createControlServer(
     });
   let actualPort = port;
   const agentCaps = new Map<string, string[]>();
+  const jobsSyncedAt = new Map<string, number>();
   const confidential = options.confidential ?? isConfidential;
   const allowInsecure = options.allowInsecureExecution === true;
 
@@ -112,6 +113,7 @@ export function createControlServer(
               ...publicAgent(agent),
               skills,
               controls: agentControls(skills),
+              jobs_synced_at: jobsSyncedAt.get(agent.peer_id) ?? null,
             };
           }),
           sessions: store.listSessions(),
@@ -286,6 +288,36 @@ export function createControlServer(
             const card = await fetchAgentCard(target, callOptions);
             if (card === undefined) agentCaps.delete(agent.peer_id);
             else agentCaps.set(agent.peer_id, card.skills);
+            if (card?.skills.includes("process.list")) {
+              try {
+                const result = await callAgent<{
+                  jobs: Array<{
+                    job_id: string;
+                    session_id: string | null;
+                    pid: number | null;
+                    project: string;
+                    state: string;
+                    started_at: string;
+                  }>;
+                }>(target, "process.list", {}, callOptions);
+                store.replaceJobs(
+                  agent.peer_id,
+                  result.jobs.map((job) => ({
+                    job_id: job.job_id,
+                    session_id: job.session_id,
+                    pid: job.pid,
+                    project: job.project,
+                    created_at: job.started_at,
+                    state: job.state,
+                  })),
+                );
+                jobsSyncedAt.set(agent.peer_id, (options.now ?? Date.now)());
+              } catch {
+                jobsSyncedAt.delete(agent.peer_id);
+              }
+            } else {
+              jobsSyncedAt.delete(agent.peer_id);
+            }
             try {
               const sessions = await fetchSessionList(target, callOptions);
               store.upsertSessions(

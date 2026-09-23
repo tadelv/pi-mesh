@@ -116,8 +116,10 @@ matter:
   default bridge network the advertisement stays inside the container's network,
   and agents must pair with `--control-host <host>:7331` instead.
 - **The data volume.** `PI_MESH_DB` holds the control id, the dashboard token,
-  the per-agent credentials and the session cache. Losing it loses the pairings
-  (re-pair to recover) and rotates the dashboard token. Back it up:
+  the per-agent credentials, session cache and mirrored jobs. Losing it loses the
+  pairings (re-pair to recover) and rotates the dashboard token. Job freshness is
+  intentionally in memory, so a restart displays the retained rows as cached
+  until the next successful sync. Back it up:
   `/var/lib/pi-mesh` in the compose file.
 
 `docker compose -f examples/docker-compose.yml up -d`, then read the dashboard

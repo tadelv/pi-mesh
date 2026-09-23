@@ -9,6 +9,7 @@ export type Skill =
   | "session.steer"
   | "session.abort"
   | "process.spawn"
+  | "process.list"
   | "process.stop"
   | "mesh.peers"
   | "mesh.handoff";

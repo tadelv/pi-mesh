@@ -72,8 +72,10 @@ On each device you want it to see:
     pi-mesh-agent pair <pairing-token>
 
 The agent pairs once, stores its credential, and from then on the dashboard can
-list that device's sessions and cache them for offline viewing. The control
-plane never holds the swarm key, and the mesh works with it absent.
+list that device's sessions and cache them for offline viewing. Jobs are mirrored
+from each agent's `process.list` during sync; the dashboard marks cached jobs as
+last known whenever that agent has not synced during this control-plane process.
+The control plane never holds the swarm key, and the mesh works with it absent.
 
 `docker compose -f examples/docker-compose.yml up -d` runs the control plane and
 serves the dashboard on `http://localhost:7331`; `docker logs` prints the URL and
@@ -104,7 +106,7 @@ See [docs/SECURITY.md](docs/SECURITY.md).
 
 Pre-alpha. The **agent** is a working LAN mesh for reading, streaming and
 (review-gated) executing Pi sessions across machines. The **control plane**
-serves a dashboard that pairs with agents, caches sessions in SQLite, and can
+serves a dashboard that pairs with agents, caches sessions and mirrors agent jobs in SQLite, and can
 start, steer, stop and abort sessions on agents that have opted in; it depends
 on no agent to start. Milestone 4 is
 implemented and verified across three machines (a Portainer-managed control

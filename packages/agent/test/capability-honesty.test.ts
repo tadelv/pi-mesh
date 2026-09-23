@@ -16,14 +16,23 @@ import type { BonjourLike, BonjourPublishOptions } from "../src/index.js";
 const PI_BINARY = fileURLToPath(
   new URL("./fixtures/pi-binary", import.meta.url),
 );
-const EXECUTION_SKILLS = ["process.spawn", "session.steer"];
-const UNGATED_SKILLS = [
+const EXECUTION_SKILLS = [
+  "process.spawn",
+  "session.steer",
+  "mesh.handoff",
+].sort();
+const ALWAYS_SKILLS = [
   "mesh.peers",
-  "process.stop",
-  "session.abort",
   "session.list",
   "session.read",
   "session.stream",
+].sort();
+const GATE_OPEN_SKILLS = [
+  ...ALWAYS_SKILLS,
+  "process.list",
+  "process.stop",
+  "session.abort",
+  ...EXECUTION_SKILLS,
 ].sort();
 
 class PublishedBonjour implements BonjourLike {
@@ -182,13 +191,13 @@ describe("M2-8 capability honesty", () => {
     ).toEqual([]);
   });
 
-  it("clause 2: with the gate ENABLED, the HTTP agent card contains both gated skills", () => {
+  it("clause 2: with the gate ENABLED, the HTTP agent card contains all gated skills", () => {
     expect(
       enabled.cardSkills.filter((skill) => EXECUTION_SKILLS.includes(skill)),
     ).toEqual(EXECUTION_SKILLS);
   });
 
-  it("clause 3: DNS-SD caps omits both gated skills when DISABLED and contains both when ENABLED", () => {
+  it("clause 3: DNS-SD caps omits all gated skills when DISABLED and contains all when ENABLED", () => {
     expect(
       disabled.capsSkills.filter((skill) => EXECUTION_SKILLS.includes(skill)),
     ).toEqual([]);
@@ -202,9 +211,14 @@ describe("M2-8 capability honesty", () => {
     expect(enabled.cardSkills).toEqual(enabled.capsSkills);
   });
 
-  it("clause 5: DISABLED still advertises the exact ungated skill set and non-empty caps", () => {
-    expect(disabled.cardSkills).toEqual(UNGATED_SKILLS);
-    expect(disabled.capsSkills).toEqual(UNGATED_SKILLS);
+  it("clause 5: DISABLED advertises exactly the four always-served skills", () => {
+    expect(disabled.cardSkills).toEqual(ALWAYS_SKILLS);
+    expect(disabled.capsSkills).toEqual(ALWAYS_SKILLS);
     expect(disabled.capsSkills.length).toBeGreaterThan(0);
+  });
+
+  it("clause 6: ENABLED advertises all ten job and execution skills", () => {
+    expect(enabled.cardSkills).toEqual(GATE_OPEN_SKILLS);
+    expect(enabled.capsSkills).toEqual(GATE_OPEN_SKILLS);
   });
 });

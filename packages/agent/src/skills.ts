@@ -17,11 +17,15 @@ export interface SkillRegistryOptions extends SessionStoreOptions {
   workspaceRoot?: string;
 }
 
-const SERVED_SKILLS: readonly Skill[] = [
+export const ALWAYS_SERVED_SKILLS: readonly Skill[] = [
   "mesh.peers",
   "session.list",
   "session.read",
   "session.stream",
+];
+
+export const JOB_SKILLS: readonly Skill[] = [
+  "process.list",
   "process.stop",
   "session.abort",
 ];
@@ -29,9 +33,7 @@ const SERVED_SKILLS: readonly Skill[] = [
 /**
  * Skills that start or steer work, and so require the local spawn policy
  * (ADR 0008). This is the one list the dispatch gate reads, so a skill cannot
- * be named in the gate and forgotten here. It does NOT yet drive advertising -
- * `servedSkills()` returns `SERVED_SKILLS` directly, and M2-8 is what makes the
- * advertised set depend on the gate.
+ * be named in the gate and forgotten here.
  *
  * Stopping skills are deliberately absent: reducing activity is never the more
  * dangerous operation, so `session.abort` and `process.stop` are allowed to any
@@ -55,7 +57,11 @@ export const EXECUTION_SKILLS: readonly Skill[] = [
  * gate-closed peer still omits them because it never advertised them (issue #3).
  * Unknown future strings stay rejected until the protocol understands them.
  */
-const KNOWN_SKILLS: readonly string[] = [...SERVED_SKILLS, ...EXECUTION_SKILLS];
+const KNOWN_SKILLS: readonly string[] = [
+  ...ALWAYS_SERVED_SKILLS,
+  ...JOB_SKILLS,
+  ...EXECUTION_SKILLS,
+];
 
 function objectInput(value: unknown): SkillInput {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -336,6 +342,31 @@ export function createSkillRegistry(
     }
   });
 
+  skills.register("process.list", async () => {
+    if (options.jobs === undefined) {
+      throw new PiMeshError(-32004, "process.list requires a job manager");
+    }
+    return {
+      jobs: options.jobs.list().map((job) => ({
+        job_id: job.id,
+        session_id: job.sessionId ?? null,
+        pid: job.pid ?? null,
+        project: job.project,
+        cwd: job.cwd,
+        state: job.state,
+        started_at: new Date(job.startedAt).toISOString(),
+        ...(job.exit === undefined
+          ? {}
+          : {
+              exit: {
+                code: job.exit.code,
+                signal: job.exit.signal,
+                at: job.exit.at,
+              },
+            }),
+      })),
+    };
+  });
   skills.register("process.stop", async (input) => {
     const jobId = requiredString(input, "job_id");
     if (options.jobs === undefined) {
@@ -393,12 +424,14 @@ export function createSkillRegistry(
   return skills;
 }
 
-export function servedSkills(spawnEnabled = false): Skill[] {
+/**
+ * cli.ts builds the JobManager iff spawnPolicy.enabled, which is why every
+ * call site passes that flag.
+ */
+export function servedSkills(jobManagerAvailable = false): Skill[] {
   return [
-    ...SERVED_SKILLS,
-    ...(spawnEnabled
-      ? (["process.spawn", "session.steer", "mesh.handoff"] as Skill[])
-      : []),
+    ...ALWAYS_SERVED_SKILLS,
+    ...(jobManagerAvailable ? [...JOB_SKILLS, ...EXECUTION_SKILLS] : []),
   ];
 }
 

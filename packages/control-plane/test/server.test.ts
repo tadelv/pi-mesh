@@ -9,6 +9,7 @@ import {
   ControlStore,
   PairingService,
   createControlServer,
+  dashboard,
 } from "../src/index.js";
 
 const servers: Array<{ stop(): Promise<void> }> = [];
@@ -45,6 +46,17 @@ async function setup(serverOptions: { fetch?: typeof fetch } = {}) {
 }
 
 describe("control server", () => {
+  it("shows whether each jobs view is fresh and marks cached rows only", () => {
+    expect(dashboard).toContain("Jobs — from the agent (");
+    expect(dashboard).toContain("Jobs — cached, not synced from this agent");
+    expect(dashboard).toContain("job.state+(jobsFresh ? '' : ' (last known)')");
+    // Source-level because this project claims no browser test: there is no DOM
+    // harness, so the render function cannot be called. The predicate has to
+    // treat a MISSING jobs_synced_at as not-fresh - `!== null` calls it fresh
+    // and renders "NaNs ago" - and that is only assertable here.
+    expect(dashboard).toContain("typeof agent.jobs_synced_at === 'number'");
+  });
+
   it("requires dashboard token for API state", async () => {
     const { base, token } = await setup();
     const unauthorized = await fetch(`${base}/api/state`);

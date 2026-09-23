@@ -82,11 +82,16 @@ export const dashboard = `<!doctype html>
         showMessage(section, agent.peer_id+':spawn');
       }
       const jobs = state.jobs.filter(job => job.agent_id === agent.peer_id);
-      node('h3', 'Jobs', section);
-      if(jobs.length === 0) node('p', 'No cached jobs.', section);
+      const jobsFresh = typeof agent.jobs_synced_at === 'number';
+      const jobsAge = jobsFresh ? Date.now() - agent.jobs_synced_at : 0;
+      const jobsAgeLabel = jobsAge < 60_000
+        ? Math.floor(jobsAge / 1000)+'s ago'
+        : Math.floor(jobsAge / 60_000)+'m ago';
+      node('h3', jobsFresh ? 'Jobs — from the agent ('+jobsAgeLabel+')' : 'Jobs — cached, not synced from this agent', section);
+      if(jobs.length === 0) node('p', jobsFresh ? 'No jobs reported by the agent.' : 'No cached jobs.', section);
       for(const job of jobs) {
         const item = document.createElement('div'); section.append(item);
-        node('p', job.project+' — '+job.job_id+' ('+job.state+' (last known))', item);
+        node('p', job.project+' — '+job.job_id+' ('+job.state+(jobsFresh ? '' : ' (last known)')+')', item);
         const key = agent.peer_id+':'+job.job_id;
         if(agent.controls.stop) {
           const stop = node('button', 'Stop', item);

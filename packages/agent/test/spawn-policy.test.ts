@@ -381,10 +381,18 @@ describe("capability honesty and the gate", () => {
     // and the mDNS caps value both derive from servedSkills(), so asserting
     // that they agree would compare a value to itself. M2-8 carries the real
     // assertion (the gate's effect on the advertised set).
-    const served = servedSkills();
-    for (const skill of EXECUTION_SKILLS) {
+    const served = servedSkills(false);
+    expect(served).toHaveLength(4);
+    for (const skill of [
+      ...EXECUTION_SKILLS,
+      "process.list",
+      "process.stop",
+      "session.abort",
+    ] as const) {
       expect(served).not.toContain(skill);
     }
+    expect(servedSkills(true)).toHaveLength(10);
+    expect(servedSkills(true)).toContain("process.list");
   });
 
   it("refuses to register an executing skill without the gate, and only that", () => {

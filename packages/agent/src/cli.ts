@@ -288,7 +288,7 @@ async function start(
           version: process.env.PI_MESH_VERSION ?? "0.0.0",
           agentVersion: process.env.PI_MESH_AGENT_VERSION ?? "0.0.0",
           port: listening.port,
-          capabilities: servedSkills(spawnPolicy.enabled),
+          capabilities: servedSkills(jobs !== undefined),
         },
         {
           profile,
@@ -702,7 +702,7 @@ async function doctor(io: CliIO): Promise<number> {
       ...(credentialsError === undefined ? {} : { credentialsError }),
       ...(swarmKeyError === undefined ? {} : { swarmKeyError }),
       configuredPort: configuredPort(),
-      servedSkills: servedSkills(),
+      servedSkills: servedSkills(spawnPolicy.enabled),
       piBinary: piBinary ?? null,
       workspaceRoot: workspaceRoot ?? null,
       ...(spawnResolutionError === undefined ? {} : { spawnResolutionError }),

@@ -60,10 +60,16 @@ with extra skills.
 The control plane is a separate package, not a privileged channel: it reaches an
 agent over the same authenticated listener a peer does, with a credential it
 earned by pairing rather than the swarm key (ADR 0011). It serves a web
-dashboard on its advertised port, keeps paired agents and cached sessions in
-SQLite (`node:sqlite`), and requires a dashboard token on its `/api/*` routes
-because that port is LAN-facing. With the control plane absent, every agent
-behaves exactly as it does with one present; the pairing and cache are additive.
+dashboard on its advertised port, keeps paired agents, cached sessions and
+mirrored job rows in SQLite (`node:sqlite`), and requires a dashboard token on
+its `/api/*` routes because that port is LAN-facing. With the control plane
+absent, every agent behaves exactly as it does with one present; the pairing and
+cache are additive.
+
+The jobs table is refreshed from each agent's `process.list` during sync. It is a
+persistent mirror, but its freshness timestamp is process-local: after a control-
+plane restart the dashboard marks those rows as cached until the next successful
+agent sync.
 
 Pairing is `pi-mesh-agent pair <token>` against a token the control plane
 mints; the token is never transmitted and both sides derive the credential over

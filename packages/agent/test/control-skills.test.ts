@@ -257,11 +257,57 @@ describe("process and session control skills", () => {
     }
   });
 
-  it("T8 advertises ungated controls and only gated steering when enabled", () => {
-    expect(servedSkills(false)).toContain("process.stop");
-    expect(servedSkills(false)).toContain("session.abort");
+  it("T8 advertises only always-served skills without a job manager", () => {
+    expect(servedSkills(false)).toHaveLength(4);
+    for (const skill of ["process.list", "process.stop", "session.abort"]) {
+      expect(servedSkills(false)).not.toContain(skill);
+      expect(servedSkills(true)).toContain(skill);
+    }
     expect(servedSkills(false)).not.toContain("session.steer");
     expect(servedSkills(true)).toContain("session.steer");
+    expect(servedSkills(true)).toHaveLength(10);
+  });
+
+  it("T10 process.list requires a job manager and exposes only the reduced job shape", async () => {
+    const missingManager = createSkillRegistry();
+    await expect(
+      missingManager.invoke("process.list", {}),
+    ).rejects.toMatchObject({
+      code: -32004,
+      message: "process.list requires a job manager",
+    });
+
+    const test = await setup("abort");
+    try {
+      const started = await test.record();
+      const registry = createSkillRegistry({ jobs: test.jobs });
+      const result = (await registry.invoke("process.list", {})) as {
+        jobs: Array<Record<string, unknown>>;
+      };
+      expect(result.jobs).toHaveLength(1);
+      expect(result.jobs[0]).toMatchObject({
+        job_id: started.id,
+        session_id: expect.any(String),
+        pid: expect.any(Number),
+        project: "project",
+        cwd: expect.stringContaining("/workspace/project"),
+        state: "running",
+        started_at: expect.any(String),
+      });
+      expect(Object.keys(result.jobs[0]!)).toEqual([
+        "job_id",
+        "session_id",
+        "pid",
+        "project",
+        "cwd",
+        "state",
+        "started_at",
+      ]);
+      expect(result.jobs[0]).not.toHaveProperty("argv");
+      expect(result.jobs[0]).not.toHaveProperty("peerId");
+    } finally {
+      await test.close();
+    }
   });
 
   it("T9 registers all three controls in the real registry", async () => {

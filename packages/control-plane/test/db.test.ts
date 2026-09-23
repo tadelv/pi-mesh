@@ -34,8 +34,12 @@ describe("ControlStore", () => {
       store.upsertJob({ ...job, state:'stopping' });
       assert.deepEqual(store.listJobs(agent.peer_id).map(j => ({ ...j })), [{ ...job, state:'stopping' }]);
       store.upsertJob({ ...job, agent_id:'agent-2', job_id:'j2' });
-      assert.deepEqual(store.listJobs(agent.peer_id).map(j => ({ ...j })), [{ ...job, state:'stopping' }]);
-      store.setJobState(agent.peer_id, 'j1', 'exited');
+      store.replaceJobs(agent.peer_id, [{ ...job, job_id:'j3', state:'running' }]);
+      assert.deepEqual(store.listJobs(agent.peer_id).map(j => ({ ...j })), [{ ...job, job_id:'j3' }], 'replaceJobs clause: replace this agent rows without touching other agents');
+      assert.deepEqual(store.listJobs('agent-2').map(j => j.job_id), ['j2']);
+      assert.throws(() => store.replaceJobs(agent.peer_id, [{ ...job, job_id:'bad' }, { ...job, job_id:'bad' }]));
+      assert.deepEqual(store.listJobs(agent.peer_id).map(j => j.job_id), ['j3'], 'replaceJobs transaction clause: failed insert preserves prior rows');
+      store.setJobState(agent.peer_id, 'j3', 'exited');
       assert.equal(store.listJobs(agent.peer_id)[0].state, 'exited');
       const retentionStore = new ControlStore(':memory:');
       for (let i = 0; i < 60; i++) retentionStore.upsertJob({ ...job, job_id:'j'+String(i).padStart(2, '0'), created_at:new Date(i * 1000).toISOString() });

@@ -45,6 +45,7 @@ Each skill also declares its **exposure**:
 | `session.list` | peer | `{}` | `{ sessions: SessionSummary[] }` |
 | `session.read` | peer | `{ id, since? }` | `{ entries: Event[] }` |
 | `session.stream` | peer | `{ id }` | SSE stream of `Event` |
+| `process.list` | peer (ungated; job manager required) | `{}` | `{ jobs: [{ job_id, session_id (nullable), pid (nullable), project, cwd, state, started_at, exit? }] }` |
 | `session.steer` | **gated on the spawn policy** | `{ job_id (mesh id, not PID), message }` | Pi RPC response; refused with `-32102` when closed |
 | `session.abort` | peer (ungated) | `{ job_id (mesh id, not PID) }` | Pi RPC response |
 | `process.spawn` | **gated on the spawn policy** | `{ project, cwd?, prompt }` | `{ job_id, pid, session_id }` |

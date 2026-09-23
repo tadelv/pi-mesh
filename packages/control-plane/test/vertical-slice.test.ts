@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import { afterEach, expect, it } from "vitest";
 import { getSessionStorageDir } from "../../agent/src/sessions.js";
 import { pair } from "../../agent/src/pair.js";
+import { JobManager } from "../../agent/src/jobs.js";
+import { parseSpawnPolicy } from "../../agent/src/spawn-policy.js";
 import { createAgentServer } from "../../agent/src/server.js";
 import {
   ControlStore,
@@ -83,7 +85,24 @@ it("pairs a real agent, syncs its session, and retains the cache offline", async
     join(rootPath, "../../agent/test/fixtures/pi-0.85.1-session-v3.jsonl"),
     join(directory, "fixture.jsonl"),
   );
+  const jobs = new JobManager({
+    spawnJob: (_spec, report) => ({
+      pid: 1234,
+      argv: ["pi", "--mode", "rpc"],
+      stdioClosed: true,
+      command: async () => ({ type: "get_state", success: true }),
+      close: async () => report.exited({ code: 0, signal: null }),
+    }),
+  });
+  const sourceJob = jobs.start({
+    peerId: identity.peerId,
+    project: "/synthetic/job-project",
+    cwd: "/synthetic/job-project",
+    name: "sync-test",
+  });
   const agent = createAgentServer({
+    jobs,
+    spawnPolicy: parseSpawnPolicy(undefined, "*"),
     port,
     host: "127.0.0.1",
     swarmKey: Buffer.from("fixture swarm key"),
@@ -108,6 +127,52 @@ it("pairs a real agent, syncs its session, and retains the cache offline", async
   });
   const [session] = store.listSessions(identity.peerId);
   expect(session).toBeDefined();
+  const firstStateResponse = await fetch(
+    `http://127.0.0.1:${address.port}/api/state`,
+    { headers },
+  );
+  const firstState = (await firstStateResponse.json()) as {
+    agents: Array<{ peer_id: string; jobs_synced_at: number | null }>;
+    jobs: Array<{ agent_id: string; job_id: string; project: string }>;
+  };
+  expect(
+    firstState.agents.find((entry) => entry.peer_id === identity.peerId)
+      ?.jobs_synced_at,
+    "process.list sync freshness clause: successful job sync records its timestamp",
+  ).toEqual(expect.any(Number));
+  expect(
+    firstState.jobs,
+    "process.list mirror clause: sync replaces jobs with the agent's rows",
+  ).toContainEqual(
+    expect.objectContaining({
+      agent_id: identity.peerId,
+      job_id: sourceJob.id,
+      project: "/synthetic/job-project",
+    }),
+  );
+  const restartedControl = createControlServer({
+    store,
+    host: "127.0.0.1",
+    port: 0,
+  });
+  controls.push(restartedControl);
+  const restartedAddress = await restartedControl.start();
+  const restartedState = (await (
+    await fetch(`http://127.0.0.1:${restartedAddress.port}/api/state`, {
+      headers,
+    })
+  ).json()) as {
+    agents: Array<{ peer_id: string; jobs_synced_at: number | null }>;
+    jobs: Array<{ job_id: string }>;
+  };
+  expect(
+    restartedState.agents.find((entry) => entry.peer_id === identity.peerId)
+      ?.jobs_synced_at,
+    "restart clause: job freshness is not persisted",
+  ).toBeNull();
+  expect(restartedState.jobs.map((job) => job.job_id)).toContain(sourceJob.id);
+  await restartedControl.stop();
+  controls.pop();
   const state = await fetch(`http://127.0.0.1:${address.port}/api/state`, {
     headers,
   });
@@ -126,8 +191,44 @@ it("pairs a real agent, syncs its session, and retains the cache offline", async
   expect(liveData.stale).toBe(false);
   expect(liveData.events.length).toBeGreaterThan(0);
 
+  const listJobs = jobs.list.bind(jobs);
+  jobs.list = () => {
+    throw new Error("synthetic process.list failure");
+  };
+  const jobsFailureSync = await fetch(
+    `http://127.0.0.1:${address.port}/api/sync`,
+    { method: "POST", headers },
+  );
+  expect(
+    jobsFailureSync.status,
+    "jobs failure must not change the sync response status",
+  ).toBe(200);
+  const jobsFailureResult = (await jobsFailureSync.json()) as {
+    results: Array<{ peer_id: string; ok: boolean; count?: number }>;
+  };
+  expect(
+    jobsFailureResult.results,
+    "jobs failure must not change the successful session sync result",
+  ).toContainEqual({ peer_id: identity.peerId, ok: true, count: 1 });
+  jobs.list = listJobs;
+  const jobsFailureState = (await (
+    await fetch(`http://127.0.0.1:${address.port}/api/state`, { headers })
+  ).json()) as {
+    agents: Array<{ peer_id: string; jobs_synced_at: number | null }>;
+    jobs: Array<{ job_id: string }>;
+  };
+  expect(
+    jobsFailureState.agents.find((entry) => entry.peer_id === identity.peerId)
+      ?.jobs_synced_at,
+    "failed process.list call drops only its freshness mark",
+  ).toBeNull();
+  expect(jobsFailureState.jobs.map((job) => job.job_id)).toContain(
+    sourceJob.id,
+  );
+
   await agent.stop();
   agents.pop();
+  await jobs.shutdown();
   const offline = await fetch(`http://127.0.0.1:${address.port}/api/sync`, {
     method: "POST",
     headers,
@@ -141,6 +242,18 @@ it("pairs a real agent, syncs its session, and retains the cache offline", async
   expect(store.listSessions(identity.peerId)).toContainEqual(
     expect.objectContaining({ session_id: session!.session_id }),
   );
+  const staleState = await fetch(`http://127.0.0.1:${address.port}/api/state`, {
+    headers,
+  });
+  const staleData = (await staleState.json()) as {
+    agents: Array<{ peer_id: string; jobs_synced_at: number | null }>;
+    jobs: Array<{ job_id: string }>;
+  };
+  expect(
+    staleData.agents.find((entry) => entry.peer_id === identity.peerId)
+      ?.jobs_synced_at,
+  ).toBeNull();
+  expect(staleData.jobs.map((job) => job.job_id)).toContain(sourceJob.id);
   const cachedRead = await fetch(sessionUrl, { headers });
   const cachedData = (await cachedRead.json()) as {
     events: unknown[];

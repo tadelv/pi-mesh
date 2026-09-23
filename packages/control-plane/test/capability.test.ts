@@ -2,6 +2,7 @@
 
 import { afterEach, expect, it } from "vitest";
 import vm from "node:vm";
+import { JobManager } from "../../agent/src/jobs.js";
 import { createAgentServer } from "../../agent/src/server.js";
 import { parseSpawnPolicy } from "../../agent/src/spawn-policy.js";
 import {
@@ -40,7 +41,16 @@ it("reports advertised capabilities and unknown for an unreachable agent", async
       { id: "closed-agent", enabled: false },
       { id: "open-agent", enabled: true },
     ].map(async ({ id, enabled }) => {
+      const jobs = enabled
+        ? new JobManager({
+            spawnJob: () => {
+              throw new Error("must not spawn");
+            },
+          })
+        : undefined;
+      if (jobs !== undefined) resources.push({ stop: () => jobs.shutdown() });
       const agent = createAgentServer({
+        ...(jobs === undefined ? {} : { jobs }),
         host: "127.0.0.1",
         port: 0,
         swarmKey: Buffer.from("fixture swarm key"),

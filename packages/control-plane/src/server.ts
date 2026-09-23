@@ -212,6 +212,18 @@ export function createControlServer(
               ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
             },
           );
+          // A defined-but-wrong result must not reach the field reads below:
+          // an inner `result: null` would otherwise throw a TypeError and turn
+          // into a 500 instead of the pinned 502.
+          if (
+            result === null ||
+            typeof result !== "object" ||
+            Array.isArray(result)
+          ) {
+            throw new AgentUnreachableError(
+              `Agent returned a malformed ${skill} result`,
+            );
+          }
           if (
             action === "spawn" &&
             (typeof result.job_id !== "string" ||
@@ -222,7 +234,12 @@ export function createControlServer(
               "Agent returned a malformed process.spawn result",
             );
           }
-          if (action === "stop" && typeof result.state !== "string") {
+          if (
+            action === "stop" &&
+            (typeof result.state !== "string" ||
+              typeof result.job_id !== "string" ||
+              (typeof result.pid !== "number" && result.pid !== null))
+          ) {
             throw new AgentUnreachableError(
               "Agent returned a malformed process.stop result",
             );

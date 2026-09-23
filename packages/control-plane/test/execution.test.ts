@@ -65,6 +65,7 @@ async function setup(
     enabled?: boolean;
     existing?: boolean;
     malformedSpawn?: boolean;
+    nullResult?: boolean;
   } = {},
 ) {
   const store = new ControlStore(":memory:");
@@ -83,7 +84,7 @@ async function setup(
     store,
     host: "127.0.0.1",
     port: 0,
-    ...(options.malformedSpawn
+    ...(options.malformedSpawn || options.nullResult
       ? {
           fetch: async (_input: string | URL | Request, init?: RequestInit) => {
             const request = JSON.parse(String(init?.body)) as { id: string };
@@ -91,7 +92,13 @@ async function setup(
               JSON.stringify({
                 jsonrpc: "2.0",
                 id: request.id,
-                result: { message: { parts: [{ data: { result: {} } }] } },
+                result: {
+                  message: {
+                    parts: [
+                      { data: { result: options.nullResult ? null : {} } },
+                    ],
+                  },
+                },
               }),
               { status: 200, headers: { "content-type": "application/json" } },
             );
@@ -190,6 +197,21 @@ it("maps malformed successful spawn results to agent_unreachable without caching
     message: expect.any(String),
   });
   expect(store.listJobs(agentId)).toEqual([]);
+});
+
+it("maps a null agent result to agent_unreachable for spawn and stop", async () => {
+  // A defined-but-null inner result must not reach the field reads: it would
+  // throw a TypeError and surface as a 500 instead of the pinned 502.
+  const { store, post } = await setup({ nullResult: true });
+  const spawn = await post("spawn", {
+    project: "synthetic-project",
+    prompt: "Say hello",
+  });
+  expect(spawn.status).toBe(502);
+  expect(spawn.body).toMatchObject({ error: "agent_unreachable" });
+  expect(store.listJobs(agentId)).toEqual([]);
+  const stop = await post("stop", { job_id: "job-1" });
+  expect(stop.status).toBe(502);
 });
 
 it("passes a closed-gate refusal through without starting or caching a job", async () => {

@@ -68,6 +68,12 @@ export class ControlStore {
       CREATE TABLE IF NOT EXISTS jobs (agent_id TEXT NOT NULL, job_id TEXT NOT NULL, session_id TEXT, pid INTEGER, project TEXT NOT NULL, created_at TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(agent_id, job_id)) STRICT;
     `);
     this.db.exec("DROP TABLE IF EXISTS agent_caps");
+    // Prune on open as well as on write: a database written by an earlier
+    // version can already hold more than the retention limit, and waiting for
+    // the next spawn would leave it unbounded until then.
+    this.db.exec(
+      "DELETE FROM jobs WHERE rowid IN (SELECT rowid FROM jobs ORDER BY created_at DESC LIMIT -1 OFFSET 50)",
+    );
     if (path !== ":memory:") {
       // chmod after opening also tightens permissions on a pre-existing database.
       chmodSync(path, 0o600);

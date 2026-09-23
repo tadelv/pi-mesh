@@ -67,4 +67,31 @@ describe("ControlStore", () => {
       } finally { rmSync(directory, { recursive:true, force:true }); }
     `);
   });
+
+  it("prunes an oversized jobs table when a pre-existing database is opened", () => {
+    runDbCheck(`
+      import assert from 'node:assert/strict';
+      import { mkdtempSync, rmSync } from 'node:fs';
+      import { tmpdir } from 'node:os'; import { join } from 'node:path';
+      import { DatabaseSync } from 'node:sqlite';
+      import { ControlStore } from ${JSON.stringify(resolve("dist/db.js"))};
+      const directory = mkdtempSync(join(tmpdir(), 'pi-mesh-db-overflow-'));
+      const path = join(directory, 'control.sqlite');
+      try {
+        // Seed a database as an earlier version could leave it: more rows than
+        // the retention limit, written without pruning.
+        const raw = new DatabaseSync(path);
+        raw.exec("CREATE TABLE jobs(agent_id TEXT NOT NULL, job_id TEXT NOT NULL, session_id TEXT, pid INTEGER, project TEXT NOT NULL, created_at TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(agent_id, job_id)) STRICT");
+        const insert = raw.prepare("INSERT INTO jobs(agent_id,job_id,session_id,pid,project,created_at,state) VALUES('a',?,'s',1,'p',?,'running')");
+        for (let i = 0; i < 60; i++) insert.run('j'+String(i).padStart(2,'0'), new Date(i * 1000).toISOString());
+        assert.equal(raw.prepare('SELECT count(*) AS n FROM jobs').get().n, 60);
+        raw.close();
+        // Opening it must prune, not wait for the next spawn.
+        const store = new ControlStore(path);
+        assert.equal(store.listJobs().length, 50, 'constructor prune clause: an oversized database is pruned on open');
+        assert.deepEqual(store.listJobs().map(j => j.job_id).sort(), Array.from({length:50}, (_, i) => 'j'+String(i + 10).padStart(2,'0')));
+        store.close();
+      } finally { rmSync(directory, { recursive:true, force:true }); }
+    `);
+  });
 });

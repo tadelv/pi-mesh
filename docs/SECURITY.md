@@ -17,14 +17,14 @@ pi-mesh is POSIX-only for now. Windows is not supported: the swarm key
 permission model relies on POSIX file modes, which Windows reports
 synthetically.
 
-The agent supports two profiles, set via `--profile`:
+The `lan` profile (the default) is the only one implemented: the agent
+advertises via mDNS when a swarm key is present, and accepts inbound peer
+connections.
 
-| Profile | Behavior |
-|---|---|
-| `lan` (default) | Advertise via mDNS if swarm key is present. Accept inbound peer connections. |
-| `public` | Do not advertise. Do not accept inbound. Only connect to peers discovered through a trusted control plane. |
-
-Use `public` on untrusted networks (coffee shops, conferences, hotels).
+`--profile public` is a **documented intent, not a feature** (ADR 0004). It is
+refused today: `start` and the client commands fail with "trusted
+control-plane discovery is not available yet". It is listed under
+[Someday](../README.md#someday) rather than presented as a mode you can use.
 
 ## Swarm key
 
@@ -172,7 +172,9 @@ deliberate disclosure and is the operator's choice.
   signed transcript names the recipient as well as the sender - replay state is
   per process, so a request that did not name its addressee would be a fresh
   nonce at every other member.)
-- Agents accidentally advertising on untrusted networks (public profile).
+- Agents advertising by accident: a machine with no swarm key publishes nothing.
+  (The `public` profile, which would also refuse inbound, is not implemented —
+  see [Someday](../README.md#someday).)
 
 ## What it does not protect against
 

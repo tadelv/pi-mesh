@@ -111,6 +111,21 @@ offline cache against a device that goes away, which is exercised in-process
 only. See [tasks/milestone-3.md](tasks/milestone-3.md) and
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
+## Someday
+
+Things the documents describe or the ADRs decided, but that the code does not
+do. Listed so a design is not read as a capability.
+
+- **`public` network profile** — a laptop on a hostile network (coffee shop,
+  hotel, conference) participating without advertising or accepting inbound,
+  finding peers through a trusted control plane (ADR 0004). Not implemented:
+  `start --profile public` refuses. It needs an authenticated
+  agent→control-plane directory lookup (today the credential only flows
+  control→agent) and an outbound-only `start`, about a day of work. Deferred
+  because the hostile-network case still requires the control plane to be
+  reachable from that network, and this project's real deployments are three
+owned machines on one trusted LAN.
+
 ## License
 
 GPL-3.0-or-later. See [LICENSE](LICENSE).

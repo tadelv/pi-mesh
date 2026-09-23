@@ -276,3 +276,62 @@ The control-plane job cache held exactly the one job it started and moved it to
 **Not shown here:** the spawn confirmation and the inline refusal rendering are DOM
 behaviour. They were exercised by hand in a browser and are **not** covered by an
 automated UI test; the milestone deliberately did not add a browser test.
+
+## ADR 0015 — the jobs list is the agent's, not the control plane's
+
+Verified on the same three machines after deploying the control-plane image built
+from `9056cb9` and restarting both agents onto that commit.
+
+**The advertisement split, visible in the mDNS records.** The gate-closed Mac now
+advertises four skills and the opted-in Pi ten:
+
+    artemis  caps=mesh.peers,session.list,session.read,session.stream
+    devpi    caps=mesh.peers,session.list,session.read,session.stream,
+                    process.list,process.stop,session.abort,
+                    process.spawn,session.steer,mesh.handoff
+
+Before this change the Mac advertised `process.stop` and `session.abort` and
+answered both with `-32004 ... requires a job manager`. It no longer claims what
+it cannot serve, and `/api/state` reports `controls` all false for it, so the
+dashboard offers it no Stop or Abort button.
+
+**The stale row disappeared, which is the whole point.** The control plane's cache
+held one row from the M4 proof — `ea3ef197`, `exited` — long after the agent that
+reported it had been restarted and no longer knew the job. One `/api/sync` later:
+
+    before   cached rows: [('ea3ef197', 'exited')]
+    after    mirrored rows: []
+
+The agent said it had no jobs, so the mirror holds none. The dashboard had been
+presenting that row as a job that existed with only a "(last known)" qualifier.
+
+**A real job, mirrored from the agent.** Spawned through the dashboard route on
+the opted-in machine, then synced:
+
+    POST /api/agents/bf55e82f…/spawn   -> {"ok":true,"result":{"job_id":"843b54da…",
+                                          "pid":26498,"session_id":"01a0cfae…"}}
+    POST /api/sync
+    /api/state  -> devpi jobs_synced_at: 568ms ago
+                   job 843b54da state=running pid=26498 project=m5-jobs-proof
+
+`state`, `pid` and `project` come from the agent's own `process.list` — the rows
+were replaced by its answer, not written by the control plane's spawn. With
+freshness set, the dashboard labels this "from the agent" and omits "(last
+known)".
+
+**Stopping it.** The job did not finish on its own (an interactive Pi session
+waits), so it was stopped through the dashboard route:
+
+    POST /api/agents/bf55e82f…/stop    -> {"ok":true,"result":{"job_id":"843b54da…",
+                                          "state":"exited","pid":26498}}
+    POST /api/sync
+    /api/state  -> job 843b54da state=exited pid=26498
+
+`ps` on the Pi afterwards shows no `pi` session and only the agent process, so the
+job really ended rather than merely being labelled so.
+
+**Not shown here:** the browser rendering of the freshness label. It is asserted
+at source level in `packages/control-plane/test/server.test.ts` because this
+project has no DOM harness; the hand check was that the page reads "Jobs — from
+the agent" with an age for devpi and "Jobs — cached, not synced from this agent"
+for a machine that has never listed.

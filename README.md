@@ -13,7 +13,8 @@ losing visibility into what each instance is doing. pi-mesh gives you:
 
 - **Peer discovery** — find other Pi instances on your LAN automatically.
 - **Direct handoff** — agents pass tasks and context to each other.
-- **Fleet overview** — a web dashboard for sessions and projects.
+- **Fleet overview** — a web dashboard for sessions, projects and the jobs the
+  agents are actually running.
 - **Steering** — attach to any session from the dashboard and redirect it.
 - **Process control** — start and stop Pi sessions on remote devices.
 

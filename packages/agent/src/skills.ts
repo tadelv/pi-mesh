@@ -43,6 +43,20 @@ export const EXECUTION_SKILLS: readonly Skill[] = [
   "mesh.handoff",
 ];
 
+/**
+ * Every skill the protocol defines: the union of the two lists above.
+ *
+ * This, not `SERVED_SKILLS`, is the type guard for a *remote* peer's advertised
+ * `caps`. A peer that has enabled execution advertises `process.spawn`,
+ * `session.steer` and `mesh.handoff`, and `mesh.peers` is a report of what each
+ * peer says it can serve - routing is the caller's job (ADR 0010), so the caller
+ * needs the honest set. Filtering a remote advertisement through the local
+ * ungated list deleted exactly the capabilities a caller routes on, while a
+ * gate-closed peer still omits them because it never advertised them (issue #3).
+ * Unknown future strings stay rejected until the protocol understands them.
+ */
+const KNOWN_SKILLS: readonly string[] = [...SERVED_SKILLS, ...EXECUTION_SKILLS];
+
 function objectInput(value: unknown): SkillInput {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
     throw new PiMeshError(-32602, "Skill input must be an object");
@@ -62,9 +76,7 @@ function peerSummaries(registry: PeerRegistry): PeerSummary[] {
   return registry.peers.map((peer) => {
     const skills = (peer.txt.caps ?? "")
       .split(",")
-      .filter((skill): skill is Skill =>
-        (SERVED_SKILLS as readonly string[]).includes(skill),
-      );
+      .filter((skill): skill is Skill => KNOWN_SKILLS.includes(skill));
     return {
       id: peer.id,
       name: peer.name,

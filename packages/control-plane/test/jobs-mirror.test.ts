@@ -8,6 +8,8 @@ const controlId = "33333333-3333-4333-8333-333333333333";
 const token = "dashboard-token";
 const credential = Buffer.alloc(32, 7).toString("base64");
 
+type Job = { job_id: string; state: string };
+
 const resources: Array<{ stop(): Promise<void>; close?(): void }> = [];
 afterEach(async () => {
   for (const resource of resources.splice(0).reverse()) {
@@ -18,7 +20,9 @@ afterEach(async () => {
 
 function bodyOf(init: RequestInit | undefined): {
   id: string;
-  params?: { message?: { parts?: Array<{ data?: { skill?: string } }> } };
+  params?: {
+    message?: { parts?: Array<{ data?: { skill?: string; input?: Job } }> };
+  };
 } {
   return JSON.parse(String(init?.body)) as ReturnType<typeof bodyOf>;
 }
@@ -35,17 +39,14 @@ function rpc(init: RequestInit | undefined, result: unknown): Response {
 }
 
 /**
- * A control plane talking to a stub agent.
- *
- * `listStarted` resolves once the agent has been asked for its jobs, and
- * `listGate` is awaited before that answer is returned - together they let a test
- * land a write while a listing is in flight, which is the race the freshness
- * guard exists for.
+ * A control plane talking to a stub agent. `jobsFor` answers per listing, and
+ * `gates` holds a listing open until the test releases it - together they let a
+ * test land a write mid-flight, or complete two listings out of order.
  */
 async function setup(
   options: {
-    jobs?: Array<{ job_id: string; state: string }>;
-    listGate?: Promise<void>;
+    jobsFor?: (index: number) => Job[];
+    gates?: Array<Promise<void>>;
   } = {},
 ) {
   const store = new ControlStore(":memory:");
@@ -60,10 +61,16 @@ async function setup(
     credential,
     paired_at: "now",
   });
-  let listSeen!: () => void;
-  const listStarted = new Promise<void>((resolve) => {
-    listSeen = resolve;
-  });
+  let listing = 0;
+  const arrived: Array<() => void> = [];
+  const started: Array<Promise<void>> = [];
+  /** Create this BEFORE starting the sync it belongs to, or the signal is missed. */
+  const waitForListing = (index: number): Promise<void> => {
+    started[index] ??= new Promise<void>((resolve) => {
+      arrived[index] = resolve;
+    });
+    return started[index];
+  };
   const control = createControlServer({
     store,
     host: "127.0.0.1",
@@ -78,20 +85,24 @@ async function setup(
           { status: 200, headers: { "content-type": "application/json" } },
         );
       }
-      switch (bodyOf(init).params?.message?.parts?.[0]?.data?.skill) {
+      const body = bodyOf(init);
+      const skill = body.params?.message?.parts?.[0]?.data?.skill;
+      switch (skill) {
         case "process.list": {
-          listSeen();
-          if (options.listGate !== undefined) await options.listGate;
+          const index = listing++;
+          arrived[index]?.();
+          if (options.gates?.[index] !== undefined) await options.gates[index];
+          const jobs = (
+            options.jobsFor ?? (() => [{ job_id: "job-1", state: "running" }])
+          )(index);
           return rpc(init, {
-            jobs: (options.jobs ?? [{ job_id: "job-1", state: "running" }]).map(
-              (job) => ({
-                ...job,
-                session_id: "session-1",
-                pid: 41,
-                project: "p",
-                started_at: "2026-01-01T00:00:00.000Z",
-              }),
-            ),
+            jobs: jobs.map((job) => ({
+              ...job,
+              session_id: "session-1",
+              pid: 41,
+              project: "p",
+              started_at: "2026-01-01T00:00:00.000Z",
+            })),
           });
         }
         case "session.list":
@@ -102,6 +113,12 @@ async function setup(
             session_id: "session-2",
             pid: 42,
           });
+        case "process.stop":
+          return rpc(init, {
+            job_id: body.params?.message?.parts?.[0]?.data?.input?.job_id,
+            state: "exited",
+            pid: 41,
+          });
         default:
           return rpc(init, {});
       }
@@ -111,7 +128,7 @@ async function setup(
   const address = await control.start();
   const base = `http://127.0.0.1:${address.port}`;
   const headers = { "content-type": "application/json", "X-Pi-Mesh-Ui": token };
-  return { store, base, headers, listStarted };
+  return { store, base, headers, waitForListing };
 }
 
 async function state(base: string, headers: Record<string, string>) {
@@ -122,19 +139,29 @@ async function state(base: string, headers: Record<string, string>) {
   };
 }
 
-it("withdraws the freshness claim once this control plane writes a job itself", async () => {
-  const { base, headers } = await setup();
-  expect(
-    (await fetch(`${base}/api/sync`, { method: "POST", headers })).status,
-  ).toBe(200);
-  expect((await state(base, headers)).agents[0]!.jobs_synced_at).not.toBeNull();
+const sync = (base: string, headers: Record<string, string>) =>
+  fetch(`${base}/api/sync`, { method: "POST", headers });
 
-  const spawned = await fetch(`${base}/api/agents/${agentId}/spawn`, {
+const spawn = (base: string, headers: Record<string, string>) =>
+  fetch(`${base}/api/agents/${agentId}/spawn`, {
     method: "POST",
     headers,
     body: JSON.stringify({ project: "p", prompt: "hi" }),
   });
-  expect(spawned.status).toBe(200);
+
+const stop = (base: string, headers: Record<string, string>, jobId: string) =>
+  fetch(`${base}/api/agents/${agentId}/stop`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({ job_id: jobId }),
+  });
+
+it("withdraws the freshness claim once this control plane writes a job itself", async () => {
+  const { base, headers } = await setup();
+  expect((await sync(base, headers)).status).toBe(200);
+  expect((await state(base, headers)).agents[0]!.jobs_synced_at).not.toBeNull();
+
+  expect((await spawn(base, headers)).status).toBe(200);
   const after = await state(base, headers);
   // The rows for this agent are no longer a verbatim copy of the agent's list,
   // so the label must stop claiming they are.
@@ -142,23 +169,31 @@ it("withdraws the freshness claim once this control plane writes a job itself", 
   expect(after.jobs.map((job) => job.job_id)).toContain("spawned-1");
 });
 
+it("keeps the claim when a stop changed no row", async () => {
+  // A stop for a job this cache has never seen updates nothing, so the mirror is
+  // still exactly what the agent reported. "Only a real write" has to mean it.
+  const { base, headers } = await setup();
+  expect((await sync(base, headers)).status).toBe(200);
+  const stopped = await stop(base, headers, "never-seen");
+  expect(stopped.status).toBe(200);
+  const after = await state(base, headers);
+  expect(after.agents[0]!.jobs_synced_at).not.toBeNull();
+  expect(after.jobs.map((job) => job.job_id)).toEqual(["job-1"]);
+});
+
 it("does not let a stale listing clobber a write that landed mid-flight", async () => {
   let release!: () => void;
   const listGate = new Promise<void>((resolve) => {
     release = resolve;
   });
-  const { base, headers, listStarted } = await setup({
-    listGate,
-    jobs: [{ job_id: "stale-1", state: "running" }],
+  const { base, headers, waitForListing } = await setup({
+    gates: [listGate],
+    jobsFor: () => [{ job_id: "stale-1", state: "running" }],
   });
-  const syncing = fetch(`${base}/api/sync`, { method: "POST", headers });
-  await listStarted;
-  const spawned = await fetch(`${base}/api/agents/${agentId}/spawn`, {
-    method: "POST",
-    headers,
-    body: JSON.stringify({ project: "p", prompt: "hi" }),
-  });
-  expect(spawned.status).toBe(200);
+  const listed = waitForListing(0);
+  const syncing = sync(base, headers);
+  await listed;
+  expect((await spawn(base, headers)).status).toBe(200);
   release();
   expect((await syncing).status).toBe(200);
 
@@ -167,4 +202,38 @@ it("does not let a stale listing clobber a write that landed mid-flight", async 
   expect(after.jobs.map((job) => job.job_id)).toContain("spawned-1");
   expect(after.jobs.map((job) => job.job_id)).not.toContain("stale-1");
   expect(after.agents[0]!.jobs_synced_at).toBeNull();
+});
+
+it("applies concurrent listings in order, not by completion", async () => {
+  // Two syncs in flight: the one that started LATER finishes FIRST and must win.
+  // Comparing wall-clock timestamps let the slower, older answer overwrite it and
+  // still be labelled fresh - which is why the guard is a sequence number.
+  const releases: Array<() => void> = [];
+  const gates = [0, 1].map(
+    () =>
+      new Promise<void>((resolve) => {
+        releases.push(resolve);
+      }),
+  );
+  const { base, headers, waitForListing } = await setup({
+    gates,
+    jobsFor: (index) => [
+      { job_id: index === 0 ? "from-first" : "from-second", state: "running" },
+    ],
+  });
+  const firstListed = waitForListing(0);
+  const first = sync(base, headers);
+  await firstListed;
+  const secondListed = waitForListing(1);
+  const second = sync(base, headers);
+  await secondListed;
+
+  releases[1]!(); // the later listing answers first
+  expect((await second).status).toBe(200);
+  releases[0]!(); // the earlier listing answers afterwards
+  expect((await first).status).toBe(200);
+
+  const after = await state(base, headers);
+  expect(after.jobs.map((job) => job.job_id)).toEqual(["from-second"]);
+  expect(after.agents[0]!.jobs_synced_at).not.toBeNull();
 });

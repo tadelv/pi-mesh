@@ -67,12 +67,16 @@ export function createControlServer(
   const agentCaps = new Map<string, string[]>();
   const jobsSyncedAt = new Map<string, number>();
   /**
-   * When this control plane last wrote a job row itself. A row it wrote is its
-   * own record, not a copy of the agent's list, so freshness has to be dropped:
-   * otherwise the dashboard keeps saying "from the agent" about a set that is
-   * no longer a verbatim mirror.
+   * Monotonic counters, deliberately NOT wall-clock. A write and a listing can
+   * land in the same millisecond, and a clock can move backwards; comparing
+   * timestamps then lets an older answer overwrite a newer one and be labelled
+   * fresh. `jobsWrites` counts this control plane's own writes to an agent's
+   * rows; `jobsListingApplied` records the sequence number of the newest listing
+   * that has been applied, so listings also cannot apply out of order.
    */
-  const jobsWrittenAt = new Map<string, number>();
+  const jobsWrites = new Map<string, number>();
+  const jobsListingApplied = new Map<string, number>();
+  let jobsListingSeq = 0;
   const confidential = options.confidential ?? isConfidential;
   const allowInsecure = options.allowInsecureExecution === true;
 
@@ -242,21 +246,23 @@ export function createControlServer(
             });
             wroteJobs = true;
           } else if (action === "stop") {
-            store.setJobState(
+            // A stop for a job this cache has never seen updates no row, so it is
+            // not a write and must not withdraw the freshness claim.
+            wroteJobs = store.setJobState(
               agent.peer_id,
               (body as { job_id: string }).job_id,
               result.state as string,
             );
-            wroteJobs = true;
           }
           // Only a write to the jobs TABLE invalidates the mirror: steer and
           // abort answer the agent without touching a row, so withdrawing the
           // claim for them would report as cached a list that is still the
-          // agent's. The rows for this agent are no longer a verbatim copy of
-          // what the agent reported, so the freshness claim is withdrawn until
-          // the next sync restores it.
+          // agent's.
           if (wroteJobs) {
-            jobsWrittenAt.set(agent.peer_id, (options.now ?? Date.now)());
+            jobsWrites.set(
+              agent.peer_id,
+              (jobsWrites.get(agent.peer_id) ?? 0) + 1,
+            );
             jobsSyncedAt.delete(agent.peer_id);
           }
           json(response, 200, { ok: true, result });
@@ -309,7 +315,8 @@ export function createControlServer(
             if (card === undefined) agentCaps.delete(agent.peer_id);
             else agentCaps.set(agent.peer_id, card.skills);
             if (card?.skills.includes("process.list")) {
-              const listedAt = (options.now ?? Date.now)();
+              const sequence = ++jobsListingSeq;
+              const writesAtStart = jobsWrites.get(agent.peer_id) ?? 0;
               try {
                 const result = await callAgent<{
                   jobs: Array<{
@@ -321,13 +328,15 @@ export function createControlServer(
                     started_at: string;
                   }>;
                 }>(target, "process.list", {}, callOptions);
-                // A spawn or stop that landed while this listing was in flight is
-                // NEWER than the answer in hand, so applying the answer would
-                // silently revert a job the agent does have. Keep the current
-                // rows and leave them unmarked rather than mislabelling them.
-                if ((jobsWrittenAt.get(agent.peer_id) ?? 0) > listedAt) {
-                  jobsSyncedAt.delete(agent.peer_id);
-                } else {
+                // Two ways this answer can be stale: a row was written while the
+                // listing was in flight, or a later listing has already applied.
+                // Neither may overwrite the newer state, and neither withdraws a
+                // freshness claim that a newer listing established.
+                const overtakenByWrite =
+                  (jobsWrites.get(agent.peer_id) ?? 0) !== writesAtStart;
+                const overtakenByListing =
+                  (jobsListingApplied.get(agent.peer_id) ?? 0) > sequence;
+                if (!overtakenByWrite && !overtakenByListing) {
                   store.replaceJobs(
                     agent.peer_id,
                     result.jobs.map((job) => ({
@@ -339,6 +348,7 @@ export function createControlServer(
                       state: job.state,
                     })),
                   );
+                  jobsListingApplied.set(agent.peer_id, sequence);
                   jobsSyncedAt.set(agent.peer_id, (options.now ?? Date.now)());
                 }
               } catch {

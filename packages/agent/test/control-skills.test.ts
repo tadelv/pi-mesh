@@ -11,7 +11,6 @@ import {
   createAgentServer,
   createSkillRegistry,
   EXECUTION_SKILLS,
-  EXECUTION_SKILLS_NEEDING_JOBS,
   JOB_SKILLS,
   JobManager,
   servedSkills,
@@ -279,31 +278,42 @@ describe("process and session control skills", () => {
     for (const skill of EXECUTION_SKILLS) {
       expect(managerOnly).not.toContain(skill);
     }
-    // An open gate WITHOUT a manager: mesh.handoff routes to another agent and
-    // needs no local job, so it survives; process.spawn and session.steer need
-    // one and do not.
-    expect(servedSkills(false, true)).toEqual([
-      ...ALWAYS_SERVED_SKILLS,
-      "mesh.handoff",
-    ]);
+    // An open gate WITHOUT a manager advertises no execution skill at all:
+    // mesh.handoff delegates to the local process.spawn, so it needs the manager
+    // too - the indirection that made this wrong twice.
+    expect(servedSkills(false, true)).toEqual([...ALWAYS_SERVED_SKILLS]);
     expect(servedSkills(true, true)).toHaveLength(10);
     expect(servedSkills(true, true)).toContain("session.steer");
   });
 
-  it("T12 keeps every execution skill classified by whether it needs a job manager", () => {
-    // A tripwire on the two constants, not a test of behaviour: a NEW execution
-    // skill defaults to the gate-only side, which is the wrong side if it needs a
-    // manager. Forcing the count and the exact membership makes the author
-    // classify it instead of inheriting a default.
-    expect([...EXECUTION_SKILLS_NEEDING_JOBS].sort()).toEqual([
-      "process.spawn",
-      "session.steer",
-    ]);
-    expect(EXECUTION_SKILLS).toHaveLength(
-      EXECUTION_SKILLS_NEEDING_JOBS.length + 1,
-    );
-    for (const skill of EXECUTION_SKILLS_NEEDING_JOBS) {
-      expect(EXECUTION_SKILLS).toContain(skill);
+  it("T12 refuses every execution skill when there is no job manager", async () => {
+    // Behavioural, not a list of names: this is what makes the advertisement
+    // rule (execution needs BOTH a manager and the gate) true rather than
+    // declared. A future execution skill that does not refuse here would fail
+    // this test, and its author has to decide which side it belongs on.
+    //
+    // mesh.handoff is the reason this test exists: it never mentions
+    // options.jobs, it delegates to the local process.spawn, so a grep for the
+    // manager finds nothing and the dependency is easy to miss.
+    const skills = createSkillRegistry();
+    const local = "11111111-1111-4111-8111-111111111111";
+    const inputs: Record<string, unknown> = {
+      "process.spawn": { project: "p", prompt: "hi" },
+      "session.steer": { job_id: "j", message: "hi" },
+      "mesh.handoff": {
+        task: "t",
+        project: "p",
+        context: {},
+        preferred_agent: local,
+        deadline_ms: 1_000,
+        _localPeerId: local,
+      },
+    };
+    for (const skill of EXECUTION_SKILLS) {
+      await expect(
+        skills.invoke(skill, inputs[skill]),
+        `${skill} must need a job manager`,
+      ).rejects.toMatchObject({ code: -32004 });
     }
   });
 

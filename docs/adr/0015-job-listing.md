@@ -112,22 +112,31 @@ was already telling the operator one click too late.
   that would have shipped a third skill that lies on a gate-closed machine, and
   the fix is the same rule the M2-8 work already established.
 
-## Amendment 1 — the execution group splits by whether the handler needs a job
+## Amendment 1 — every execution skill needs the job manager as well as the gate
 
 Decision 2's table lists one condition per group. That was too coarse for the
-execution group, and the review of the first implementation found it.
+execution group, and two review rounds found it from opposite directions.
 
 `process.spawn` and `session.steer` drive a local job, so their handlers need a
-`JobManager` as well as the open gate - without one they answer `-32004`.
-`mesh.handoff` routes work to *another* agent and touches no local job, so it
-needs only the gate. Serving all three behind one flag meant a server built with
-a manager and a closed policy advertised execution the dispatch gate refuses
-(`-32102`) - which is reachable, because `createAgentServer` takes `jobs` and
-`spawnPolicy` independently. In the CLI the two always agree, which is exactly why
-the mistake survived the first pass.
+`JobManager` as well as the open gate: without one they answer `-32004`. The
+first version of this amendment claimed `mesh.handoff` was the exception,
+"routes work to another agent, touches no local job". **That was wrong.** The
+handoff handler never mentions the job manager because it delegates to the *local*
+`process.spawn`, so a handoff this machine accepts fails the same way. Grepping
+the handler for `options.jobs` finds nothing, which is exactly how the mistake
+survived a pass - and it is left in this record rather than edited away, because
+the next reader will be tempted by the same grep.
 
-`servedSkills(jobsAvailable, gateOpen)` therefore takes two facts, not one, and
-`EXECUTION_SKILLS_NEEDING_JOBS` names the two that need a manager.
-`EXECUTION_SKILLS` is unchanged and remains the list the gate reads; a test
-asserts the classification partitions it, so a new execution skill cannot inherit
-the wrong side by default.
+Serving all three behind a single condition made a server built with a manager
+and a closed policy advertise execution the dispatch gate refuses (`-32102`);
+serving handoff without a manager made a manager-less machine advertise a skill it
+answers with `-32004`. Both states are reachable because `createAgentServer` takes
+`jobs` and `spawnPolicy` independently - in the CLI the two always agree, which is
+why neither mistake showed up on the path that is actually exercised.
+
+`servedSkills(jobsAvailable, gateOpen)` takes two facts and the execution group
+requires both. There is deliberately no per-skill classification list: a list is
+something a later reader trusts instead of checking, and this amendment is the
+evidence. A behavioural test invokes every skill in `EXECUTION_SKILLS` with no
+manager and requires `-32004`, so an execution skill that does not need one fails
+the test and its author has to decide which side it belongs on.

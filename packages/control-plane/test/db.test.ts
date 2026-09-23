@@ -42,13 +42,13 @@ describe("ControlStore", () => {
       store.setJobState(agent.peer_id, 'j3', 'exited');
       assert.equal(store.listJobs(agent.peer_id)[0].state, 'exited');
       const retentionStore = new ControlStore(':memory:');
-      for (let i = 0; i < 60; i++) retentionStore.upsertJob({ ...job, job_id:'j'+String(i).padStart(2, '0'), created_at:new Date(i * 1000).toISOString() });
-      assert.equal(retentionStore.listJobs().length, 50, 'jobs retention clause: keep at most 50 rows per agent');
-      assert.deepEqual(retentionStore.listJobs().map(j => j.job_id).sort(), Array.from({length:50}, (_, i) => 'j'+String(i + 10).padStart(2, '0')), 'jobs retention clause: retain the newest 50 by created_at');
+      for (let i = 0; i < 70; i++) retentionStore.upsertJob({ ...job, job_id:'j'+String(i).padStart(2, '0'), created_at:new Date(i * 1000).toISOString() });
+      assert.equal(retentionStore.listJobs().length, 64, 'jobs retention clause: keep at most 64 rows per agent, matching the agent own retention');
+      assert.deepEqual(retentionStore.listJobs().map(j => j.job_id).sort(), Array.from({length:64}, (_, i) => 'j'+String(i + 6).padStart(2, '0')), 'jobs retention clause: retain the newest 64 by created_at');
       retentionStore.upsertJob({ ...job, agent_id:'agent-b', job_id:'b1', created_at:'1969-01-01T00:00:00.000Z' });
-      for (let i = 0; i < 60; i++) retentionStore.upsertJob({ ...job, job_id:'k'+String(i).padStart(2, '0'), created_at:new Date(i * 1000).toISOString() });
+      for (let i = 0; i < 70; i++) retentionStore.upsertJob({ ...job, job_id:'k'+String(i).padStart(2, '0'), created_at:new Date(i * 1000).toISOString() });
       assert.equal(retentionStore.listJobs('agent-b').length, 1, 'per-agent retention clause: another agent rows are not evicted');
-      assert.equal(retentionStore.listJobs(agent.peer_id).length, 50, 'per-agent retention clause: the writing agent still trims to 50');
+      assert.equal(retentionStore.listJobs(agent.peer_id).length, 64, 'per-agent retention clause: the writing agent still trims to 64');
       retentionStore.close();
       store.upsertEvents(agent.peer_id, 's1', [{ entryId:'e1', type:'message', timestamp:'t', data:{ n:1 } }]);
       assert.deepEqual(store.listEvents(agent.peer_id, 's1').map(e => [e.entry_id,e.data]), [['e1','{"n":1}']]);
@@ -91,13 +91,16 @@ describe("ControlStore", () => {
         const raw = new DatabaseSync(path);
         raw.exec("CREATE TABLE jobs(agent_id TEXT NOT NULL, job_id TEXT NOT NULL, session_id TEXT, pid INTEGER, project TEXT NOT NULL, created_at TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(agent_id, job_id)) STRICT");
         const insert = raw.prepare("INSERT INTO jobs(agent_id,job_id,session_id,pid,project,created_at,state) VALUES('a',?,'s',1,'p',?,'running')");
-        for (let i = 0; i < 60; i++) insert.run('j'+String(i).padStart(2,'0'), new Date(i * 1000).toISOString());
-        assert.equal(raw.prepare('SELECT count(*) AS n FROM jobs').get().n, 60);
+        for (let i = 0; i < 70; i++) insert.run('j'+String(i).padStart(2,'0'), new Date(i * 1000).toISOString());
+        const older = raw.prepare("INSERT INTO jobs(agent_id,job_id,session_id,pid,project,created_at,state) VALUES('b',?,'s',1,'p','1960-01-01T00:00:00.000Z','exited')");
+        for (let i = 0; i < 3; i++) older.run('b'+String(i));
+        assert.equal(raw.prepare('SELECT count(*) AS n FROM jobs').get().n, 73);
         raw.close();
         // Opening it must prune, not wait for the next spawn.
         const store = new ControlStore(path);
-        assert.equal(store.listJobs().length, 50, 'constructor prune clause: an oversized database is pruned on open');
-        assert.deepEqual(store.listJobs().map(j => j.job_id).sort(), Array.from({length:50}, (_, i) => 'j'+String(i + 10).padStart(2,'0')));
+        assert.equal(store.listJobs('a').length, 64, 'constructor prune clause: an oversized database is pruned on open');
+        assert.equal(store.listJobs('b').length, 3, 'constructor prune clause: the partition keeps another agent older rows');
+        assert.deepEqual(store.listJobs('a').map(j => j.job_id).sort(), Array.from({length:64}, (_, i) => 'j'+String(i + 6).padStart(2,'0')));
         store.close();
       } finally { rmSync(directory, { recursive:true, force:true }); }
     `);

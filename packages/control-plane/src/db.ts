@@ -11,6 +11,18 @@ const { DatabaseSync } = createRequire(import.meta.url)(
   "node:sqlite",
 ) as typeof import("node:sqlite");
 
+/**
+ * Rows kept per agent in the jobs mirror.
+ *
+ * 64 is not arbitrary: it is the agent's own retention limit
+ * (DEFAULT_MAX_RETAINED_JOBS in packages/agent/src/jobs.ts). A smaller bound made
+ * the control plane silently drop jobs the agent still reported, so "from the
+ * agent" listed fewer rows than the agent had. Matching it means the mirror never
+ * discards a row the agent would answer with. Total capacity is therefore 64 per
+ * paired agent, and the agent - which bounds itself - is the authority.
+ */
+const MAX_JOBS_PER_AGENT = 64;
+
 export interface PairedAgent {
   peer_id: string;
   name: string;
@@ -73,7 +85,7 @@ export class ControlStore {
     // the next spawn would leave it unbounded until then. Per agent, matching
     // upsertJob.
     this.db.exec(
-      "DELETE FROM jobs WHERE rowid NOT IN (SELECT rowid FROM (SELECT rowid, ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY created_at DESC, rowid DESC) AS rn FROM jobs) WHERE rn <= 50)",
+      `DELETE FROM jobs WHERE rowid NOT IN (SELECT rowid FROM (SELECT rowid, ROW_NUMBER() OVER (PARTITION BY agent_id ORDER BY created_at DESC, rowid DESC) AS rn FROM jobs) WHERE rn <= ${MAX_JOBS_PER_AGENT})`,
     );
     if (path !== ":memory:") {
       // chmod after opening also tightens permissions on a pre-existing database.
@@ -214,7 +226,7 @@ export class ControlStore {
     // set, so the dashboard showed a "from the agent" list with rows missing.
     this.db
       .prepare(
-        "DELETE FROM jobs WHERE agent_id = ? AND rowid NOT IN (SELECT rowid FROM jobs WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT 50)",
+        `DELETE FROM jobs WHERE agent_id = ? AND rowid NOT IN (SELECT rowid FROM jobs WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ${MAX_JOBS_PER_AGENT})`,
       )
       .run(job.agent_id, job.agent_id);
   }
@@ -257,10 +269,16 @@ export class ControlStore {
           .all(agentId)) as unknown as CachedJob[];
   }
 
-  setJobState(agentId: string, jobId: string, state: string): void {
-    this.db
+  /**
+   * Returns whether a row actually changed. A stop for a job this cache has
+   * never seen updates nothing, and must not count as a write: the caller uses
+   * that answer to decide whether the mirror is still the agent's.
+   */
+  setJobState(agentId: string, jobId: string, state: string): boolean {
+    const result = this.db
       .prepare("UPDATE jobs SET state = ? WHERE agent_id = ? AND job_id = ?")
       .run(state, agentId, jobId);
+    return result.changes > 0;
   }
 
   listEvents(agentId: string, sessionId: string): CachedEvent[] {

@@ -19,19 +19,21 @@ losing visibility into what each instance is doing. pi-mesh gives you:
 
 ## Install
 
-> **Not yet released.** `@pi-mesh/agent` is `private` in this repository and is
-> not published to npm, so the commands below describe the intended install
-> once a release exists. Until then, run it from a checkout:
->
-> ```sh
-> git clone https://github.com/tadelv/pi-mesh && cd pi-mesh
-> pnpm install && pnpm -r build
-> node packages/agent/dist/cli.js doctor
-> ```
+**There is no npm release yet.** `@pi-mesh/agent` is `private: true` and is not
+published, and it depends on two other unpublished workspace packages
+(`@pi-mesh/protocol`, `@pi-mesh/shared`), so `npm install -g @pi-mesh/agent` does
+not work today. Run it from a checkout on each device that runs Pi, and alias
+the built CLI so the rest of this document reads normally:
 
-On each device that runs Pi:
+```sh
+git clone https://github.com/tadelv/pi-mesh && cd pi-mesh
+pnpm install && pnpm -r build
+alias pi-mesh-agent="node $PWD/packages/agent/dist/cli.js"
+pi-mesh-agent doctor
+```
 
-    npm install -g @pi-mesh/agent
+Then, on each device:
+
     pi-mesh-agent keygen > ~/.pi-mesh/swarm.key
     chmod 600 ~/.pi-mesh/swarm.key
     pi-mesh-agent start
@@ -100,11 +102,14 @@ See [docs/SECURITY.md](docs/SECURITY.md).
 ## Status
 
 Pre-alpha. The **agent** is a working LAN mesh for reading, streaming and
-(review-gated) executing Pi sessions across machines; milestones 1 and 2 are
-complete and verified across two hosts. The **control plane** now serves a
-dashboard with pairing and an SQLite session cache (milestone 3), and depends on
-no agent to start. See [tasks/milestone-3.md](tasks/milestone-3.md) for the
-current scope.
+(review-gated) executing Pi sessions across machines. The **control plane**
+serves a dashboard with token pairing, an SQLite session cache and an optional
+Jev command bar, and depends on no agent to start. Milestone 3 is complete and
+was verified across three machines (a Portainer-managed control plane on one
+host, agents on two others); the one clause still unproven on hardware is the
+offline cache against a device that goes away, which is exercised in-process
+only. See [tasks/milestone-3.md](tasks/milestone-3.md) and
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## License
 

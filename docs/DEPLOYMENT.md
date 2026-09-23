@@ -1,11 +1,188 @@
 # Deployment
 
-Placeholder. To be filled in during milestone 2.
+What runs where, and what keeps it running. The agent is the only required
+component; the control plane is optional and the mesh works with it absent
+(ADR 0011). Nothing here needs outbound internet, except the optional Jev
+integration, which is off unless `TYPESAFE_API_KEY` is set.
 
-Planned content:
+There is no npm release yet, so the agent runs from a checkout (see
+[Publishing](#publishing-m3-3)). `docs/SECURITY.md` is the threat model; this
+document is the operational side of it.
 
-- Installing `@pi-mesh/agent` on Linux (systemd unit), macOS (launchd
-  plist), and Windows (service wrapper).
-- Deploying the control plane via `docker compose`.
-- Reverse-proxy guidance for exposing the control plane on a VPN.
-- Backups for the control plane SQLite database.
+## Agent
+
+### Run it from a checkout
+
+```sh
+git clone https://github.com/tadelv/pi-mesh && cd pi-mesh
+pnpm install && pnpm -r build
+```
+
+On each device, generate a swarm key, copy it to the other members out of band,
+and start:
+
+```sh
+node packages/agent/dist/cli.js keygen > ~/.pi-mesh/swarm.key
+chmod 600 ~/.pi-mesh/swarm.key
+node packages/agent/dist/cli.js start
+```
+
+Use the absolute path to `packages/agent/dist/cli.js` in any unit file below.
+`start` runs in the foreground and shuts down on `SIGINT`/`SIGTERM`, which is
+what a service manager wants.
+
+Execution is **off by default**. Enable it deliberately with
+`--allow-execution` (any member) or `--allow-execution=<peer-id,…>` (a local
+convenience list), or the lower-precedence `PI_MESH_ALLOW_SPAWN` for a service
+manager. `PI_MESH_WORKSPACE` defaults to the user's home directory.
+
+### systemd (Linux)
+
+`/etc/systemd/system/pi-mesh-agent.service`:
+
+```ini
+[Unit]
+Description=pi-mesh agent
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=exec
+User=pi
+WorkingDirectory=/home/pi
+# Execution is opt-in. Prefer the flag over the environment, and note that the
+# peer-id list is a convenience, not a boundary (docs/SECURITY.md).
+ExecStart=/usr/bin/node /home/pi/pi-mesh/packages/agent/dist/cli.js start
+Restart=on-failure
+
+# Signal the whole cgroup, not just the main process. This is the load-bearing
+# line in this unit; see the measurement below.
+KillMode=control-group
+# Let the agent run its own graceful stop (which sweeps its process groups)
+# before the cgroup sweep.
+TimeoutStopSec=20
+
+[Install]
+WantedBy=multi-user.target
+```
+
+**Why `KillMode=control-group`.** Pi's bash tool calls `setsid()` for each command
+it runs, so a tool's process tree is in **its own session** and no process-group
+signal the agent can send will reach it. Measured on the Pi: after a hard kill of
+a spawned session, a `sleep 300` started by its bash tool survived with `ppid 1`,
+reparented to init, in a session no group sweep can address. A graceful
+`process.stop` cleans up completely (Pi kills its own tool children), so this only
+matters when the **agent** is killed outright. `KillMode=control-group` makes
+systemd signal every process in the unit's cgroup, which is inclusive regardless
+of `setsid`; a cgroup or a systemd scope is the only mechanism that is, because
+parentage is gone by the time you look for the children.
+
+This is not a reason to `kill -9` the agent by hand. Killing it outside systemd
+still leaks the tool commands, because the sweep is systemd's.
+
+### macOS (launchd)
+
+A `LaunchAgent` is enough for a user-session agent. There is no cgroup
+equivalent, so a hard kill of the agent leaves tool commands behind exactly as on
+Linux; keep the process supervised rather than killing it outright.
+
+### Windows
+
+Not supported. The swarm-key permission model relies on POSIX file modes, which
+Windows reports synthetically.
+
+## The workspace root is an accident guard, not isolation
+
+`PI_MESH_WORKSPACE` (default `$HOME`) bounds where a peer may ask a session to
+start. The check is a `realpath` containment test: it rejects accidental `..` and
+symlinks that resolve outside the root. It is **not a sandbox**. A spawned Pi
+runs with the agent user's full permissions, and the model can leave that
+directory at will. Real isolation means a container or a systemd scope, which is
+out of scope here. Do not describe the workspace root as a security boundary.
+
+## Control plane (optional)
+
+The control plane is a dashboard, a SQLite cache and token pairing. It reaches
+each agent over the agent's normal listener with a credential it earned by
+pairing, and it does not hold the swarm key.
+
+### docker compose
+
+`examples/docker-compose.yml` builds and runs it. Two things about the stack
+matter:
+
+- **mDNS.** The control plane advertises `_pi-mesh-control._tcp` so an agent can
+  find it for pairing. On Linux, run the container with `network_mode: host` so
+  the advertisement reaches the LAN and `PI_MESH_PORT` binds the host; with the
+  default bridge network the advertisement stays inside the container's network,
+  and agents must pair with `--control-host <host>:7331` instead.
+- **The data volume.** `PI_MESH_DB` holds the control id, the dashboard token,
+  the per-agent credentials and the session cache. Losing it loses the pairings
+  (re-pair to recover) and rotates the dashboard token. Back it up:
+  `/var/lib/pi-mesh` in the compose file.
+
+`docker compose -f examples/docker-compose.yml up -d`, then read the dashboard
+URL and the pairing token from the logs (`docker logs pi-mesh-control-plane`).
+
+`TYPESAFE_API_KEY` is optional and only enables the Jev command bar
+(ADR 0012). Put it in the stack's environment, never in the image or the repo;
+with it unset the command bar is hidden and no request leaves the machine.
+
+### Portainer
+
+Create a stack from the same compose file (the build context is the repository
+root). If the stack host has no build access to the source, build the image on
+the host first (`docker compose build`) or through Portainer's Docker API proxy,
+then reference `pi-mesh/control-plane:dev` as the stack's image and redeploy so
+the recreated container picks up the new tag.
+
+### Pairing
+
+`serve` prints a dashboard URL (carrying its access token) and a one-time
+pairing token. On each device:
+
+```sh
+node packages/agent/dist/cli.js pair <pairing-token>
+```
+
+The agent discovers the control plane over mDNS; on a network that blocks
+multicast, add `--control-host <host>:7331`. The pairing token is single-use,
+expires after ten minutes, and is never transmitted; both sides prove knowledge
+of it and derive a per-agent credential (ADR 0011). Pairing writes
+`~/.pi-mesh/control-credentials.json` on the agent, mode `0600`.
+
+### Backups and revoking
+
+The only persistent control-plane state is the SQLite database at `PI_MESH_DB`.
+Back up that one file (with the container stopped, or via `sqlite3 .backup`)
+and you have the pairings and cache.
+
+To revoke an agent: remove its row from the control plane (or delete the
+database and re-pair) **and** delete its entry from
+`~/.pi-mesh/control-credentials.json` on the agent. There is no revocation UI in
+this revision, and removing only one side leaves a credential that still
+verifies.
+
+### Exposing it beyond the LAN
+
+A dashboard token is the only authentication on `/api/*`, and the listener is
+plaintext HTTP. Do not port-forward it to the internet. Reach it over a VPN, or
+put an authenticating reverse proxy in front of it.
+
+## Publishing (M3-3)
+
+`@pi-mesh/agent` is deliberately **not published**, and `README.md` says so. The
+three packages a release needs — `@pi-mesh/protocol`, `@pi-mesh/shared`,
+`@pi-mesh/agent` — are all `private: true`, and the agent depends on the other
+two, so publishing one without the others produces an install that cannot
+resolve. A release therefore requires:
+
+1. npm scope access for `@pi-mesh` and a version scheme (the packages are
+   `0.0.0`).
+2. Publishing all three in dependency order (`shared`, `protocol`, `agent`),
+   with `publishConfig`/`files` reviewed and `private` removed or overridden.
+3. A decision that pre-alpha code is ready to be public.
+
+That is a release decision with external consequences, so it was **not** taken as
+a side effect of another change (M3-3). Until then, the checkout install above is
+the only supported path.

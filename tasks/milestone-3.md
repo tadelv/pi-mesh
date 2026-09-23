@@ -127,22 +127,57 @@ any code.
   `TYPESAFE_API_KEY` is set (`/api/intent` is `501` otherwise and `503` on a Jev
   outage). Nothing on the read path depends on it.
 - **Verified locally:** `pnpm -r build`, `typecheck`, every package's tests
-  (shared 15, protocol 24, control-plane 37, agent 194), `lint` and
+  (shared 15, protocol 24, control-plane 39, agent 194), `lint` and
   `format:check` pass; a mutation removes each of the load-bearing behaviours and
-  fails the clause naming it. On one machine, `serve` → `agent pair` →
-  `GET /api/state` returns the paired agent with no credential exposed.
-- **Review:** an independent read-only reviewer found four blocking defects that
-  the gates did not — credentials returned by `/api/state`, an empty model
-  choice read as session index 0, a hello proof replayable as the verify proof,
-  and cached events rewriting history — plus a disabled command bar that stayed
+  fails the clause naming it.
+- **Verified on three machines (2026-09-23):** the control plane runs in a
+  Portainer-managed Docker stack on `apollo` (`192.168.12.164`), and the Mac
+  (`artemis`) and the Raspberry Pi (`devpi`) each paired to it with
+  `pi-mesh-agent pair`, storing a credential at
+  `~/.pi-mesh/control-credentials.json`. `POST /api/sync` pulled 423 sessions
+  from the Mac and 12 from the Pi through the credential path; a live
+  `session.read` returned 16 entries; and Jev routed "show me the sessions on
+  devpi" to devpi's real peer id. Discovery was confirmed on the wire
+  (`dns-sd -B _pi-mesh-control._tcp` → `apollo`), and the dashboard token held
+  `TYPESAFE_API_KEY` in the container environment only, not the image or the
+  repo.
+- **Review:** an independent read-only reviewer found four blocking defects the
+  gates did not — credentials returned by `/api/state`, an empty model choice
+  read as session index 0, a hello proof replayable as the verify proof, and
+  cached events rewriting history — plus a disabled command bar that stayed
   visible. All were fixed; the pairing proof is now direction-separated and the
-  address is recorded at hello.
-- **Not proven on hardware:** the two-machine path. mDNS discovery of the
-  control plane by `pi-mesh-agent pair` (i.e. without `--control-host`) is
-  implemented and type-checked but has not been run against real multicast, and
-  the offline cache has only been exercised against a stopped agent in-process.
-  Until that runs, this section claims a working one-machine vertical slice, not
-  a verified two-machine one.
+  agent's address is recorded at hello.
+- **Two defects only the real fleet exposed:** with both agents paired and 435
+  sessions cached, every `/api/intent` call answered `503`. The first cause was
+  a Choice above TypeSafe's 255-option limit; the second, which survived the
+  option cap, was `400 max_tokens_exceeded` because the whole fleet was sent as
+  the request state. Both are fixed (candidates capped at 50, and the state
+  trimmed to the candidates) with tests that fail when the fix is removed. A
+  stubbed suite could not have caught either, because a stub does not enforce a
+  token budget.
+- **Still not proven on hardware:** the offline cache against a *device* that
+  goes away. It is exercised in-process by stopping the agent, and was not
+  repeated by pulling the plug on a real one.
+
+## Outcome (M3-3, M3-4)
+
+- **M3-3 - packaging:** resolved by keeping the packages private and making
+  `README.md` honest. The install section now presents the checkout path as the
+  only real one, aliases the built CLI so the rest of the document reads
+  normally, and says plainly that `npm install -g @pi-mesh/agent` does not work
+  yet. Publishing was **not** done: there is no npm token for the `@pi-mesh`
+  scope, and the three packages a release needs (`shared`, `protocol`, `agent`)
+  are `private: true` and must ship together. `docs/DEPLOYMENT.md` records
+  exactly what a release requires, so the decision is written down rather than
+  implied by an install command that would fail.
+- **M3-4 - `docs/DEPLOYMENT.md`:** written. It carries the systemd unit with
+  `KillMode=control-group` and the measurement behind it (Pi's bash tool
+  `setsid()`s each command, so a hard-killed agent leaves tool commands
+  reparented to init in their own session, which no process-group signal
+  reaches), states plainly that the workspace root is an accident guard and not
+  isolation, and documents the control plane as a compose stack: mDNS and host
+  networking, the data volume and backups, the revocation limit, and not
+  port-forwarding the plaintext dashboard.
 
 ## Exit criteria
 

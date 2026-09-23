@@ -151,6 +151,26 @@ expires after ten minutes, and is never transmitted; both sides prove knowledge
 of it and derive a per-agent credential (ADR 0011). Pairing writes
 `~/.pi-mesh/control-credentials.json` on the agent, mode `0600`.
 
+### Enabling execution
+
+Pairing grants reading, not execution (ADR 0008). To let the dashboard start or
+steer on a machine, restart its agent with the control plane's **id** in the allow
+list:
+
+```sh
+node packages/agent/dist/cli.js start --allow-execution=<control-id>
+```
+
+The dashboard shows that id on every agent that cannot execute yet, with a copy
+button, because it is the only thing the operator needs. It is two steps - pair,
+ then enable - on purpose: pairing authenticates the control plane, and
+authorising execution is a separate local decision. Stopping and aborting need no
+opt-in.
+
+A machine that has not opted in still appears in the dashboard and still refuses
+with `-32102`, so a refusal is a normal state to display rather than a failure to
+hide.
+
 ### Backups and revoking
 
 The only persistent control-plane state is the SQLite database at `PI_MESH_DB`.

@@ -90,12 +90,16 @@ pairing (ADR 0011), plus an optional Jev intent router (ADR 0012) - is verified
 on three machines, a Portainer-managed Docker stack on apollo with the Mac and
 devpi paired to it; packaging (M3-3) and `docs/DEPLOYMENT.md` (M3-4) are in.
 
-**Milestone 4 is scoped, and its trust model is fixed.** `tasks/milestone-4.md`
-makes `README.md`'s "Steering" and "Process control" bullets true by driving the
-agent's existing gated skills from the dashboard. The ADR that had to come first
-is accepted (`docs/adr/0013-dashboard-control.md`): two independent grants (the
-dashboard token to ask, a per-agent opt-in to allow), one execution path, and no
-second spawn path. M4-2 onward is the implementation.
+**Milestone 4 is done and verified on three machines.** `README.md`'s "Steering"
+and "Process control" bullets are true: the dashboard starts, steers, stops and
+aborts on a paired agent by calling the agent's existing gated skills
+(`docs/adr/0013-dashboard-control.md`) - two independent grants, one execution
+path, and a per-agent opt-in by the control plane's id. The transcript is in
+`docs/two-machine-proof.md` under "M4 - dashboard control".
+
+**No next milestone is authored.** Everything the documents promise is now built
+except the items in `README.md`'s "Someday" list and the deferred encryption in
+`docs/SECURITY.md`. Author the next milestone rather than improvising one.
 
 Read order for picking up M4 - nothing here needs context beyond these files:
 
@@ -113,8 +117,8 @@ Read order for picking up M4 - nothing here needs context beyond these files:
 
 ## What to build first
 
-Work through `tasks/milestone-4.md` in issue order. M4-1 (ADR 0013) is done, so
-start at M4-2. The
+Work through `tasks/milestone-4.md` in issue order; it is complete. No next
+milestone is written: author one before building. The
 requirements are frozen: if you find a gap, open an ADR in `docs/adr/` rather than
 inventing a shape that happens to suit the code you are writing.
 

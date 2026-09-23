@@ -210,3 +210,69 @@ escaping `project`. Both are covered by tests with mutation evidence (removing t
 project cwd fails the containment clause; the deadline test engineers a 10 ms
 deadline against a 150 ms readiness delay), but neither has been seen on a real
 machine, and this section does not claim otherwise.
+
+## M4 - dashboard control, three machines (2026-09-23)
+
+The control plane runs as a Portainer stack on apollo (`192.168.12.164`); the Mac
+(`artemis`, `192.168.12.100`) and the Pi (`devpi`, `192.168.12.108`) are paired to
+it. For this run, **devpi was started with the control plane's id explicitly** and
+the Mac with no opt-in at all:
+
+    devpi:  node packages/agent/dist/cli.js start --allow-execution=4903a35d-815f-4a2c-9eaf-f5af5593e394
+    artemis: node packages/agent/dist/cli.js start
+
+After `POST /api/sync`, `/api/state` reported each agent's advertised capability -
+the public agent card, which is the one source of truth:
+
+    artemis  process.spawn=false session.steer=false   (6 skills)
+    devpi    process.spawn=true  session.steer=true    (9 skills)
+
+Spawn through the same route the page uses:
+
+    POST /api/agents/bf55e82f…/spawn
+    {"project":"m4-proof","cwd":"pi-mesh",
+     "prompt":"In this repository, run git log --oneline -1 and report the commit
+               subject, then on a new line write M4-DASHBOARD-DONE"}
+    -> {"ok":true,"result":{"job_id":"ea3ef197…","pid":25583,
+                             "session_id":"01a0cdf7…"}}
+
+Reading that session back through the control plane (`GET /api/sessions/…`,
+`stale:false`) shows the work: the session's own assistant reported
+
+    78adfde feat(m3-2): the control-plane vertical slice, wired to one authenticated path
+    M4-DASHBOARD-DONE
+
+`78adfde` is devpi's HEAD, so the report is verifiable rather than plausible.
+
+Steering was accepted by the agent (`{"ok":true,…}`), and stop returned the
+agent's answer:
+
+    {"ok":true,"result":{"job_id":"ea3ef197…","state":"exited","pid":25583}}
+
+    $ ps -eo args | grep -cE '^pi$'          # on devpi, after the stop
+    0
+
+The denial clause, on the machine that never opted in:
+
+    POST /api/agents/3e13895e…/spawn         # artemis
+    -> {"ok":false,"code":-32102,"message":"Execution is disabled on this machine
+        (start with --allow-execution or set PI_MESH_ALLOW_SPAWN for a service
+        manager): process.spawn"}
+
+    $ ps -eo args | grep -cE '^pi$'          # on the Mac, before and after
+    0
+    0
+
+A refusal is a **result** carrying the agent's own code, not an HTTP error, and it
+started nothing. The Mac was demonstrably reachable at that moment - the same sync
+returned 423 sessions from it - so the `-32102` is the gate, not a transport
+failure. The cross-machine comparison is the positive control: the identical
+request to devpi started a session and returned a pid; to the Mac it returned
+`-32102` and no session.
+
+The control-plane job cache held exactly the one job it started and moved it to
+`exited`; the denied spawn left no row.
+
+**Not shown here:** the spawn confirmation and the inline refusal rendering are DOM
+behaviour. They were exercised by hand in a browser and are **not** covered by an
+automated UI test; the milestone deliberately did not add a browser test.

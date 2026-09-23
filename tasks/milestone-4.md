@@ -135,6 +135,26 @@ indifferent).
 - **Capability drift.** The UI's idea of "can execute" and the agent's
   advertisement must be one source, or the page offers a button the agent refuses.
 
+## Outcome
+
+Implemented (M4-2..M4-4) and verified on three machines (M4-5); the transcript is
+in `docs/two-machine-proof.md` under "M4 - dashboard control".
+
+- The four routes reuse `callAgent`; a test scans `packages/control-plane/src`
+  for process machinery and fails if any appears (ADR 0013 decision 2).
+- A refusal is `200 { ok: false, code, message }`, so `-32102` survives the hop,
+  and a transport failure is `502`. On hardware, the gate-closed Mac answered
+  `-32102` and started nothing while the same sync showed it reachable, so the
+  refusal is the gate and not a transport failure.
+- Capability honesty comes from the public agent card, cached per agent on sync;
+  a freshly paired or unreachable agent reads as unknown, not capable.
+- On hardware, devpi (explicit `--allow-execution=<control-id>`) started a
+  session from the dashboard that reported its own HEAD commit and
+  `M4-DASHBOARD-DONE`, steer was accepted, and stop left 0 `pi` processes.
+- **Not covered by an automated test:** the spawn confirmation and the inline
+  refusal rendering. No browser test was added this milestone, deliberately;
+  the DOM was exercised by hand and the milestone does not claim more.
+
 ## Exit criteria
 
 - An operator can start a session on a paired agent from the dashboard, steer it,

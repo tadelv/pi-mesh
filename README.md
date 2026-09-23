@@ -103,12 +103,13 @@ See [docs/SECURITY.md](docs/SECURITY.md).
 
 Pre-alpha. The **agent** is a working LAN mesh for reading, streaming and
 (review-gated) executing Pi sessions across machines. The **control plane**
-serves a dashboard with token pairing, an SQLite session cache and an optional
-Jev command bar, and depends on no agent to start. Milestone 3 is complete and
-was verified across three machines (a Portainer-managed control plane on one
-host, agents on two others); the one clause still unproven on hardware is the
-offline cache against a device that goes away, which is exercised in-process
-only. See [tasks/milestone-3.md](tasks/milestone-3.md) and
+serves a dashboard that pairs with agents, caches sessions in SQLite, and can
+start, steer, stop and abort sessions on agents that have opted in, with an
+optional Jev command bar; it depends on no agent to start. Milestone 4 is
+implemented and verified across three machines (a Portainer-managed control
+plane on one host, agents on two others). The clause still unproven on hardware
+is the offline cache against a device that goes away, which is exercised
+in-process only. See [tasks/milestone-4.md](tasks/milestone-4.md) and
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Someday

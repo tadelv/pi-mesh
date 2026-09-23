@@ -152,6 +152,24 @@ a pairing token and read every paired agent's sessions. The token is accepted as
 carries it. It is compared in constant time. There is one token and one operator;
 there is no account model.
 
+### Dashboard control is execution
+
+The dashboard can start, steer, stop and abort sessions on a paired agent
+(ADR 0013). That does not weaken the boundary, but it moves it:
+
+- Starting and steering still require the **agent's** local opt-in. A machine
+  started without `--allow-execution`, or with the control plane's id not in its
+  list, refuses the dashboard with `-32102` and starts nothing. **Pairing alone
+  never grants execution**: it authenticates the control plane (ADR 0011), and
+  authentication is not authorisation.
+- The **dashboard token is therefore a conditional execution grant**. Protect it,
+  and protect the control plane's database, which holds the token and the
+  per-agent credentials: a stolen token against a machine that opted in is code
+  execution. Stopping and aborting remain ungated (ADR 0008 §5), so any dashboard
+  token can reduce activity on a paired agent.
+- Two independent grants must agree - the token to *ask*, the opt-in to *allow* -
+  and neither is sufficient alone.
+
 ## Optional third-party integration: Jev intent routing
 
 When `TYPESAFE_API_KEY` is set, the dashboard's command bar sends the operator's

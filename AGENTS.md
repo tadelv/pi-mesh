@@ -90,15 +90,17 @@ pairing (ADR 0011), plus an optional Jev intent router (ADR 0012) - is verified
 on three machines, a Portainer-managed Docker stack on apollo with the Mac and
 devpi paired to it; packaging (M3-3) and `docs/DEPLOYMENT.md` (M3-4) are in.
 
-**Milestone 4 is scoped, not started.** `tasks/milestone-4.md` makes `README.md`'s
-"Steering" and "Process control" bullets true by driving the agent's existing
-gated skills from the dashboard. It begins with an ADR, and it has open
-decisions that need a human before M4-1 can be written.
+**Milestone 4 is scoped, and its trust model is fixed.** `tasks/milestone-4.md`
+makes `README.md`'s "Steering" and "Process control" bullets true by driving the
+agent's existing gated skills from the dashboard. The ADR that had to come first
+is accepted (`docs/adr/0013-dashboard-control.md`): two independent grants (the
+dashboard token to ask, a per-agent opt-in to allow), one execution path, and no
+second spawn path. M4-2 onward is the implementation.
 
 Read order for picking up M4 - nothing here needs context beyond these files:
 
 1. `tasks/milestone-4.md` - the issues, their Definition of Done, what is
-   deliberately out of scope, and the decisions that are still open.
+   deliberately out of scope, and the decisions ADR 0013 settles.
 2. `docs/adr/0008-spawn-policy.md` - the gate every execution request must meet;
    M4's whole risk is growing a second path around it.
 3. `docs/adr/0011-control-plane-vertical-slice.md` and `docs/PROTOCOL.md` - the
@@ -111,7 +113,8 @@ Read order for picking up M4 - nothing here needs context beyond these files:
 
 ## What to build first
 
-Work through `tasks/milestone-4.md` in issue order, starting with the ADR. The
+Work through `tasks/milestone-4.md` in issue order. M4-1 (ADR 0013) is done, so
+start at M4-2. The
 requirements are frozen: if you find a gap, open an ADR in `docs/adr/` rather than
 inventing a shape that happens to suit the code you are writing.
 

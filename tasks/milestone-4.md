@@ -40,33 +40,15 @@ existing skill.
 
 ## Issues
 
-### M4-1 - the trust model for dashboard execution (write an ADR first)
+### M4-1 - the trust model for dashboard execution (ADR 0013, accepted)
 
-Nothing about this is frozen, and it touches the security property of M2, so
-**open an ADR (0013) before writing code.** It must decide at least:
+Done: `docs/adr/0013-dashboard-control.md` is accepted. It fixes the two grants
+(dashboard token to ask, per-agent opt-in to allow), the single execution path,
+the explicit-control-id opt-in, "pairing authenticates, it does not authorise",
+the conditional-execution meaning of the dashboard token, the non-authoritative
+jobs cache, handoff as out of scope, and the pinned route/response shapes.
 
-- **Reuse, not reimplementation.** Execution from the dashboard is `callAgent`
-  with `process.spawn` / `session.steer` / `process.stop` / `session.abort`. The
-  agent's `gateExecution` is the only gate. State this as the milestone's
-  load-bearing constraint.
-- **Two independent grants.** A dashboard-token holder can *ask*, and the agent
-  must *allow*. The agent allows only if it started with execution enabled and
-  its `spawnPolicy` allows the control plane's id. Because a paired control id is
-  authenticated (unlike ADR 0007's claimed peer id), `--allow-execution=<control-id>`
-  is a real boundary here for the first time, not a convenience.
-- **What the dashboard token now is.** It is an execution token *conditional on*
-  a per-agent opt-in. Say so plainly in `SECURITY.md`, and say what protecting
-  the control-plane database now protects.
-- **Pairing is not an execution grant.** Pairing must not, by itself, allow
-  execution; that would make an authentication step grant code execution and
-  contradict ADR 0008 §2.
-- **Job handles.** Whether the control plane keeps a non-authoritative jobs
-  cache (needed so the UI can steer/stop after a reload) and what it means for a
-  restarted control plane.
-- **Handoff.** Whether `mesh.handoff` is in this milestone or its own issue.
-
-**DoD:** the ADR is accepted, names each decision above, and is the thing the
-tests and docs cite.
+**DoD:** met. M4-2 onward cite it.
 
 ### M4-2 - control-plane execution routes
 
@@ -130,28 +112,14 @@ spawn shows the agent's message; the operator can copy the agent's control id
 
 **DoD:** the transcript is in the repo and names what it does and does not show.
 
-## Decisions needed before M4-1 can be written
+## Decisions (settled by ADR 0013)
 
-The ADR freezes these, so they are the things worth a human's call. My
-recommendation is first in each.
-
-1. **Is the dashboard allowed to execute at all?** Recommended: yes, but only via
-   the per-agent opt-in, so an operator must enable it on each machine.
-   Alternative: keep the dashboard read-only and drop the README promise instead.
-   *This is the one that needs you.*
-2. **How does an agent opt in to a control plane?** Recommended: explicit
-   `--allow-execution=<control-id>` (a real boundary now that the id is
-   authenticated), with the dashboard showing the id to copy. Alternative: a
-   policy word meaning "any paired control", which is more convenient and a
-   wider grant.
-3. **Is `mesh.handoff` from the dashboard in scope?** Recommended: out; it is
-   peer-to-peer routing and belongs with the "route to a suitable peer" work,
-   not the "drive this machine" work.
-4. **Does the control plane keep a jobs cache?** Recommended: yes, small and
-   non-authoritative, so the UI survives a reload; `process.stop` stays
-   idempotent on the agent.
-5. **Should a spawn require a confirmation step?** Recommended: yes for spawn
-   only (one click that shows project and prompt), as the one irreversible action.
+Full control from the dashboard is in scope; the agent opts in per machine; the
+opt-in is an explicit control id; handoff is deferred; the jobs cache is
+non-authoritative; pairing never grants execution; a spawn confirmation is UI,
+not a control. `docs/adr/0013-dashboard-control.md` records each with its
+reasoning, and the Jev cross-check that agreed with all but the last (0.58,
+indifferent).
 
 ## Risks
 

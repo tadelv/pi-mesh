@@ -320,6 +320,15 @@ export function createControlServer(
             const sequence = ++jobsListingSeq;
             const superseded = (): boolean =>
               (jobsListingApplied.get(agent.peer_id) ?? 0) > sequence;
+            // NOTE: capabilities are deliberately NOT ordered by `sequence`, only
+            // the jobs mirror is. An older sync's card can therefore overwrite or
+            // clear a newer one's for a moment, showing stale controls until the
+            // next sync. It cannot authorise anything - the agent's own gate and
+            // ADR 0014's transport check both still apply - and ordering it means
+            // one sequence governing every per-agent write, which is a refactor
+            // rather than a line. Recorded here because it is the same class of
+            // bug as the three the reviews found, and the next reader will be
+            // standing in this exact spot.
             const card = await fetchAgentCard(target, callOptions);
             if (card === undefined) {
               agentCaps.delete(agent.peer_id);

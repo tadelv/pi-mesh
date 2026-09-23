@@ -239,7 +239,7 @@ describe("process and session control skills", () => {
     });
   });
 
-  it("T6 session.steer delivers the supplied message", async () => {
+  it("T6 session.steer DELIVERS the message, which pi's steer command alone does not", async () => {
     const test = await setup("steer");
     try {
       const started = await test.record();
@@ -250,12 +250,17 @@ describe("process and session control skills", () => {
           message: "specific steering message",
         }),
       ).resolves.toMatchObject({ success: true, accepted: true });
-      // A real RPC response alone cannot prove which request was sent; the
-      // fixture records the exact message on stderr in its explicit steer mode.
-      // Wait for it rather than reading the pipe immediately (see waitForOutput).
+      // A successful RPC response proves only that the command was accepted. The
+      // fixture distinguishes acceptance from delivery the way pi does: `steer`
+      // is queued onto the in-flight turn and never read on an idle session,
+      // while a `prompt` marked streamingBehavior:"steer" reaches it. Sending
+      // `steer` here fails this line - which is the bug that shipped, reproduced
+      // on hardware: success:true and a transcript that never changed.
       await waitForOutput(test.output, 2_000);
       expect(test.output).toHaveLength(1);
-      expect(test.output[0]).toContain("steer=specific steering message");
+      expect(test.output[0]).toContain(
+        "steer-delivered=specific steering message",
+      );
     } finally {
       await test.close();
     }
@@ -403,7 +408,7 @@ describe("process and session control skills", () => {
         pid: undefined,
         argv: [],
         stdioClosed: true,
-        command: async (command) => ({ type: command.type, success: true }),
+        command: async (command) => ({ ...command, success: true }),
         close: async () => report.exited({ code: 0, signal: null }),
       }),
       logger,
@@ -418,12 +423,14 @@ describe("process and session control skills", () => {
       cwd: process.cwd(),
       name: "registry-test",
     });
+    // A prompt marked as a steer, not pi's `steer`: only the former reaches a
+    // session that is alive but between turns (see the skill's comment and T6).
     await expect(
       registry.invoke("session.steer", {
         job_id: started.id,
         message: "hello",
       }),
-    ).resolves.toMatchObject({ type: "steer" });
+    ).resolves.toMatchObject({ type: "prompt", streamingBehavior: "steer" });
     await expect(
       registry.invoke("session.abort", { job_id: started.id }),
     ).resolves.toMatchObject({

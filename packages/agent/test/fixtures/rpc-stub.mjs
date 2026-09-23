@@ -144,7 +144,32 @@ function handle(line) {
         });
         return;
       }
-      globalThis.process.stderr.write(`steer=${command.message}\n`);
+      // Pi acknowledges a `steer` command and queues it onto the IN-FLIGHT
+      // turn's steering queue. On an idle session nothing reads that queue, so
+      // the caller sees success and the session never moves. The fixture says
+      // which of the two happened, because one that reported delivery here would
+      // certify the bug that actually shipped: session.steer sent `steer`, and
+      // the old test could not tell acceptance from delivery.
+      globalThis.process.stderr.write(`steer-queued-only=${command.message}\n`);
+      response(command.id, { success: true, accepted: true });
+      return;
+    }
+    if (mode === "steer" && command.type === "prompt") {
+      if (typeof command.message !== "string") {
+        response(command.id, {
+          success: false,
+          error: "prompt message must be a string",
+        });
+        return;
+      }
+      if (command.streamingBehavior !== "steer") {
+        response(command.id, {
+          success: false,
+          error: "streamingBehavior must be 'steer'",
+        });
+        return;
+      }
+      globalThis.process.stderr.write(`steer-delivered=${command.message}\n`);
       response(command.id, { success: true, accepted: true });
       return;
     }

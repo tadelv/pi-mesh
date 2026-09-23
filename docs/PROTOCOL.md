@@ -58,7 +58,7 @@ means unauthenticated: every request carries a proof (below).
 **Gated** means reachable only from a peer the machine has explicitly allowed
 to execute, and refused with `-32102` otherwise; see ADR 0008. Start enables the
 local grant with `--allow-execution` (or, for a service manager, the lower-
-precedence `PI_MESH_ALLOW_SPAWN` fallback). Three details of the shapes above
+precedence `PI_MESH_ALLOW_SPAWN` fallback). Some details of the shapes above
 are load-bearing:
 
 - `process.spawn` takes a required, non-blank `prompt` that starts the first
@@ -75,6 +75,12 @@ provider, the session directory, or which extensions load.
 - `process.stop` takes a **mesh job id**, never a bare PID. The agent stops only
   jobs it started and still tracks, so a peer cannot signal arbitrary processes
   on the machine.
+- `session.steer` sends pi a **prompt marked `streamingBehavior: "steer"`**, not
+  pi's `steer` command. `steer` only queues onto a turn already in flight, so on a
+  session that is alive but between turns it is acknowledged and then never read -
+  the caller sees success and the session does not move. The prompt form queues as
+  a steer while a turn runs and starts a turn when the session is idle, which is
+  what steering a running job means.
 
 Steering is gated with spawning because injected prompts cause tool
 execution. Stopping is not gated: `session.abort` and `process.stop` are

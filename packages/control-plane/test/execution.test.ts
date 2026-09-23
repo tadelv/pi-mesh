@@ -260,7 +260,16 @@ it("routes steer, stop, and abort to the real agent's corresponding effects", as
   );
   expect(jobFixture.effects).toEqual([
     { kind: "send", command: { type: "prompt", message: "Say hello" } },
-    { kind: "send", command: { type: "steer", message: "Continue" } },
+    // A prompt marked as a steer, not pi's `steer` command: only that reaches a
+    // session which is alive but between turns.
+    {
+      kind: "send",
+      command: {
+        type: "prompt",
+        message: "Continue",
+        streamingBehavior: "steer",
+      },
+    },
     { kind: "send", command: { type: "abort" } },
     { kind: "stop" },
   ]);

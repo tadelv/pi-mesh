@@ -391,7 +391,25 @@ export function createSkillRegistry(
     if (options.jobs === undefined) {
       throw new PiMeshError(-32004, "session.steer requires a job manager");
     }
-    return options.jobs.send(jobId, { type: "steer", message });
+    // A PROMPT marked streamingBehavior:"steer", not pi's `steer` command.
+    //
+    // pi's `steer` only pushes onto the in-flight turn's steering queue. On a
+    // session that is alive but waiting - which is what a job looks like between
+    // turns, and what the dashboard offers a Steer box for - nothing reads that
+    // queue, so the command is acknowledged and the session never moves. That was
+    // the behaviour until it was reproduced on hardware: the RPC answered
+    // success:true and the transcript did not gain a single entry.
+    //
+    // `prompt` is the command that distinguishes the two states: it queues as a
+    // steer when a turn is in flight, and starts a turn when the session is idle.
+    // That is what someone clicking Steer on a running-but-waiting session means.
+    // The gate is unchanged - session.steer is an execution skill (ADR 0008), so
+    // only a control plane this machine allowed can reach it.
+    return options.jobs.send(jobId, {
+      type: "prompt",
+      message,
+      streamingBehavior: "steer",
+    });
   });
 
   skills.register("mesh.peers", async () => ({

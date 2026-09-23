@@ -243,7 +243,7 @@ export const dashboard = `<!doctype html>
     const term = document.querySelector('#search').value.trim().toLowerCase();
     return state.sessions.filter(session => {
       const agent = state.agents.find(candidate => candidate.peer_id === session.agent_id);
-      return (session.name+' '+basename(session.project)+' '+(agent?.name || '')).toLowerCase().includes(term);
+      return (session.name+' '+session.session_id+' '+session.project+' '+(agent?.name || '')).toLowerCase().includes(term);
     }).sort((a,b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
   }
   function renderSessions() {
@@ -338,18 +338,29 @@ export const dashboard = `<!doctype html>
   }
   async function openSession(agentId, sessionId) {
     selected = {agentId, sessionId};
+    // Every await below re-checks ownership before touching the transcript. A
+    // slow request for one session must never render over, or erase, another
+    // session the operator has since opened.
+    const owner = selected;
     renderSessions();
     transcriptPanel.hidden = false;
     transcriptPanel.replaceChildren();
     node('p', 'Loading session…', transcriptPanel).className = 'dim';
     try {
       const data = await fetchSessionPage(agentId, sessionId);
-      if(selected?.agentId === agentId && selected?.sessionId === sessionId) renderTranscript(data, false);
-    } catch(error) { transcriptPanel.replaceChildren(); node('p', error.message, transcriptPanel).className = 'result'; }
+      if(selected === owner) renderTranscript(data, owner);
+    } catch(error) {
+      if(selected !== owner) return;
+      transcriptPanel.replaceChildren();
+      node('p', error.message, transcriptPanel).className = 'result';
+    }
   }
-  function renderTranscript(data, prepend) {
+  // The owner is the selection this transcript belongs to. Paging controls carry
+  // it because they outlive the click that opened them: a page that arrives
+  // after a different session was opened belongs to a transcript that is gone.
+  function renderTranscript(data, owner) {
     transcriptPanel.replaceChildren();
-    const session = state.sessions.find(item => item.agent_id === selected.agentId && item.session_id === selected.sessionId);
+    const session = state.sessions.find(item => item.agent_id === owner.agentId && item.session_id === owner.sessionId);
     const heading = node('header', undefined, transcriptPanel);
     heading.className = 'session-heading';
     node('h2', session?.name || selected.sessionId, heading);
@@ -367,18 +378,29 @@ export const dashboard = `<!doctype html>
         if(!oldest) return;
         earlier.disabled = true;
         try {
-          const older = await fetchSessionPage(selected.agentId, selected.sessionId, oldest);
+          const older = await fetchSessionPage(owner.agentId, owner.sessionId, oldest);
+          if(selected !== owner) return;
           const combined = {...data, events:[...older.events, ...data.events], hasEarlier:older.hasEarlier};
-          renderTranscript(combined, true);
-        } catch(error) { node('span', error.message, actions).className = 'result'; earlier.disabled = false; }
+          renderTranscript(combined, owner);
+        } catch(error) {
+          if(selected !== owner) return;
+          node('span', error.message, actions).className = 'result';
+          earlier.disabled = false;
+        }
       });
     }
     if(!data.all && data.total > data.events.length) {
       const all = node('button', 'Load all '+data.total+' entries', actions);
       all.addEventListener('click', async () => {
         all.disabled = true;
-        try { renderTranscript(await fetchSessionPage(selected.agentId, selected.sessionId, undefined, true), false); }
-        catch(error) { node('span', error.message, actions).className = 'result'; all.disabled = false; }
+        try {
+          const everything = await fetchSessionPage(owner.agentId, owner.sessionId, undefined, true);
+          if(selected === owner) renderTranscript(everything, owner);
+        } catch(error) {
+          if(selected !== owner) return;
+          node('span', error.message, actions).className = 'result';
+          all.disabled = false;
+        }
       });
     }
   }
@@ -462,7 +484,7 @@ export const dashboard = `<!doctype html>
     const current = selected;
     try {
       const data = await fetchSessionPage(current.agentId, current.sessionId);
-      if(selected === current) renderTranscript(data, false);
+      if(selected === current) renderTranscript(data, current);
     } catch {} finally { refreshPending = false; }
   }
   async function load(){ state=await api('/api/state'); render(); }

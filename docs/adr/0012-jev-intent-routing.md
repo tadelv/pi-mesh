@@ -56,7 +56,11 @@ guidance that independent judgements over the same state belong in one request:
 a Choice over the actions, a Noul per candidate device that the sentence names,
 and a Noul per candidate session. Candidate values come from the control
 plane's own store, so the model selects from strings the code can then copy
-verbatim — it never invents an id.
+verbatim — it never invents an id. **The session candidates are capped at the 50
+most recently updated.** That is a hard protocol requirement, not a cost tweak:
+TypeSafe rejects a Choice with more than 255 options (measured: 300 options →
+HTTP 400 "Too many choices"), and the first real fleet held 435 sessions, which
+took the whole route down until the cap existed.
 
 ### 3. Code owns the threshold and the argument fill
 

@@ -11,6 +11,14 @@ export const INTENT_ACTIONS = [
 ] as const;
 export const ACTION_CONFIDENCE_FLOOR = 0.6;
 export const ARGUMENT_CONFIDENCE_FLOOR = 0.5;
+/**
+ * TypeSafe rejects a Choice with more than 255 options (verified: 300 options ->
+ * HTTP 400 "Too many choices"), so a fleet larger than that must be trimmed
+ * before the request is built or the whole call fails and intent routing goes
+ * dark. 50 is chosen well below the limit to bound token cost as well.
+ */
+export const MAX_CHOICE_OPTIONS = 255;
+export const MAX_INTENT_SESSIONS = 50;
 
 export interface IntentContext {
   devices: Array<{ id: string; name: string }>;
@@ -45,13 +53,17 @@ export async function routeIntent(
     open_session: "open one specific session to read it",
     none: "the request does not ask for any of these",
   };
+  // The caller passes the most recent first, so trimming keeps the candidates a
+  // person is most likely to mean.
+  const devices = context.devices.slice(0, MAX_CHOICE_OPTIONS);
+  const sessions = context.sessions.slice(0, MAX_INTENT_SESSIONS);
   const questions = {
     action: {
       type: "choice" as const,
       instructions: "Choose the action that best matches the request.",
       criteria: actions,
     },
-    ...(context.devices.length === 0
+    ...(devices.length === 0
       ? {}
       : {
           names_device: {
@@ -61,12 +73,10 @@ export async function routeIntent(
           device: {
             type: "choice" as const,
             instructions: "Choose the named machine, if any.",
-            criteria: Object.fromEntries(
-              context.devices.map((d) => [d.id, d.name]),
-            ),
+            criteria: Object.fromEntries(devices.map((d) => [d.id, d.name])),
           },
         }),
-    ...(context.sessions.length === 0
+    ...(sessions.length === 0
       ? {}
       : {
           names_session: {
@@ -77,7 +87,7 @@ export async function routeIntent(
             type: "choice" as const,
             instructions: "Choose the named session, if any.",
             criteria: Object.fromEntries(
-              context.sessions.map((session, index) => [
+              sessions.map((session, index) => [
                 String(index),
                 `${session.name ?? session.project} on ${session.agent_id}`,
               ]),
@@ -108,7 +118,7 @@ export async function routeIntent(
     | { kind: "absent" }
     | { kind: "unresolved" }
     | { kind: "resolved"; id: string } => {
-    if (context.devices.length === 0) return { kind: "absent" };
+    if (devices.length === 0) return { kind: "absent" };
     const named = answers.names_device;
     const chosen = answers.device;
     if (named === undefined || named.type !== "noul")
@@ -118,7 +128,7 @@ export async function routeIntent(
       chosen === undefined ||
       chosen.type !== "choice" ||
       chosen.confidence < ARGUMENT_CONFIDENCE_FLOOR ||
-      !context.devices.some((device) => device.id === chosen.choice)
+      !devices.some((device) => device.id === chosen.choice)
     )
       return { kind: "unresolved" };
     return { kind: "resolved", id: chosen.choice };
@@ -151,7 +161,7 @@ export async function routeIntent(
       : -1;
   const session =
     Number.isInteger(chosenIndex) && chosenIndex >= 0
-      ? context.sessions[chosenIndex]
+      ? sessions[chosenIndex]
       : undefined;
   if (
     agentId === undefined ||

@@ -111,12 +111,18 @@ export function createControlServer(
               id: agent.peer_id,
               name: agent.name,
             })),
-            sessions: store.listSessions().map((session) => ({
-              agent_id: session.agent_id,
-              session_id: session.session_id,
-              name: session.name,
-              project: session.project,
-            })),
+            // Most recent first, so the router's candidate cap keeps the
+            // sessions a person is most likely to mean.
+            sessions: store
+              .listSessions()
+              .slice()
+              .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
+              .map((session) => ({
+                agent_id: session.agent_id,
+                session_id: session.session_id,
+                name: session.name,
+                project: session.project,
+              })),
           },
           {
             apiKey,

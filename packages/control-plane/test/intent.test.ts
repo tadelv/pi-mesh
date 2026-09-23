@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import { describe, expect, it, vi } from "vitest";
-import { routeIntent, type IntentContext } from "../src/intent.js";
+import {
+  MAX_INTENT_SESSIONS,
+  routeIntent,
+  type IntentContext,
+} from "../src/intent.js";
 import type { JevQuestion } from "../src/jev.js";
 
 const context: IntentContext = {
@@ -123,6 +127,74 @@ describe("intent routing", () => {
     // Number("") is 0, so a naive parse would open the first session.
     await expect(
       routeIntent("open it", context, {
+        apiKey: "key",
+        fetch: fetchAnswers(answers),
+      }),
+    ).resolves.toEqual({ action: "none", confidence: 0.9, arguments: {} });
+  });
+
+  it("never sends more Choice options than TypeSafe accepts", async () => {
+    // The real fleet had 435 sessions; a Choice with 300 options is HTTP 400
+    // from TypeSafe, so the whole route answered 503 until this cap existed.
+    const many: IntentContext = {
+      devices: [{ id: "real-agent", name: "Work Mac" }],
+      sessions: Array.from({ length: 300 }, (_, i) => ({
+        agent_id: "real-agent",
+        session_id: `s${i}`,
+        name: `S${i}`,
+        project: "/repo",
+      })),
+    };
+    const captured = new Map<string, JevQuestion>();
+    const answers = {
+      ...baseAnswers,
+      action: choice("open_session", 0.9),
+      session: choice("49", 0.8),
+    };
+    const fetchStub = (async (_url: unknown, init?: RequestInit) => {
+      const body = JSON.parse(String(init?.body)) as {
+        questions: Record<string, JevQuestion>;
+      };
+      for (const [key, question] of Object.entries(body.questions))
+        captured.set(key, question);
+      return new Response(JSON.stringify({ answers }), { status: 200 });
+    }) as typeof fetch;
+    const result = await routeIntent("open the newest one", many, {
+      apiKey: "key",
+      fetch: fetchStub,
+    });
+    // Asserted outside the stub: an assertion thrown inside it is swallowed by
+    // systemOne's catch and could never fail the test.
+    const sessionQuestion = captured.get("session");
+    expect(sessionQuestion?.type).toBe("choice");
+    const criteria =
+      sessionQuestion?.type === "choice" ? sessionQuestion.criteria : {};
+    expect(Object.keys(criteria)).toHaveLength(MAX_INTENT_SESSIONS);
+    expect(Object.keys(criteria).length).toBeLessThanOrEqual(255);
+    expect(result).toEqual({
+      action: "open_session",
+      confidence: 0.9,
+      arguments: { agent_id: "real-agent", session_id: "s49" },
+    });
+  });
+
+  it("refuses a session index beyond the candidate cap", async () => {
+    const many: IntentContext = {
+      devices: [{ id: "real-agent", name: "Work Mac" }],
+      sessions: Array.from({ length: 300 }, (_, i) => ({
+        agent_id: "real-agent",
+        session_id: `s${i}`,
+        name: `S${i}`,
+        project: "/repo",
+      })),
+    };
+    const answers = {
+      ...baseAnswers,
+      action: choice("open_session", 0.9),
+      session: choice("299", 0.8),
+    };
+    await expect(
+      routeIntent("open the oldest", many, {
         apiKey: "key",
         fetch: fetchAnswers(answers),
       }),

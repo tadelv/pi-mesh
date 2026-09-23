@@ -13,7 +13,7 @@ losing visibility into what each instance is doing. pi-mesh gives you:
 
 - **Peer discovery** — find other Pi instances on your LAN automatically.
 - **Direct handoff** — agents pass tasks and context to each other.
-- **Fleet overview** — a web dashboard for sessions, projects, and PRs.
+- **Fleet overview** — a web dashboard for sessions and projects.
 - **Steering** — attach to any session from the dashboard and redirect it.
 - **Process control** — start and stop Pi sessions on remote devices.
 
@@ -126,6 +126,11 @@ do. Listed so a design is not read as a capability.
   because the hostile-network case still requires the control plane to be
   reachable from that network, and this project's real deployments are three
 owned machines on one trusted LAN.
+- **GitHub PR overview** — the dashboard shows sessions and projects, not pull
+  requests. There is no GitHub client, credential model, sync path or API field
+  for PRs anywhere in the repository, so the README no longer advertises them
+  (issue #4). Adding it means an optional integration with a defined offline
+  behaviour, its own state shape and its own tests - not a dashboard tweak.
 
 ## License
 

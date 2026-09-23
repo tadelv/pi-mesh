@@ -7,6 +7,7 @@ import {
   type ServerResponse,
 } from "node:http";
 import { randomUUID } from "node:crypto";
+import { stat } from "node:fs/promises";
 import type {
   AgentCard,
   AgentSkill,
@@ -60,6 +61,7 @@ import { loadOrCreateIdentity, type PeerIdentity } from "./identity.js";
 import { loadSwarmKey } from "./swarm-key.js";
 import {
   controlCredentialBytes,
+  defaultControlCredentialsPath,
   loadControlCredentials,
   type ControlCredential,
 } from "./control-credentials.js";
@@ -268,6 +270,15 @@ export class HttpAgentServer implements AgentServer {
   private actualPort: number | undefined;
   private swarmKey: Uint8Array | undefined;
   private controlCredentials: readonly ControlCredential[] = [];
+  /**
+   * Set only when the credentials are file-backed: the absolute path to stat
+   * and the mtime it was last loaded at. A pairing runs in a SEPARATE process
+   * (`pi-mesh-agent pair`), so without this the server kept verifying against
+   * the list it read at startup and rejected a freshly paired control plane
+   * until it was restarted (issue #2).
+   */
+  private controlCredentialsPath: string | undefined;
+  private controlCredentialsMtimeMs: number | undefined;
   private identity: PeerIdentity | undefined;
   private readonly replay = new Map<string, number>();
   private readonly maxReplayEntries: number;
@@ -316,13 +327,23 @@ export class HttpAgentServer implements AgentServer {
       return { address: this.host, port: this.actualPort };
     }
     this.swarmKey = this.options.swarmKey ?? (await loadSwarmKey());
-    this.controlCredentials =
-      this.options.controlCredentials ??
-      (await loadControlCredentials(
-        this.options.controlCredentialsPath === undefined
-          ? {}
-          : { path: this.options.controlCredentialsPath },
-      ));
+    if (this.options.controlCredentials !== undefined) {
+      // Injected credentials are the caller's to manage; there is no file to
+      // watch and reloading would only undo an intentional override.
+      this.controlCredentials = this.options.controlCredentials;
+      this.controlCredentialsPath = undefined;
+      this.controlCredentialsMtimeMs = undefined;
+    } else {
+      this.controlCredentialsPath = defaultControlCredentialsPath(
+        this.options.controlCredentialsPath,
+      );
+      this.controlCredentials = await loadControlCredentials({
+        path: this.controlCredentialsPath,
+      });
+      this.controlCredentialsMtimeMs = await controlCredentialsMtime(
+        this.controlCredentialsPath,
+      );
+    }
     if (this.swarmKey.byteLength === 0) {
       throw new Error("A swarm key is required to start the agent");
     }
@@ -429,7 +450,14 @@ export class HttpAgentServer implements AgentServer {
     }
 
     const rawBody = await readBody(request);
-    const principal = this.verifyRequest(request, rawBody);
+    let principal = this.verifyRequest(request, rawBody);
+    if (principal === undefined && (await this.refreshControlCredentials())) {
+      // The first attempt failing is what triggers the stat, so an ordinary
+      // swarm or already-paired request does no filesystem access at all. A
+      // failed signature is the only thing that does, which also means this
+      // cannot be used to reach the file from an unauthenticated request.
+      principal = this.verifyRequest(request, rawBody);
+    }
     if (principal === undefined) {
       this.unauthorized(response);
       return;
@@ -499,6 +527,24 @@ export class HttpAgentServer implements AgentServer {
    * the proof does not hold. The caller needs the identity, not just the
    * verdict: the spawn gate (ADR 0008) is keyed on it.
    */
+  /**
+   * Re-read the credentials file when it changed under us, so a pairing that
+   * completed while this process was running takes effect without a restart.
+   * Returns whether the list changed. Never falls back across signer kinds:
+   * the caller retries the same verification, with the same signer selection
+   * (a known control id still uses that control credential, a swarm peer the
+   * swarm key); only the file's contents move.
+   */
+  private async refreshControlCredentials(): Promise<boolean> {
+    const path = this.controlCredentialsPath;
+    if (path === undefined) return false;
+    const mtimeMs = await controlCredentialsMtime(path);
+    if (mtimeMs === this.controlCredentialsMtimeMs) return false;
+    this.controlCredentials = await loadControlCredentials({ path });
+    this.controlCredentialsMtimeMs = mtimeMs;
+    return true;
+  }
+
   private verifyRequest(
     request: IncomingMessage,
     body: Uint8Array,
@@ -951,6 +997,28 @@ function writeJson(
     "Content-Type": "application/json; charset=utf-8",
   });
   response.end(JSON.stringify(value));
+}
+
+/**
+ * The credentials file's mtime, or undefined when it does not exist yet - the
+ * normal state before the first pairing. "Missing" and "present" therefore
+ * compare unequal, so the first pairing is noticed as a change.
+ */
+async function controlCredentialsMtime(
+  path: string,
+): Promise<number | undefined> {
+  try {
+    return (await stat(path)).mtimeMs;
+  } catch (error) {
+    if (
+      typeof error === "object" &&
+      error !== null &&
+      "code" in error &&
+      error.code === "ENOENT"
+    )
+      return undefined;
+    throw error;
+  }
 }
 
 function writeSse(

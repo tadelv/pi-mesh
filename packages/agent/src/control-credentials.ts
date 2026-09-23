@@ -18,14 +18,19 @@ export interface ControlCredential {
   pairedAt: string;
 }
 
-function credentialsPath(path?: string): string {
+/**
+ * The credentials file the agent reads when no explicit path is given. Exported
+ * because the running server has to stat the same file to notice a pairing that
+ * happened in another process (issue #2).
+ */
+export function defaultControlCredentialsPath(path?: string): string {
   return path ?? join(homedir(), ".pi-mesh", "control-credentials.json");
 }
 
 export async function loadControlCredentials(
   options: { path?: string } = {},
 ): Promise<ControlCredential[]> {
-  const path = credentialsPath(options.path);
+  const path = defaultControlCredentialsPath(options.path);
   let text: string;
   try {
     text = await readFile(path, "utf8");
@@ -56,7 +61,7 @@ export async function saveControlCredential(
   options: { path?: string } = {},
 ): Promise<void> {
   parseEntry(entry);
-  const path = credentialsPath(options.path);
+  const path = defaultControlCredentialsPath(options.path);
   const directory = dirname(path);
   await mkdir(directory, { recursive: true, mode: 0o700 });
   await chmod(directory, 0o700);

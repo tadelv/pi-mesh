@@ -9,3 +9,7 @@ coverage/
 !.env.example
 .pi-mesh/
 *.tsbuildinfo
+
+# Review inputs produced while a change is under review: never source, and
+# `git add -A` has swept one into a commit twice.
+.review-*.patch

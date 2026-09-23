@@ -37,6 +37,10 @@ describe("ControlStore", () => {
       assert.deepEqual(store.listJobs(agent.peer_id).map(j => ({ ...j })), [{ ...job, state:'stopping' }]);
       store.setJobState(agent.peer_id, 'j1', 'exited');
       assert.equal(store.listJobs(agent.peer_id)[0].state, 'exited');
+      store.setAgentCaps(agent.peer_id, ['session.list', 'process.spawn'], 'first');
+      assert.deepEqual(store.agentCaps(), { 'agent-1': ['session.list', 'process.spawn'] });
+      store.setAgentCaps(agent.peer_id, ['session.list'], 'second');
+      assert.deepEqual(store.agentCaps(), { 'agent-1': ['session.list'] });
       store.upsertEvents(agent.peer_id, 's1', [{ entryId:'e1', type:'message', timestamp:'t', data:{ n:1 } }]);
       assert.deepEqual(store.listEvents(agent.peer_id, 's1').map(e => [e.entry_id,e.data]), [['e1','{"n":1}']]);
       // Re-caching the same entry id must not rewrite it: session entries are

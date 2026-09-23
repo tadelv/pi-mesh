@@ -15,6 +15,7 @@ import {
   AgentSkillError,
   AgentUnreachableError,
   callAgent,
+  fetchAgentCard,
   fetchSessionList,
 } from "./client.js";
 import { dashboard } from "./dashboard.js";
@@ -54,6 +55,7 @@ export function createControlServer(
       ...(options.now === undefined ? {} : { now: options.now }),
     });
   let actualPort = port;
+  const unreachableAgentCaps = new Set<string>();
 
   const server = createServer((request, response) => {
     void route(request, response).catch(() =>
@@ -140,13 +142,19 @@ export function createControlServer(
         return;
       }
       if (request.method === "GET" && url.pathname === "/api/state") {
+        const caps = store.agentCaps();
         json(response, 200, {
           control: { id: store.controlId(), name },
           // Never the credential. It is a signing key for the agents; a
           // dashboard-token holder is an operator, not a mesh member, and must
           // not be able to read sessions by calling agents directly. The
           // browser needs the identity and address, nothing more.
-          agents: store.listAgents().map(publicAgent),
+          agents: store.listAgents().map((agent) => ({
+            ...publicAgent(agent),
+            skills: unreachableAgentCaps.has(agent.peer_id)
+              ? null
+              : (caps[agent.peer_id] ?? null),
+          })),
           sessions: store.listSessions(),
           jobs: store.listJobs(),
           intent_enabled: Boolean(
@@ -257,21 +265,28 @@ export function createControlServer(
         }
         const results = await Promise.all(
           store.listAgents().map(async (agent) => {
-            try {
-              const sessions = await fetchSessionList(
-                {
-                  peerId: agent.peer_id,
-                  host: agent.host,
-                  port: agent.port,
-                  credential: agent.credential,
-                },
-                {
-                  controlId: store.controlId(),
-                  ...(options.fetch === undefined
-                    ? {}
-                    : { fetch: options.fetch }),
-                },
+            const target = {
+              peerId: agent.peer_id,
+              host: agent.host,
+              port: agent.port,
+              credential: agent.credential,
+            };
+            const callOptions = {
+              controlId: store.controlId(),
+              ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+            };
+            const card = await fetchAgentCard(target, callOptions);
+            if (card === undefined) unreachableAgentCaps.add(agent.peer_id);
+            else {
+              unreachableAgentCaps.delete(agent.peer_id);
+              store.setAgentCaps(
+                agent.peer_id,
+                card.skills,
+                new Date((options.now ?? Date.now)()).toISOString(),
               );
+            }
+            try {
+              const sessions = await fetchSessionList(target, callOptions);
               store.upsertSessions(
                 agent.peer_id,
                 sessions,

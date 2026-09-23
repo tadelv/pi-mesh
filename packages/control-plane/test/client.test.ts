@@ -7,6 +7,7 @@ import { PI_MESH_HEADERS, verifyRequestSignature } from "@pi-mesh/protocol";
 import {
   AgentSkillError,
   AgentUnreachableError,
+  fetchAgentCard,
   fetchSessionList,
   type AgentTarget,
 } from "../src/client.js";
@@ -53,6 +54,45 @@ async function withServer(
 }
 
 describe("control-plane A2A client", () => {
+  it("fetches skill ids from the public agent card", async () => {
+    await withServer(
+      (_request, _body, response) => {
+        response.setHeader("content-type", "application/json");
+        response.end(
+          JSON.stringify({
+            name: "test agent",
+            skills: [{ id: "session.list" }, { id: "process.spawn" }],
+          }),
+        );
+      },
+      async (target) => {
+        await expect(fetchAgentCard(target, { controlId })).resolves.toEqual({
+          name: "test agent",
+          skills: ["session.list", "process.spawn"],
+        });
+      },
+    );
+  });
+
+  it("returns undefined for non-200 and malformed agent cards", async () => {
+    await withServer(
+      (_request, _body, response) => {
+        response.statusCode = 503;
+        response.end("offline");
+      },
+      async (target) =>
+        await expect(
+          fetchAgentCard(target, { controlId }),
+        ).resolves.toBeUndefined(),
+    );
+    await withServer(
+      (_request, _body, response) => response.end('{"skills":[{}]}'),
+      async (target) =>
+        await expect(
+          fetchAgentCard(target, { controlId }),
+        ).resolves.toBeUndefined(),
+    );
+  });
   it("signs the A2A request and returns the session list", async () => {
     await withServer(
       (request, body, response) => {

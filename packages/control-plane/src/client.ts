@@ -3,6 +3,7 @@
 import { randomUUID } from "node:crypto";
 import {
   A2A_PROTOCOL_VERSION,
+  AGENT_CARD_ROUTE,
   PI_MESH_HEADERS,
   createNonce,
   signRequest,
@@ -141,6 +142,45 @@ export async function callAgent<T = unknown>(
     throw new AgentUnreachableError(
       error instanceof Error ? error.message : String(error),
     );
+  }
+}
+
+export async function fetchAgentCard(
+  target: AgentTarget,
+  options: CallOptions,
+): Promise<{ name?: string; skills: string[] } | undefined> {
+  try {
+    const host =
+      target.host.includes(":") && !target.host.startsWith("[")
+        ? `[${target.host}]`
+        : target.host;
+    const response = await (options.fetch ?? globalThis.fetch)(
+      `http://${host}:${target.port}${AGENT_CARD_ROUTE}`,
+      { signal: AbortSignal.timeout(options.timeoutMs ?? 3000) },
+    );
+    if (response.status !== 200) return undefined;
+    const value: unknown = await response.json();
+    if (typeof value !== "object" || value === null || Array.isArray(value))
+      return undefined;
+    const card = value as { name?: unknown; skills?: unknown };
+    if (
+      !Array.isArray(card.skills) ||
+      !card.skills.every(
+        (skill) =>
+          typeof skill === "object" &&
+          skill !== null &&
+          !Array.isArray(skill) &&
+          typeof (skill as { id?: unknown }).id === "string",
+      )
+    ) {
+      return undefined;
+    }
+    return {
+      ...(typeof card.name === "string" ? { name: card.name } : {}),
+      skills: card.skills.map((skill) => (skill as { id: string }).id),
+    };
+  } catch {
+    return undefined;
   }
 }
 

@@ -14,6 +14,12 @@ services:
       PI_MESH_PORT: "7331"
       PI_MESH_DB: "/var/lib/pi-mesh/pi-mesh.db"
       PI_MESH_LOG_LEVEL: "info"
+      # Execution requires a confidential connection (ADR 0014): TLS terminated
+      # on this host, or a loopback caller. Setting this to "1" also serves the
+      # four execution routes over plaintext HTTP, which makes a dashboard
+      # request captured off the LAN reusable as remote execution on every
+      # agent that opted in. Deliberately off; set it only on a LAN you trust.
+      # PI_MESH_ALLOW_INSECURE_EXECUTION: "1"
 
 volumes:
   pi-mesh-data:

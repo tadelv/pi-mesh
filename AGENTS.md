@@ -84,33 +84,36 @@ and gated execution over Pi's RPC mode (`process.spawn`, `session.steer`,
 `process.stop`, `session.abort`), live streaming of a session while it works, and
 `mesh.handoff`.
 
-**Milestone 3 is in progress.** `mesh.handoff` (M3-1) is implemented, tested and
-verified Mac-to-Pi. The control-plane vertical slice (M3-2) is implemented,
-reviewed and verified on three machines (a Portainer-managed Docker stack on
-apollo, with the Mac and devpi paired to it) — a dashboard, an SQLite cache and
-token pairing (ADR 0011), plus an optional Jev intent router (ADR 0012).
-Packaging (M3-3) and `docs/DEPLOYMENT.md` (M3-4) remain.
-`tasks/milestone-3.md` carries the work and its order, which is deliberate: a thin
-user-visible control-plane slice, then packaging, then `docs/DEPLOYMENT.md`.
+**Milestone 3 is done and closed.** `mesh.handoff` (M3-1) is verified Mac-to-Pi;
+the control-plane vertical slice (M3-2) - a dashboard, an SQLite cache and token
+pairing (ADR 0011), plus an optional Jev intent router (ADR 0012) - is verified
+on three machines, a Portainer-managed Docker stack on apollo with the Mac and
+devpi paired to it; packaging (M3-3) and `docs/DEPLOYMENT.md` (M3-4) are in.
 
-Read order for picking up M3 - nothing here needs context beyond these files:
+**Milestone 4 is scoped, not started.** `tasks/milestone-4.md` makes `README.md`'s
+"Steering" and "Process control" bullets true by driving the agent's existing
+gated skills from the dashboard. It begins with an ADR, and it has open
+decisions that need a human before M4-1 can be written.
 
-1. `tasks/milestone-3.md` - the issues, their Definition of Done, what is
-   deliberately out of scope, and what has already been proven on hardware.
-2. `docs/ARCHITECTURE.md` and `docs/PROTOCOL.md` - what the system is and what
-   actually goes on the wire.
-3. `docs/adr/` - the frozen decisions. Start with 0005 (error codes), 0007
-   (per-request HMAC), 0008 (spawn policy, plus its two amendments), 0009 (live
-   event streaming) and 0010 (`mesh.handoff`).
-4. `docs/two-machine-proof.md` - what has been seen running on real hardware,
-   including the clauses that have *not*.
+Read order for picking up M4 - nothing here needs context beyond these files:
+
+1. `tasks/milestone-4.md` - the issues, their Definition of Done, what is
+   deliberately out of scope, and the decisions that are still open.
+2. `docs/adr/0008-spawn-policy.md` - the gate every execution request must meet;
+   M4's whole risk is growing a second path around it.
+3. `docs/adr/0011-control-plane-vertical-slice.md` and `docs/PROTOCOL.md` - the
+   credential and the wire the dashboard now speaks.
+4. `docs/ARCHITECTURE.md`, `docs/SECURITY.md` and `docs/DEPLOYMENT.md` - the
+   system, the trust model, and how it is deployed.
 5. `docs/GOTCHAS.md` - read this before trusting a green test run.
+
+(For the M3 record, see `tasks/milestone-3.md` and `docs/two-machine-proof.md`.)
 
 ## What to build first
 
-Work through `tasks/milestone-3.md` in issue order. The requirements are frozen:
-if you find a gap, open an ADR in `docs/adr/` rather than inventing a shape that
-happens to suit the code you are writing.
+Work through `tasks/milestone-4.md` in issue order, starting with the ADR. The
+requirements are frozen: if you find a gap, open an ADR in `docs/adr/` rather than
+inventing a shape that happens to suit the code you are writing.
 
 ## What NOT to do
 

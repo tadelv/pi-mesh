@@ -2,8 +2,7 @@
 
 What runs where, and what keeps it running. The agent is the only required
 component; the control plane is optional and the mesh works with it absent
-(ADR 0011). Nothing here needs outbound internet, except the optional Jev
-integration, which is off unless `TYPESAFE_API_KEY` is set.
+(ADR 0011). Nothing here needs outbound internet.
 
 There is no npm release yet, so the agent runs from a checkout (see
 [Publishing](#publishing-m3-3)). `docs/SECURITY.md` is the threat model; this
@@ -129,10 +128,6 @@ written to the log unless you ask for it:
 ```sh
 docker exec pi-mesh-control-plane node packages/control-plane/dist/cli.js token
 ```
-
-`TYPESAFE_API_KEY` is optional and only enables the Jev command bar
-(ADR 0012). Put it in the stack's environment, never in the image or the repo;
-with it unset the command bar is hidden and no request leaves the machine.
 
 ### Portainer
 

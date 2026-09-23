@@ -20,7 +20,6 @@ import {
 } from "./client.js";
 import { dashboard } from "./dashboard.js";
 import { agentControls } from "./controls.js";
-import { routeIntent } from "./intent.js";
 
 const MAX_BODY_BYTES = 64 * 1024;
 
@@ -32,7 +31,6 @@ export interface ControlServerOptions {
   name?: string;
   fetch?: typeof globalThis.fetch;
   now?: () => number;
-  typesafeApiKey?: string;
   /**
    * Serve the execution routes to a plaintext, non-loopback request. Off by
    * default; the deliberate override from ADR 0014 decision 3.
@@ -101,56 +99,6 @@ export function createControlServer(
         json(response, 401, { error: "unauthorized" });
         return;
       }
-      if (request.method === "POST" && url.pathname === "/api/intent") {
-        const body = await readJson(request);
-        if (body === INVALID) {
-          json(response, 400, { error: "invalid_json" });
-          return;
-        }
-        if (
-          body === null ||
-          typeof body !== "object" ||
-          typeof (body as { text?: unknown }).text !== "string" ||
-          (body as { text: string }).text.trim() === ""
-        ) {
-          json(response, 400, { error: "invalid_text" });
-          return;
-        }
-        const apiKey = options.typesafeApiKey ?? process.env.TYPESAFE_API_KEY;
-        if (!apiKey) {
-          json(response, 501, { error: "intent_disabled" });
-          return;
-        }
-        const result = await routeIntent(
-          (body as { text: string }).text,
-          {
-            devices: store.listAgents().map((agent) => ({
-              id: agent.peer_id,
-              name: agent.name,
-            })),
-            // Most recent first, so the router's candidate cap keeps the
-            // sessions a person is most likely to mean.
-            sessions: store
-              .listSessions()
-              .slice()
-              .sort((a, b) => b.updated_at.localeCompare(a.updated_at))
-              .map((session) => ({
-                agent_id: session.agent_id,
-                session_id: session.session_id,
-                name: session.name,
-                project: session.project,
-              })),
-          },
-          {
-            apiKey,
-            ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
-          },
-        );
-        if (result === undefined)
-          json(response, 503, { error: "intent_unavailable" });
-        else json(response, 200, result);
-        return;
-      }
       if (request.method === "GET" && url.pathname === "/api/state") {
         json(response, 200, {
           control: { id: store.controlId(), name },
@@ -168,9 +116,6 @@ export function createControlServer(
           }),
           sessions: store.listSessions(),
           jobs: store.listJobs(),
-          intent_enabled: Boolean(
-            options.typesafeApiKey ?? process.env.TYPESAFE_API_KEY,
-          ),
           // Computed from THIS request, so the page can explain a refused
           // button instead of looking broken. See ADR 0014 decision 6.
           execution_transport: confidential(request)

@@ -1,6 +1,10 @@
 # ADR 0012 — Jev intent routing is an optional control-plane integration
 
-Status: accepted
+Status: withdrawn - the integration was removed from the project. The command
+bar and `/api/intent` are gone; nothing supersedes this ADR, because nothing
+replaced the feature. It is kept as the record of why it was tried and what it
+cost (a third-party cloud call on a path that also carried session names and
+ids, and a second credential in the deployment).
 
 ## Context
 

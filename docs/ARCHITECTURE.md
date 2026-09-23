@@ -70,10 +70,6 @@ mints; the token is never transmitted and both sides derive the credential over
 the handshake transcript. `docs/PROTOCOL.md` carries the wire detail and
 `docs/SECURITY.md` the storage and revocation limits.
 
-Natural-language routing of dashboard requests is an **optional** integration
-(ADR 0012): it is off unless `TYPESAFE_API_KEY` is set, and its absence or an
-outage changes nothing on the read path.
-
 ## Work handoff
 
 A handoff is a standard A2A `message/send` with a `pi-mesh.handoff`

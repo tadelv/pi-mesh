@@ -17,9 +17,7 @@ afterEach(async () => {
   for (const server of servers.splice(0)) await server.stop();
   for (const store of stores.splice(0)) store.close();
 });
-async function setup(
-  serverOptions: { typesafeApiKey?: string; fetch?: typeof fetch } = {},
-) {
+async function setup(serverOptions: { fetch?: typeof fetch } = {}) {
   const root = await mkdtemp(join(tmpdir(), "pi-mesh-control-test-"));
   const store = new ControlStore(join(root, "control.db"));
   stores.push(store);
@@ -83,12 +81,10 @@ describe("control server", () => {
     });
     const state = (await response.json()) as {
       agents: Array<Record<string, unknown>>;
-      intent_enabled: boolean;
     };
     expect(state.agents).toHaveLength(1);
     expect(state.agents[0]).toMatchObject({ peer_id: "agent-x" });
     expect(Object.keys(state.agents[0]!)).not.toContain("credential");
-    expect(state.intent_enabled).toBe(false);
   });
 
   it("persists successful pairing with the request host and announced port, but not a bad proof", async () => {
@@ -166,77 +162,6 @@ describe("control server", () => {
       token_id: expect.any(String),
       expires_at: expect.any(String),
     });
-  });
-
-  it("routes intent only when enabled, authenticated, and available", async () => {
-    const disabled = await setup({ typesafeApiKey: "" });
-    const disabledResponse = await fetch(`${disabled.base}/api/intent`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${disabled.token}` },
-      body: JSON.stringify({ text: "show sessions" }),
-    });
-    expect(disabledResponse.status).toBe(501);
-    expect(await disabledResponse.json()).toEqual({ error: "intent_disabled" });
-
-    const answer = {
-      answers: {
-        action: {
-          type: "choice",
-          choice: "show_devices",
-          probabilities: { show_devices: 0.9, none: 0.1 },
-          confidence: 0.9,
-        },
-      },
-    };
-    const enabled = await setup({
-      typesafeApiKey: "typesafe-secret",
-      fetch: (async (url: string | URL | Request, init?: RequestInit) => {
-        expect(url).toBe("https://api.typesafe.ai/v1/systemone");
-        expect(new Headers(init?.headers).get("authorization")).toBe(
-          "Bearer typesafe-secret",
-        );
-        return new Response(JSON.stringify(answer), { status: 200 });
-      }) as typeof fetch,
-    });
-    const headers = {
-      authorization: `Bearer ${enabled.token}`,
-      "content-type": "application/json",
-    };
-    const success = await fetch(`${enabled.base}/api/intent`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ text: "show paired machines" }),
-    });
-    expect(success.status).toBe(200);
-    expect(await success.json()).toMatchObject({ action: "show_devices" });
-    const empty = await fetch(`${enabled.base}/api/intent`, {
-      method: "POST",
-      headers,
-      body: JSON.stringify({ text: " " }),
-    });
-    expect(empty.status).toBe(400);
-    expect(
-      (
-        await fetch(`${enabled.base}/api/intent`, {
-          method: "POST",
-          body: JSON.stringify({ text: "show devices" }),
-        })
-      ).status,
-    ).toBe(401);
-
-    const unavailable = await setup({
-      typesafeApiKey: "typesafe-secret",
-      fetch: (async () => {
-        throw new Error("offline");
-      }) as typeof fetch,
-    });
-    const failed = await fetch(`${unavailable.base}/api/intent`, {
-      method: "POST",
-      headers: { authorization: `Bearer ${unavailable.token}` },
-      body: JSON.stringify({ text: "show devices" }),
-    });
-    expect(failed.status).toBe(503);
-    expect(await failed.json()).toEqual({ error: "intent_unavailable" });
   });
 
   it("returns 400 for malformed JSON and 404 for unknown paths", async () => {

@@ -189,16 +189,6 @@ The dashboard can start, steer, stop and abort sessions on a paired agent
   restores execution over plaintext for a LAN you have decided to trust. It is
   off by default and warns on startup.
 
-## Optional third-party integration: Jev intent routing
-
-When `TYPESAFE_API_KEY` is set, the dashboard's command bar sends the operator's
-text, plus the names and ids of the paired agents and their sessions, to
-TypeSafe's hosted `api.typesafe.ai` to route the request to a dashboard action.
-This is **off by default**: with the variable unset the route answers `501` and
-the command bar is hidden, and a Jev outage answers `503` without affecting any
-other control-plane feature. Nothing in the mesh depends on it. Enabling it is a
-deliberate disclosure and is the operator's choice.
-
 ## What the swarm key protects against
 
 - Rogue peers joining the mesh.

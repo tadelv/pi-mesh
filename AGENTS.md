@@ -86,7 +86,7 @@ and gated execution over Pi's RPC mode (`process.spawn`, `session.steer`,
 
 **Milestone 3 is done and closed.** `mesh.handoff` (M3-1) is verified Mac-to-Pi;
 the control-plane vertical slice (M3-2) - a dashboard, an SQLite cache and token
-pairing (ADR 0011), plus an optional Jev intent router (ADR 0012) - is verified
+pairing (ADR 0011) - is verified
 on three machines, a Portainer-managed Docker stack on apollo with the Mac and
 devpi paired to it; packaging (M3-3) and `docs/DEPLOYMENT.md` (M3-4) are in.
 

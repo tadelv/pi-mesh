@@ -8,7 +8,5 @@ export * from "./db.js";
 export * from "./controls.js";
 export * from "./pairing.js";
 export * from "./client.js";
-export * from "./jev.js";
-export * from "./intent.js";
 export * from "./server.js";
 export * from "./dashboard.js";

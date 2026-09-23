@@ -126,6 +126,9 @@ any code.
 - **Optional:** a Jev intent router behind the dashboard command bar, off unless
   `TYPESAFE_API_KEY` is set (`/api/intent` is `501` otherwise and `503` on a Jev
   outage). Nothing on the read path depends on it.
+  **Removed after M4** (`/api/intent`, the command bar, `intent.ts` and `jev.ts`
+  are gone; ADR 0012 is withdrawn). Kept here because this file records what was
+  built and what it cost, not only what survived.
 - **Verified locally:** `pnpm -r build`, `typecheck`, every package's tests
   (shared 15, protocol 24, control-plane 39, agent 194), `lint` and
   `format:check` pass; a mutation removes each of the load-bearing behaviours and

@@ -3,7 +3,7 @@
 export const dashboard = `<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pi Mesh Control Plane</title>
 <style>body{font:16px system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#222}button,input{font:inherit;padding:.5rem;margin:.25rem}article{border:1px solid #ccc;padding:1rem;margin:1rem 0}small{color:#555}.result{padding:.5rem;background:#f2f2f2;border-left:3px solid #777}#pairing{white-space:pre-wrap}</style>
-<h1 id="title">Pi Mesh</h1><form id="auth" hidden><label>Dashboard token <input id="auth-token" type="password" autocomplete="off" size="44" placeholder="pi-mesh-control-plane token"></label> <button>Connect</button></form><p id="auth-note" role="status"></p><button id="pair">Pair agent</button><button id="sync">Sync</button><p id="pairing"></p><form id="command"><label>Ask <input id="intent-text" type="text" autocomplete="off"></label><button>Send</button></form><p id="intent-note" role="status"></p><label>Filter sessions <input id="filter" type="search"></label><main id="agents"></main>
+<h1 id="title">Pi Mesh</h1><form id="auth" hidden><label>Dashboard token <input id="auth-token" type="password" autocomplete="off" size="44" placeholder="pi-mesh-control-plane token"></label> <button>Connect</button></form><p id="auth-note" role="status"></p><button id="pair">Pair agent</button><button id="sync">Sync</button><p id="pairing"></p><p id="status" role="status"></p><label>Filter sessions <input id="filter" type="search"></label><main id="agents"></main>
 <script>
 (() => {
   // The token is pasted once and kept here. It is deliberately NOT read from
@@ -20,7 +20,7 @@ export const dashboard = `<!doctype html>
     if(!r.ok) { const error=Error(result.message || result.error || ('Request failed: '+r.status)); error.status=r.status; if(r.status === 401) needToken('The dashboard token was rejected. Paste it again.'); throw error; }
     return result;
   }
-  let state, agentFilter;
+  let state;
   function showMessage(parent, key) {
     const message = messages.get(key);
     if(message) node('p', message.text, parent).className = 'result';
@@ -50,7 +50,7 @@ export const dashboard = `<!doctype html>
         : 'Execution is unavailable over this connection. It needs TLS or loopback, or PI_MESH_ALLOW_INSECURE_EXECUTION=1 on a LAN you trust.', root).className = 'result';
     document.querySelector('#title').textContent = state.control.name;
     const filter = document.querySelector('#filter').value.toLowerCase();
-    for (const agent of state.agents.filter(a => !agentFilter || a.peer_id === agentFilter)) {
+    for (const agent of state.agents) {
       const section = document.createElement('article'); root.append(section);
       node('h2', agent.name, section); node('small', agent.host + ':' + agent.port, section);
       const capable = agent.controls.spawn;
@@ -112,31 +112,11 @@ export const dashboard = `<!doctype html>
       }
     }
   }
-  async function load(){ state=await api('/api/state'); if(!state.intent_enabled){ document.querySelector('#command').hidden=true; document.querySelector('#intent-note').textContent='Natural-language routing is not enabled.'; } render(); }
+  async function load(){ state=await api('/api/state'); render(); }
   async function sync(){ await api('/api/sync','POST'); await load(); }
   document.querySelector('#filter').addEventListener('input', render);
-  document.querySelector('#sync').addEventListener('click', async()=>{ try { await sync(); } catch(e){ document.querySelector('#intent-note').textContent=e.message; } });
+  document.querySelector('#sync').addEventListener('click', async()=>{ try { await sync(); document.querySelector('#status').textContent=''; } catch(e){ document.querySelector('#status').textContent=e.message; } });
   document.querySelector('#pair').addEventListener('click', async()=>{ try { const result=await api('/api/pair/token','POST'); document.querySelector('#pairing').textContent='Token: '+result.token+'\\nRun on the agent: pi-mesh-agent pair '+result.token+' --control-host '+location.hostname+':'+location.port; } catch(e){ document.querySelector('#pairing').textContent=e.message; } });
-  document.querySelector('#command').addEventListener('submit', async e => {
-    e.preventDefault();
-    const note=document.querySelector('#intent-note');
-    try {
-      const result=await api('/api/intent','POST',{text:document.querySelector('#intent-text').value});
-      note.textContent=''; agentFilter=undefined;
-      if(result.action==='show_devices'){ document.querySelector('#filter').value=''; render(); root.scrollIntoView(); }
-      else if(result.action==='show_sessions'){ agentFilter=result.arguments.agent_id; render(); root.scrollIntoView(); }
-      else if(result.action==='sync_now') await sync();
-      else if(result.action==='open_session') {
-        document.querySelector('#filter').value='';
-        const agent=state.agents.find(a=>a.peer_id===result.arguments.agent_id);
-        const session=state.sessions.find(s=>s.agent_id===result.arguments.agent_id&&s.session_id===result.arguments.session_id);
-        if(agent&&session){ render(); const item=[...root.querySelectorAll('li')].find(li=>li.textContent.includes(session.name||session.session_id)); if(item) openSession(agent.peer_id,session.session_id,item); }
-      } else note.textContent='I did not understand that';
-    } catch(error) {
-      if(error.status===501||error.status===503){ document.querySelector('#command').hidden=true; note.textContent='Natural-language routing is not enabled.'; }
-      else note.textContent=error.message;
-    }
-  });
   document.querySelector('#auth').addEventListener('submit', event => {
     event.preventDefault();
     token = document.querySelector('#auth-token').value.trim();

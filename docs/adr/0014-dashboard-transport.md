@@ -100,7 +100,9 @@ refused button that explains itself is a bug report that did not happen.
   described the token as appearing in the URL.
 - A TLS-terminating proxy on the same host works without configuration: the
   proxy dials the control plane over loopback, which is confidential. A proxy on
-  another host does not, and needs the override.
+  another host does not, and needs the override. **A VPN does not satisfy this by
+  itself** - a tunnel endpoint is a non-loopback address like any other LAN
+  caller. This is stated because it is the first thing an operator tries.
 - The residual risk from ADR 0013 narrows: a stolen token is still code
   execution, but it must now be stolen from a confidential channel, and a
   captured plaintext request grants nothing.

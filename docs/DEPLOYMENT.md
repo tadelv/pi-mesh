@@ -195,15 +195,24 @@ crossing a plaintext LAN - and a browser on an insecure origin cannot sign its
 requests, so there is no way to make that credential non-replayable. A refused
 request is `403 confidential_transport_required` and never reaches an agent.
 
-Three ways to satisfy it, in order of preference:
+Two ways to satisfy it, in order of preference:
 
-1. **Terminate TLS in front of it.** A reverse proxy on the same host works with
-   no configuration, because the proxy dials the control plane over loopback. A
-   proxy on another host does not, and needs option 2 or 3.
-2. **Reach it over a VPN** and use the dashboard from there.
-3. **`--allow-insecure-execution`** (or `PI_MESH_ALLOW_INSECURE_EXECUTION=1`) on a
+1. **Terminate TLS in front of it, on this host.** A reverse proxy on the same
+   machine works with no configuration, because the proxy then dials the control
+   plane over loopback.
+2. **`--allow-insecure-execution`** (or `PI_MESH_ALLOW_INSECURE_EXECUTION=1`) on a
    LAN you trust. Off by default; it warns at startup. In the compose file or a
    Portainer stack this is an environment variable on the service.
+
+What does **not** satisfy it, and this trips people up:
+
+- **A VPN on its own.** The check reads the socket, and a tunnel endpoint is a
+  non-loopback address like any other LAN caller, so execution is still refused.
+- **A reverse proxy on another host.** TLS is terminated there, but the hop into
+  this process is plaintext and non-loopback, and this process cannot tell that
+  apart from an attacker. Trusting an `X-Forwarded-Proto` header instead would be
+  spoofable by exactly the attacker the check exists to stop. If TLS terminates
+  elsewhere, run the proxy here, or use option 2 on a trusted network.
 
 Reading - the session list, session content, the pairing button - is unaffected
 and keeps working over plaintext. Only execution needs the confidential channel.
@@ -225,7 +234,8 @@ verifies.
 A dashboard token is the only authentication on `/api/*`, and the listener is
 plaintext HTTP. Do not port-forward it to the internet. Reach it over a VPN, or
 put an authenticating reverse proxy in front of it - which, per the section
-above, is also what makes dashboard execution possible without the override.
+above, is also what makes dashboard execution possible. A VPN alone is enough
+for *reading* and not for execution: see the note above.
 
 ## Publishing (M3-3)
 

@@ -22,7 +22,9 @@ afterEach(async () => {
  * for the one thing a loopback test server cannot produce: a caller that reached
  * it across the LAN in the clear.
  */
-async function setup(options: { allowInsecureExecution?: boolean } = {}) {
+async function setup(
+  options: { allowInsecureExecution?: boolean; realDetection?: boolean } = {},
+) {
   let confidential = true;
   const store = new ControlStore(":memory:");
   resources.push({ stop: async () => undefined, close: () => store.close() });
@@ -41,7 +43,9 @@ async function setup(options: { allowInsecureExecution?: boolean } = {}) {
     store,
     host: "127.0.0.1",
     port: 0,
-    confidential: () => confidential,
+    // realDetection omits the injection, so the default socket-derived check is
+    // the thing under test rather than a scripted classification.
+    ...(options.realDetection ? {} : { confidential: () => confidential }),
     ...(options.allowInsecureExecution === undefined
       ? {}
       : { allowInsecureExecution: options.allowInsecureExecution }),
@@ -171,7 +175,7 @@ it("keeps reading available over a plaintext request", async () => {
 it("treats a real loopback request as confidential without configuration", async () => {
   // The default detection, not the injected one: the tests in execution.test.ts
   // depend on this, and a TLS-terminating proxy on this host looks the same.
-  const { base, headers, calls } = await setup();
+  const { base, headers, calls } = await setup({ realDetection: true });
   const state = (await (
     await fetch(`${base}/api/state`, { headers })
   ).json()) as {

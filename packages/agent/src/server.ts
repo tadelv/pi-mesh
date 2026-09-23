@@ -337,12 +337,15 @@ export class HttpAgentServer implements AgentServer {
       this.controlCredentialsPath = defaultControlCredentialsPath(
         this.options.controlCredentialsPath,
       );
-      this.controlCredentials = await loadControlCredentials({
-        path: this.controlCredentialsPath,
-      });
+      // Record the mtime BEFORE reading. A write that lands between the two is
+      // then recorded as an OLDER generation than the file's, so the next check
+      // reloads instead of treating new contents as already loaded.
       this.controlCredentialsMtimeMs = await controlCredentialsMtime(
         this.controlCredentialsPath,
       );
+      this.controlCredentials = await loadControlCredentials({
+        path: this.controlCredentialsPath,
+      });
     }
     if (this.swarmKey.byteLength === 0) {
       throw new Error("A swarm key is required to start the agent");
@@ -450,12 +453,22 @@ export class HttpAgentServer implements AgentServer {
     }
 
     const rawBody = await readBody(request);
+    // A request claiming an already-paired control id is checked against the
+    // file FIRST. The retry below cannot see a revocation - a removed entry is
+    // still in the cache and still verifies - so without this, deleting a
+    // credential would keep working until the agent restarted. Swarm requests,
+    // the common case, are never looked up here and never touch the file.
+    const claimed = header(request, PI_MESH_HEADERS.peer);
+    if (
+      claimed !== undefined &&
+      this.controlCredentials.some((entry) => entry.controlId === claimed)
+    ) {
+      await this.refreshControlCredentials();
+    }
     let principal = this.verifyRequest(request, rawBody);
     if (principal === undefined && (await this.refreshControlCredentials())) {
-      // The first attempt failing is what triggers the stat, so an ordinary
-      // swarm or already-paired request does no filesystem access at all. A
-      // failed signature is the only thing that does, which also means this
-      // cannot be used to reach the file from an unauthenticated request.
+      // A pairing that completed while this process was running: the first
+      // attempt failed because the id was unknown, and the file now has it.
       principal = this.verifyRequest(request, rawBody);
     }
     if (principal === undefined) {
@@ -538,9 +551,24 @@ export class HttpAgentServer implements AgentServer {
   private async refreshControlCredentials(): Promise<boolean> {
     const path = this.controlCredentialsPath;
     if (path === undefined) return false;
+    // The generation is read BEFORE the contents and recorded only on a
+    // successful parse, so a write that lands mid-read is re-read next time
+    // rather than recorded as already loaded.
     const mtimeMs = await controlCredentialsMtime(path);
     if (mtimeMs === this.controlCredentialsMtimeMs) return false;
-    this.controlCredentials = await loadControlCredentials({ path });
+    let next: readonly ControlCredential[];
+    try {
+      next = await loadControlCredentials({ path });
+    } catch {
+      // A file that exists but cannot be parsed must not leave the previous
+      // contents in force: for a revocation or a rotation that is fail-open.
+      // Drop the list, forget the generation so the next request retries, and
+      // let verification fail.
+      this.controlCredentials = [];
+      this.controlCredentialsMtimeMs = undefined;
+      return true;
+    }
+    this.controlCredentials = next;
     this.controlCredentialsMtimeMs = mtimeMs;
     return true;
   }

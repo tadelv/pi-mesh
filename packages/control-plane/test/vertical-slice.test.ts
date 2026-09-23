@@ -149,3 +149,78 @@ it("pairs a real agent, syncs its session, and retains the cache offline", async
   expect(cachedData.stale).toBe(true);
   expect(cachedData.events).toEqual(liveData.events);
 });
+
+it("syncs a running agent that is paired after it started", async () => {
+  // The README order: start the agent, start the control plane, THEN pair. The
+  // test above pairs first and only then creates the agent, which is why it
+  // could not see this - a running agent read its credential file once at
+  // startup and never looked again (issue #2).
+  const root = await mkdtemp(join(tmpdir(), "pi-mesh-late-pair-"));
+  const store = new ControlStore(join(root, "control.db"));
+  stores.push(store);
+  const pairing = new PairingService({
+    controlId: store.controlId(),
+    controlName: "test control",
+  });
+  const control = createControlServer({
+    store,
+    pairing,
+    port: 0,
+    host: "127.0.0.1",
+  });
+  controls.push(control);
+  const address = await control.start();
+  const port = await freePort();
+  const identity = {
+    peerId: "33333333-3333-4333-8333-333333333333",
+    name: "late-pair-agent",
+  };
+  const credentialsPath = join(root, "agent-credentials.json");
+  const sessionsRoot = join(root, "sessions");
+  const directory = getSessionStorageDir("/synthetic/project", sessionsRoot);
+  await mkdir(directory, { recursive: true });
+  await copyFile(
+    join(rootPath, "../../agent/test/fixtures/pi-0.85.1-session-v3.jsonl"),
+    join(directory, "fixture.jsonl"),
+  );
+
+  // Started with no credential file at all.
+  const agent = createAgentServer({
+    port,
+    host: "127.0.0.1",
+    swarmKey: Buffer.from("fixture swarm key"),
+    identity,
+    controlCredentialsPath: credentialsPath,
+    sessionsRoot,
+  });
+  agents.push(agent);
+  await agent.start();
+
+  const issued = pairing.issue();
+  const output = { write: () => true };
+  expect(
+    await pair([issued.token, "--control-host", `127.0.0.1:${address.port}`], {
+      stdout: output,
+      stderr: output,
+      identity,
+      controlCredentialsPath: credentialsPath,
+      agentPort: port,
+    }),
+  ).toBe(0);
+
+  // No restart in between: the sync is the first request the agent sees with
+  // the credential a separate process just wrote.
+  const headers = { "X-Pi-Mesh-Ui": store.dashboardToken() };
+  const synced = await fetch(`http://127.0.0.1:${address.port}/api/sync`, {
+    method: "POST",
+    headers,
+  });
+  const result = (await synced.json()) as {
+    results: Array<{ peer_id: string; ok: boolean }>;
+  };
+  expect(result.results).toContainEqual({
+    peer_id: identity.peerId,
+    ok: true,
+    count: 1,
+  });
+});

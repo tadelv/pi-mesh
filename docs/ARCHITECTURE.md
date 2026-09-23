@@ -71,6 +71,11 @@ persistent mirror, but its freshness timestamp is process-local: after a control
 plane restart the dashboard marks those rows as cached until the next successful
 agent sync.
 
+Dashboard session detail returns the newest 200 cached events by default. Its
+`tail` query parameter accepts 1–1000 entries, `before` pages backward by entry
+ID, and `all=1` explicitly requests the complete cached transcript. The cache
+itself remains complete for offline viewing.
+
 Pairing is `pi-mesh-agent pair <token>` against a token the control plane
 mints; the token is never transmitted and both sides derive the credential over
 the handshake transcript. `docs/PROTOCOL.md` carries the wire detail and

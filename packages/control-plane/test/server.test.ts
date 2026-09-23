@@ -57,6 +57,75 @@ describe("control server", () => {
     expect(dashboard).toContain("typeof agent.jobs_synced_at === 'number'");
   });
 
+  it("bounds session responses to the newest 200 cached entries by default", async () => {
+    const { base, store, token } = await setup();
+    store.upsertAgent({
+      peer_id: "agent-x",
+      name: "Agent X",
+      host: "127.0.0.1",
+      port: 1,
+      credential: Buffer.alloc(32, 3).toString("base64"),
+      paired_at: "now",
+    });
+    store.upsertEvents(
+      "agent-x",
+      "session-x",
+      Array.from({ length: 250 }, (_, i) => ({
+        entryId: `entry-${i}`,
+        type: "message",
+        timestamp: new Date(i * 1000).toISOString(),
+        data: { index: i },
+      })),
+    );
+    const headers = { "X-Pi-Mesh-Ui": token };
+    const response = await fetch(`${base}/api/sessions/agent-x/session-x`, {
+      headers,
+    });
+    const tail = (await response.json()) as {
+      events: Array<{ entry_id: string }>;
+      hasEarlier: boolean;
+      total: number;
+      stale: boolean;
+    };
+    expect(
+      tail.events,
+      "default response bound clause: return only the newest 200 entries",
+    ).toHaveLength(200);
+    expect(tail.events[0]!.entry_id).toBe("entry-50");
+    expect(tail.events.at(-1)!.entry_id).toBe("entry-249");
+    expect(tail).toMatchObject({ hasEarlier: true, total: 250, stale: true });
+
+    const shorter = (await (
+      await fetch(`${base}/api/sessions/agent-x/session-x?tail=50`, { headers })
+    ).json()) as { events: Array<{ entry_id: string }>; hasEarlier: boolean };
+    expect(shorter.events).toHaveLength(50);
+    expect(shorter.events[0]!.entry_id).toBe("entry-200");
+    expect(shorter.hasEarlier).toBe(true);
+    expect(
+      (
+        await fetch(`${base}/api/sessions/agent-x/session-x?tail=1001`, {
+          headers,
+        })
+      ).status,
+    ).toBe(400);
+
+    const earlier = (await (
+      await fetch(`${base}/api/sessions/agent-x/session-x?before=entry-50`, {
+        headers,
+      })
+    ).json()) as { events: Array<{ entry_id: string }>; hasEarlier: boolean };
+    expect(earlier.events.map((event) => event.entry_id)).toEqual(
+      Array.from({ length: 50 }, (_, i) => `entry-${i}`),
+    );
+    expect(earlier.hasEarlier).toBe(false);
+
+    const all = (await (
+      await fetch(`${base}/api/sessions/agent-x/session-x?all=1`, { headers })
+    ).json()) as { events: unknown[]; hasEarlier: boolean };
+    expect(all.events).toHaveLength(250);
+    expect(all.hasEarlier).toBe(false);
+  });
+
   it("requires dashboard token for API state", async () => {
     const { base, token } = await setup();
     const unauthorized = await fetch(`${base}/api/state`);

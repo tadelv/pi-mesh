@@ -283,12 +283,45 @@ export class ControlStore {
     return result.changes > 0;
   }
 
+  countEvents(agentId: string, sessionId: string): number {
+    return (
+      this.db
+        .prepare(
+          "SELECT COUNT(*) AS count FROM events WHERE agent_id = ? AND session_id = ?",
+        )
+        .get(agentId, sessionId) as { count: number }
+    ).count;
+  }
+
   listEvents(agentId: string, sessionId: string): CachedEvent[] {
     return this.db
       .prepare(
         "SELECT agent_id, session_id, entry_id, type, timestamp, data FROM events WHERE agent_id = ? AND session_id = ? ORDER BY rowid",
       )
       .all(agentId, sessionId) as unknown as CachedEvent[];
+  }
+
+  listEventPage(
+    agentId: string,
+    sessionId: string,
+    limit: number,
+    before?: string,
+  ): { events: CachedEvent[]; hasEarlier: boolean } {
+    const rows =
+      before === undefined
+        ? this.db
+            .prepare(
+              "SELECT agent_id, session_id, entry_id, type, timestamp, data FROM events WHERE agent_id = ? AND session_id = ? ORDER BY rowid DESC LIMIT ?",
+            )
+            .all(agentId, sessionId, limit + 1)
+        : this.db
+            .prepare(
+              "SELECT agent_id, session_id, entry_id, type, timestamp, data FROM events WHERE agent_id = ? AND session_id = ? AND rowid < (SELECT rowid FROM events WHERE agent_id = ? AND session_id = ? AND entry_id = ?) ORDER BY rowid DESC LIMIT ?",
+            )
+            .all(agentId, sessionId, agentId, sessionId, before, limit + 1);
+    const hasEarlier = rows.length > limit;
+    const events = rows.slice(0, limit).reverse() as unknown as CachedEvent[];
+    return { events, hasEarlier };
   }
 
   upsertEvents(

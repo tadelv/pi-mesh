@@ -416,6 +416,19 @@ export function createControlServer(
           json(response, 400, { error: "invalid_path" });
           return;
         }
+        const all = url.searchParams.get("all");
+        const before = url.searchParams.get("before") ?? undefined;
+        const tailParam = url.searchParams.get("tail");
+        const tail = tailParam === null ? 200 : Number(tailParam);
+        if (
+          (all !== null && all !== "1") ||
+          !Number.isInteger(tail) ||
+          tail < 1 ||
+          tail > 1000
+        ) {
+          json(response, 400, { error: "invalid_query" });
+          return;
+        }
         const agent = store.getAgent(agentId);
         if (agent === undefined) {
           json(response, 404, { error: "unknown_agent" });
@@ -443,8 +456,18 @@ export function createControlServer(
         } catch {
           stale = true;
         }
+        const total = store.countEvents(agentId, sessionId);
+        const page =
+          all === "1"
+            ? {
+                events: store.listEvents(agentId, sessionId),
+                hasEarlier: false,
+              }
+            : store.listEventPage(agentId, sessionId, tail, before);
         json(response, 200, {
-          events: store.listEvents(agentId, sessionId),
+          ...page,
+          total,
+          all: all === "1",
           stale,
         });
         return;

@@ -16,7 +16,7 @@ Pi Mesh is a peer-to-peer mesh for Pi coding agents. The optional control plane 
 
 ## Capabilities and Constraints
 
-The dashboard uses a pasted localStorage token sent in `X-Pi-Mesh-Ui`; it never puts the token in a URL. Session logs are cached in full for offline viewing, while session detail responses are bounded by the control plane. Starting and steering remain gated by each agent's advertised controls. The dashboard is vanilla DOM with no external resources or build step.
+The dashboard uses a pasted localStorage token sent in `X-Pi-Mesh-Ui`; it never puts the token in a URL. Session logs are cached in full for offline viewing, while session detail responses are bounded by the control plane. Paging a long session still reads the whole session from its agent before serving the cached page, so a page request costs the full transfer even though its response is bounded; if the agent is unreachable the cached page is served with `stale` set. Starting and steering remain gated by each agent's advertised controls. The dashboard is vanilla DOM with no external resources or build step.
 
 ## Brand Commitments
 

@@ -123,6 +123,12 @@ matter:
 
 `docker compose -f examples/docker-compose.yml up -d`, then read the dashboard
 URL and the pairing token from the logs (`docker logs pi-mesh-control-plane`).
+The URL carries no dashboard token; read that separately, because it is not
+written to the log unless you ask for it:
+
+```sh
+docker exec pi-mesh-control-plane node packages/control-plane/dist/cli.js token
+```
 
 `TYPESAFE_API_KEY` is optional and only enables the Jev command bar
 (ADR 0012). Put it in the stack's environment, never in the image or the repo;
@@ -138,8 +144,17 @@ the recreated container picks up the new tag.
 
 ### Pairing
 
-`serve` prints a dashboard URL (carrying its access token) and a one-time
-pairing token. On each device:
+`serve` prints a dashboard URL and a one-time pairing token. The URL does not
+carry the dashboard token (ADR 0014); get that with:
+
+```sh
+node packages/control-plane/dist/cli.js token
+```
+
+and paste it into the dashboard once. It is kept in the browser and sent as a
+header, never in a URL.
+
+On each device:
 
 ```sh
 node packages/agent/dist/cli.js pair <pairing-token>
@@ -171,6 +186,28 @@ A machine that has not opted in still appears in the dashboard and still refuses
 with `-32102`, so a refusal is a normal state to display rather than a failure to
 hide.
 
+### Execution requires a confidential connection
+
+A second, separate condition applies to the operator's side (ADR 0014). The four
+execution routes are served only to a request that arrived over TLS or from
+loopback, because the dashboard token is otherwise a reusable credential
+crossing a plaintext LAN - and a browser on an insecure origin cannot sign its
+requests, so there is no way to make that credential non-replayable. A refused
+request is `403 confidential_transport_required` and never reaches an agent.
+
+Three ways to satisfy it, in order of preference:
+
+1. **Terminate TLS in front of it.** A reverse proxy on the same host works with
+   no configuration, because the proxy dials the control plane over loopback. A
+   proxy on another host does not, and needs option 2 or 3.
+2. **Reach it over a VPN** and use the dashboard from there.
+3. **`--allow-insecure-execution`** (or `PI_MESH_ALLOW_INSECURE_EXECUTION=1`) on a
+   LAN you trust. Off by default; it warns at startup. In the compose file or a
+   Portainer stack this is an environment variable on the service.
+
+Reading - the session list, session content, the pairing button - is unaffected
+and keeps working over plaintext. Only execution needs the confidential channel.
+
 ### Backups and revoking
 
 The only persistent control-plane state is the SQLite database at `PI_MESH_DB`.
@@ -187,7 +224,8 @@ verifies.
 
 A dashboard token is the only authentication on `/api/*`, and the listener is
 plaintext HTTP. Do not port-forward it to the internet. Reach it over a VPN, or
-put an authenticating reverse proxy in front of it.
+put an authenticating reverse proxy in front of it - which, per the section
+above, is also what makes dashboard execution possible without the override.
 
 ## Publishing (M3-3)
 

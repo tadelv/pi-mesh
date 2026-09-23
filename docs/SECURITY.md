@@ -148,9 +148,16 @@ The control plane's HTTP listener is LAN-facing (it is advertised over mDNS), so
 its `/api/*` routes require a **dashboard token** generated on first run and
 stored in the control plane's database. Without it, anyone on the LAN could mint
 a pairing token and read every paired agent's sessions. The token is accepted as
-`Authorization: Bearer`, `X-Pi-Mesh-Ui`, or `?token=`; `serve` prints the URL that
-carries it. It is compared in constant time. There is one token and one operator;
-there is no account model.
+`Authorization: Bearer`, `X-Pi-Mesh-Ui`, a query parameter or a cookie, and it is
+compared in constant time. There is one token and one operator; there is no
+account model.
+
+The token is deliberately **not** put in the dashboard URL, and `serve` does not
+print it. Read it with `pi-mesh-control-plane token` (or `serve --print-token`)
+and paste it into the page, which keeps it in `localStorage` and sends it as a
+header. `?token=` is still accepted for a hand-made request, but nothing the
+dashboard does writes the token into a URL - so it is not handed to browser
+history, a referrer or a proxy log by default (ADR 0014).
 
 ### Dashboard control is execution
 
@@ -169,6 +176,18 @@ The dashboard can start, steer, stop and abort sessions on a paired agent
   token can reduce activity on a paired agent.
 - Two independent grants must agree - the token to *ask*, the opt-in to *allow* -
   and neither is sufficient alone.
+- **Execution requires a confidential request** (ADR 0014). A request that
+  arrived in the clear over the network - not TLS-terminated and not from
+  loopback - is refused with `403 confidential_transport_required`, and **no
+  agent is contacted**. So a dashboard request captured off a plaintext LAN
+  grants nothing: replaying it fails the same check. This is what replaces the
+  proof-of-possession the mesh uses (ADR 0007), which a browser cannot perform on
+  an insecure origin because WebCrypto is unavailable there.
+- Reading is not restricted this way. Plaintext session disclosure is the known,
+  accepted cost of v1; plaintext execution is not.
+- `--allow-insecure-execution` (or `PI_MESH_ALLOW_INSECURE_EXECUTION=1`)
+  restores execution over plaintext for a LAN you have decided to trust. It is
+  off by default and warns on startup.
 
 ## Optional third-party integration: Jev intent routing
 

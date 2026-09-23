@@ -23,8 +23,9 @@ export interface CliIO {
   server?: Pick<ControlServer, "start" | "stop" | "dashboardUrl">;
 }
 const usage =
-  "Usage: pi-mesh-control-plane <serve|publish|help>\n" +
-  "\nCommands:\n  serve    Run the dashboard and advertise the control plane\n  publish  Advertise the control plane over mDNS\n  help     Show this usage information\n";
+  "Usage: pi-mesh-control-plane <serve|publish|token|help>\n" +
+  "\nCommands:\n  serve    Run the dashboard and advertise the control plane\n  publish  Advertise the control plane over mDNS\n  token    Print the dashboard token (for pasting into the dashboard)\n  help     Show this usage information\n" +
+  "\nserve flags:\n  --print-token                Also print the dashboard token to stderr\n  --allow-insecure-execution   Serve execution over plaintext, non-loopback HTTP\n";
 const DEFAULT_PORT = 7331;
 function controlPlanePort(): number {
   const configured = Number(process.env.PI_MESH_PORT ?? DEFAULT_PORT);
@@ -51,7 +52,8 @@ export async function run(
     io.stdout.write(usage);
     return 0;
   }
-  if (command === "serve") return serve(io);
+  if (command === "serve") return serve(io, argv.slice(1));
+  if (command === "token") return printToken(io);
   if (command !== "publish") {
     io.stderr.write(usage);
     return 2;
@@ -80,7 +82,26 @@ export async function run(
   }
 }
 
-async function serve(io: CliIO): Promise<number> {
+async function printToken(io: CliIO): Promise<number> {
+  const database =
+    process.env.PI_MESH_DB ?? join(homedir(), ".pi-mesh", "control.db");
+  const store = io.store ?? new ControlStore(database);
+  try {
+    io.stdout.write(`${store.dashboardToken()}\n`);
+    return 0;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    io.stderr.write(`Failed to read the dashboard token: ${message}\n`);
+    return 1;
+  } finally {
+    if (io.store === undefined) store.close();
+  }
+}
+
+async function serve(io: CliIO, flags: string[]): Promise<number> {
+  const allowInsecure =
+    flags.includes("--allow-insecure-execution") ||
+    process.env.PI_MESH_ALLOW_INSECURE_EXECUTION === "1";
   let ownedStore: ControlStore | undefined;
   let server:
     Pick<ControlServer, "start" | "stop" | "dashboardUrl"> | undefined;
@@ -97,7 +118,13 @@ async function serve(io: CliIO): Promise<number> {
       controlId: store.controlId(),
       controlName,
     });
-    server = io.server ?? createControlServer({ store, pairing });
+    server =
+      io.server ??
+      createControlServer({
+        store,
+        pairing,
+        allowInsecureExecution: allowInsecure,
+      });
     const listening = await server.start();
     advertisement = await publishControlPlane(
       {
@@ -110,9 +137,18 @@ async function serve(io: CliIO): Promise<number> {
       io.bonjour === undefined ? undefined : { bonjour: io.bonjour },
     );
     const issued = pairing.issue();
-    io.stderr.write(
-      `Dashboard: ${server.dashboardUrl()}\nPairing token: ${issued.token}\n`,
-    );
+    // The URL deliberately carries no token (ADR 0014). Reading it is an
+    // explicit act, so it cannot land in a log line by accident.
+    io.stderr.write(`Dashboard: ${server.dashboardUrl()}\n`);
+    if (flags.includes("--print-token")) {
+      io.stderr.write(`Dashboard token: ${store.dashboardToken()}\n`);
+    }
+    if (allowInsecure) {
+      io.stderr.write(
+        "WARNING: --allow-insecure-execution is on. A captured dashboard request can spawn on any opted-in agent.\n",
+      );
+    }
+    io.stderr.write(`Pairing token: ${issued.token}\n`);
     return await new Promise<number>((resolveExit) => {
       let stopping = false;
       const stop = (): void => {

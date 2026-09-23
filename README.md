@@ -64,7 +64,9 @@ machine that should hold the fleet view:
 
     node packages/control-plane/dist/cli.js serve
 
-It prints a dashboard URL (with its access token) and a one-time pairing token.
+It prints a dashboard URL and a one-time pairing token. The URL carries no
+dashboard token (ADR 0014) - read that with
+`node packages/control-plane/dist/cli.js token` and paste it into the page once.
 On each device you want it to see:
 
     pi-mesh-agent pair <pairing-token>
@@ -75,7 +77,7 @@ plane never holds the swarm key, and the mesh works with it absent.
 
 `docker compose -f examples/docker-compose.yml up -d` runs the control plane and
 serves the dashboard on `http://localhost:7331`; `docker logs` prints the URL and
-token. The dashboard's command bar can route plain-language requests to
+the pairing token. The dashboard's command bar can route plain-language requests to
 dashboard actions using TypeSafe's Jev — an **optional** integration, enabled
 only when `TYPESAFE_API_KEY` is set (ADR 0012). With it unset the command bar is
 hidden and no request leaves the machine.

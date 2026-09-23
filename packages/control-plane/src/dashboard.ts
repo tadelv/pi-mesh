@@ -3,19 +3,21 @@
 export const dashboard = `<!doctype html>
 <html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Pi Mesh Control Plane</title>
 <style>body{font:16px system-ui,sans-serif;max-width:900px;margin:2rem auto;padding:0 1rem;color:#222}button,input{font:inherit;padding:.5rem;margin:.25rem}article{border:1px solid #ccc;padding:1rem;margin:1rem 0}small{color:#555}.result{padding:.5rem;background:#f2f2f2;border-left:3px solid #777}#pairing{white-space:pre-wrap}</style>
-<h1 id="title">Pi Mesh</h1><button id="pair">Pair agent</button><button id="sync">Sync</button><p id="pairing"></p><form id="command"><label>Ask <input id="intent-text" type="text" autocomplete="off"></label><button>Send</button></form><p id="intent-note" role="status"></p><label>Filter sessions <input id="filter" type="search"></label><main id="agents"></main>
+<h1 id="title">Pi Mesh</h1><form id="auth" hidden><label>Dashboard token <input id="auth-token" type="password" autocomplete="off" size="44" placeholder="pi-mesh-control-plane token"></label> <button>Connect</button></form><p id="auth-note" role="status"></p><button id="pair">Pair agent</button><button id="sync">Sync</button><p id="pairing"></p><form id="command"><label>Ask <input id="intent-text" type="text" autocomplete="off"></label><button>Send</button></form><p id="intent-note" role="status"></p><label>Filter sessions <input id="filter" type="search"></label><main id="agents"></main>
 <script>
 (() => {
-  const query = new URLSearchParams(location.search);
-  const token = query.get('token') || document.cookie.split('; ').find(v => v.startsWith('pi_mesh_ui='))?.slice(11) || '';
+  // The token is pasted once and kept here. It is deliberately NOT read from
+  // the URL or a cookie any more (ADR 0014): a URL token is plaintext, and it
+  // ends up in history, referrers and server logs.
+  let token = localStorage.getItem('pi_mesh_token') || '';
   const root = document.querySelector('#agents');
   const messages = new Map();
   const node = (tag, text, parent) => { const e = document.createElement(tag); if(text !== undefined) e.textContent = String(text ?? ''); parent.append(e); return e; };
+  function needToken(message) { token = ''; localStorage.removeItem('pi_mesh_token'); document.querySelector('#auth').hidden = false; document.querySelector('#auth-note').textContent = message || ''; root.replaceChildren(); }
   async function api(path, method='GET', body) {
-    const url = path + (token ? (path.includes('?')?'&':'?') + 'token=' + encodeURIComponent(token) : '');
-    const r = await fetch(url, {method, headers:{'X-Pi-Mesh-Ui':token, ...(body === undefined ? {} : {'content-type':'application/json'})}, ...(body === undefined ? {} : {body:JSON.stringify(body)})});
+    const r = await fetch(path, {method, headers:{'X-Pi-Mesh-Ui':token, ...(body === undefined ? {} : {'content-type':'application/json'})}, ...(body === undefined ? {} : {body:JSON.stringify(body)})});
     const result = await r.json();
-    if(!r.ok) { const error=Error(result.message || result.error || ('Request failed: '+r.status)); error.status=r.status; throw error; }
+    if(!r.ok) { const error=Error(result.message || result.error || ('Request failed: '+r.status)); error.status=r.status; if(r.status === 401) needToken('The dashboard token was rejected. Paste it again.'); throw error; }
     return result;
   }
   let state, agentFilter;
@@ -42,6 +44,10 @@ export const dashboard = `<!doctype html>
   }
   function render() {
     root.replaceChildren(); if(!state) return;
+    if(state.execution_transport && state.execution_transport !== 'confidential')
+      node('p', state.execution_transport === 'insecure_override'
+        ? 'WARNING: execution is allowed over this plaintext connection (--allow-insecure-execution). Anyone who captures a dashboard request can spawn on an opted-in agent.'
+        : 'Execution is unavailable over this connection. It needs TLS or loopback, or PI_MESH_ALLOW_INSECURE_EXECUTION=1 on a LAN you trust.', root).className = 'result';
     document.querySelector('#title').textContent = state.control.name;
     const filter = document.querySelector('#filter').value.toLowerCase();
     for (const agent of state.agents.filter(a => !agentFilter || a.peer_id === agentFilter)) {
@@ -131,6 +137,18 @@ export const dashboard = `<!doctype html>
       else note.textContent=error.message;
     }
   });
-  load().catch(e => { root.textContent=e.message; });
+  document.querySelector('#auth').addEventListener('submit', event => {
+    event.preventDefault();
+    token = document.querySelector('#auth-token').value.trim();
+    if(!token) return;
+    localStorage.setItem('pi_mesh_token', token);
+    void connect();
+  });
+  async function connect() {
+    try { await load(); document.querySelector('#auth').hidden = true; document.querySelector('#auth-note').textContent = ''; }
+    catch(error) { if(error.status !== 401) { document.querySelector('#auth').hidden = true; root.textContent = error.message; } }
+  }
+  if(!token) needToken('Paste the dashboard token to connect. Get it with: pi-mesh-control-plane token');
+  else void connect();
 })();
 </script></html>`;

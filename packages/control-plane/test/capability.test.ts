@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import { afterEach, expect, it } from "vitest";
+import vm from "node:vm";
 import { createAgentServer } from "../../agent/src/server.js";
 import { parseSpawnPolicy } from "../../agent/src/spawn-policy.js";
 import {
@@ -199,4 +200,16 @@ it("does not load external resources or disclose credentials in the dashboard", 
     "external-resource clause: dashboard must have no remote src/href resources",
   ).not.toMatch(/(?:src|href)\s*=\s*["']https?:/i);
   expect(dashboard.toLowerCase()).not.toContain("credential");
+});
+
+it("ships a dashboard script that parses", () => {
+  // There is no browser test and none is claimed, so this is the cheapest guard
+  // that a dashboard edit is valid JavaScript at all. vm.Script compiles
+  // without running, which matters: the IIFE touches localStorage and document
+  // the moment it executes.
+  const script = /<script>([\s\S]*)<\/script>/.exec(dashboard)?.[1];
+  expect(script, "the dashboard must contain an inline script").toBeTypeOf(
+    "string",
+  );
+  expect(() => new vm.Script(script ?? "")).not.toThrow();
 });

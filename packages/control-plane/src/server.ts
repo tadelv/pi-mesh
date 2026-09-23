@@ -33,6 +33,16 @@ export interface ControlServerOptions {
   fetch?: typeof globalThis.fetch;
   now?: () => number;
   typesafeApiKey?: string;
+  /**
+   * Serve the execution routes to a plaintext, non-loopback request. Off by
+   * default; the deliberate override from ADR 0014 decision 3.
+   */
+  allowInsecureExecution?: boolean;
+  /**
+   * What counts as a confidential request. Injected only so a test can produce
+   * a non-confidential caller, which a loopback test server otherwise cannot.
+   */
+  confidential?: (request: IncomingMessage) => boolean;
 }
 export interface ControlServer {
   readonly server: Server;
@@ -57,6 +67,8 @@ export function createControlServer(
     });
   let actualPort = port;
   const agentCaps = new Map<string, string[]>();
+  const confidential = options.confidential ?? isConfidential;
+  const allowInsecure = options.allowInsecureExecution === true;
 
   const server = createServer((request, response) => {
     void route(request, response).catch(() =>
@@ -70,14 +82,11 @@ export function createControlServer(
   ): Promise<void> {
     const url = new URL(request.url ?? "/", "http://localhost");
     if (request.method === "GET" && url.pathname === "/") {
-      const token = url.searchParams.get("token");
-      const headers: Record<string, string> = {
-        "content-type": "text/html; charset=utf-8",
-      };
-      if (token !== null && validToken(token, store.dashboardToken()))
-        headers["set-cookie"] =
-          `pi_mesh_ui=${encodeURIComponent(token)}; HttpOnly; SameSite=Strict; Path=/`;
-      response.writeHead(200, headers);
+      // No token in the URL and no cookie: the page asks the operator for the
+      // token once and keeps it in localStorage (ADR 0014 decision 2). Removing
+      // it from here is what keeps it out of browser history, referrers and
+      // server logs.
+      response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
       response.end(dashboard);
       return;
     }
@@ -162,12 +171,32 @@ export function createControlServer(
           intent_enabled: Boolean(
             options.typesafeApiKey ?? process.env.TYPESAFE_API_KEY,
           ),
+          // Computed from THIS request, so the page can explain a refused
+          // button instead of looking broken. See ADR 0014 decision 6.
+          execution_transport: confidential(request)
+            ? "confidential"
+            : allowInsecure
+              ? "insecure_override"
+              : "refused",
         });
         return;
       }
       const executionMatch =
         /^\/api\/agents\/([^/]+)\/(spawn|steer|stop|abort)$/.exec(url.pathname);
       if (request.method === "POST" && executionMatch !== null) {
+        // The one thing a plaintext LAN observer must not be able to
+        // originate. This credential is reusable, the mesh's is not (ADR 0007),
+        // and the browser cannot sign without a secure origin - so there is no
+        // plaintext path to execution. Refuse before reading the body: a
+        // refused request does no work and reaches no agent. ADR 0014.
+        if (!confidential(request) && !allowInsecure) {
+          json(response, 403, {
+            error: "confidential_transport_required",
+            message:
+              "Dashboard execution needs a confidential connection (TLS or loopback). Terminate TLS in front of the control plane, or set PI_MESH_ALLOW_INSECURE_EXECUTION=1 on a LAN you trust.",
+          });
+          return;
+        }
         const body = await readJson(request, true);
         if (
           body === INVALID ||
@@ -455,9 +484,32 @@ export function createControlServer(
       });
     },
     dashboardUrl(urlHost = "127.0.0.1") {
-      return `http://${urlHost}:${actualPort}/?token=${encodeURIComponent(store.dashboardToken())}`;
+      // Deliberately no token. It is read with `pi-mesh-control-plane token`
+      // or `serve --print-token` and pasted into the page (ADR 0014 decision 2).
+      return `http://${urlHost}:${actualPort}/`;
     },
   };
+}
+
+/**
+ * A request that did not cross the network in the clear: TLS-terminated here,
+ * or dialed over loopback (which includes a TLS proxy on this host). ADR 0014.
+ */
+function isConfidential(request: IncomingMessage): boolean {
+  // `encrypted` exists on TLS sockets; Node's type for a plain Socket omits it,
+  // so this is the one place the two are distinguished.
+  if ((request.socket as { encrypted?: boolean }).encrypted === true)
+    return true;
+  return isLoopback(request.socket.remoteAddress);
+}
+
+function isLoopback(address: string | undefined): boolean {
+  if (address === undefined) return false;
+  return (
+    address === "::1" ||
+    address.startsWith("127.") ||
+    address.startsWith("::ffff:127.")
+  );
 }
 
 const INVALID = Symbol("invalid-json");
@@ -495,11 +547,6 @@ async function readJson(
   } catch {
     return INVALID;
   }
-}
-function validToken(candidate: string, expected: string): boolean {
-  const a = Buffer.from(candidate),
-    b = Buffer.from(expected);
-  return a.length === b.length && timingSafeEqual(a, b);
 }
 function authorized(
   request: IncomingMessage,

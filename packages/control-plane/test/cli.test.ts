@@ -36,7 +36,7 @@ describe("control-plane CLI", () => {
 
     await expect(run(argv, output.io)).resolves.toBe(0);
     expect(output.read().stdout).toMatch(
-      /Usage: pi-mesh-control-plane <serve\|publish\|help>/,
+      /Usage: pi-mesh-control-plane <serve\|publish\|token\|help>/,
     );
     expect(output.read().stderr).toBe("");
   });
@@ -47,7 +47,7 @@ describe("control-plane CLI", () => {
     await expect(run(["bogus"], output.io)).resolves.toBe(2);
     expect(output.read().stdout).toBe("");
     expect(output.read().stderr).toMatch(
-      /Usage: pi-mesh-control-plane <serve\|publish\|help>/,
+      /Usage: pi-mesh-control-plane <serve\|publish\|token\|help>/,
     );
   });
 
@@ -72,20 +72,57 @@ describe("control-plane CLI", () => {
         stoppedServer = true;
       },
       dashboardUrl() {
-        return "http://127.0.0.1:7445/?token=dashboard";
+        // Faithful to the real contract (ADR 0014): the URL carries no token.
+        return "http://127.0.0.1:7445/";
       },
     };
     try {
       const result = run(["serve"], output.io);
       await new Promise<void>((resolve) => setImmediate(resolve));
-      expect(output.read().stderr).toContain(
-        "http://127.0.0.1:7445/?token=dashboard",
-      );
+      expect(output.read().stderr).toContain("http://127.0.0.1:7445/");
+      // `serve` does not print the token: reading it is an explicit act.
+      expect(output.read().stderr).not.toContain(store.dashboardToken());
       expect(output.read().stderr).toMatch(/Pairing token: [A-Za-z0-9+/]+=*/);
       process.emit("SIGINT");
       await expect(result).resolves.toBe(0);
       expect(stoppedServer).toBe(true);
       expect(stoppedBonjour).toBe(true);
+    } finally {
+      store.close();
+    }
+  });
+
+  it("prints the dashboard token on request, and only on request", async () => {
+    const store = new ControlStore(":memory:");
+    try {
+      const direct = captured();
+      direct.io.store = store;
+      await expect(run(["token"], direct.io)).resolves.toBe(0);
+      expect(direct.read().stdout).toBe(`${store.dashboardToken()}\n`);
+
+      const asked = captured({
+        publish: () => undefined,
+        destroy: () => undefined,
+      });
+      asked.io.store = store;
+      asked.io.server = {
+        async start() {
+          return { address: "127.0.0.1", port: 7445 };
+        },
+        async stop() {
+          return undefined;
+        },
+        dashboardUrl() {
+          return "http://127.0.0.1:7445/";
+        },
+      };
+      const served = run(["serve", "--print-token"], asked.io);
+      await new Promise<void>((resolve) => setImmediate(resolve));
+      expect(asked.read().stderr).toContain(
+        `Dashboard token: ${store.dashboardToken()}`,
+      );
+      process.emit("SIGINT");
+      await expect(served).resolves.toBe(0);
     } finally {
       store.close();
     }

@@ -135,3 +135,8 @@ inventing a shape that happens to suit the code you are writing.
   process can reach a loopback port. Bind to loopback if you want that.
 - Do not invent a new pairing protocol. Use the token + fingerprint
   flow in `docs/SECURITY.md`.
+- Do not serve a dashboard execution route over plaintext, non-loopback
+  HTTP. The dashboard token is an execution grant (ADR 0013) and a browser
+  on an insecure origin cannot sign with it, so execution requires TLS or
+  loopback (ADR 0014). `--allow-insecure-execution` is the only exception
+  and it stays off by default.

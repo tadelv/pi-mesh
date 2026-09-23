@@ -1,6 +1,6 @@
 # ADR 0011 — The control-plane vertical slice: pair, cache, render
 
-Status: accepted
+Status: accepted (the `serve`-prints-the-URL-with-the-token detail in decision 4 is superseded by ADR 0014)
 
 ## Context
 

@@ -144,22 +144,18 @@ describe("control server", () => {
     });
   });
 
-  it("serves the dashboard and issues a token only for the correct query token", async () => {
+  it("serves a dashboard that carries no token, in the page or the URL", async () => {
     const { base, server, token } = await setup();
     const page = await fetch(`${base}/`);
     expect(page.status).toBe(200);
     expect(page.headers.get("content-type")).toContain("text/html");
-    expect(
-      (await fetch(`${base}/?token=wrong`)).headers.get("set-cookie"),
-    ).toBeNull();
-    expect(
-      (await fetch(`${base}/?token=${encodeURIComponent(token)}`)).headers.get(
-        "set-cookie",
-      ),
-    ).toContain("HttpOnly; SameSite=Strict; Path=/");
-    expect(server.dashboardUrl()).toContain(
-      `/?token=${encodeURIComponent(token)}`,
-    );
+    // ADR 0014: the token is read with `pi-mesh-control-plane token` and pasted
+    // in. It is never minted into a cookie here and never put in a URL, so
+    // there is nothing for browser history or a proxy log to keep.
+    expect(page.headers.get("set-cookie")).toBeNull();
+    expect(await page.text()).not.toContain(token);
+    expect(server.dashboardUrl()).not.toContain(token);
+    expect(server.dashboardUrl()).not.toContain("token=");
     const issue = await fetch(`${base}/api/pair/token`, {
       method: "POST",
       headers: { "X-Pi-Mesh-Ui": token },

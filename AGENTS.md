@@ -45,9 +45,10 @@ open an ADR in `docs/adr/` rather than improvising.
 ## Verifying your own work
 
 A green run is not evidence, and this repository has the scars to prove it: CI has
-caught five failures that no local gate saw (four test failures and one
-workflow-config error), and most of the real defects found in the last two
-milestones were tests that could not fail for the reason they claimed. These rules are what those cost. They are not ceremony.
+repeatedly caught failures that no local gate saw - test failures that passed on a
+laptop, and workflow errors that nothing local runs - and most of the real defects
+found in the last two milestones were tests that could not fail for the reason
+they claimed. These rules are what those cost. They are not ceremony.
 
 - **The failure line must name the clause.** A test whose failure is a transport
   error, a timeout, or a permission error from somewhere else is a non-answer: it

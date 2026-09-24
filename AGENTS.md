@@ -97,28 +97,33 @@ aborts on a paired agent by calling the agent's existing gated skills
 path, and a per-agent opt-in by the control plane's id. The transcript is in
 `docs/two-machine-proof.md` under "M4 - dashboard control".
 
-**No next milestone is authored.** Everything the documents promise is now built
-except the items in `README.md`'s "Someday" list and the deferred encryption in
-`docs/SECURITY.md`. Author the next milestone rather than improvising one.
+**Milestone 5 is authored and not started** (`tasks/milestone-5.md`): prompting
+the session you are reading, a start form that needs no blocking dialog or
+memorised project name, and the browser-test decision the reviews named. M5-1 is
+an ADR and comes before any code. Everything the documents promise is built
+except this, the items in `README.md`'s "Someday" list, and the deferred
+encryption in `docs/SECURITY.md`.
 
-Read order for picking up M4 - nothing here needs context beyond these files:
+Read order for picking up M5 - nothing here needs context beyond these files:
 
-1. `tasks/milestone-4.md` - the issues, their Definition of Done, what is
-   deliberately out of scope, and the decisions ADR 0013 settles.
-2. `docs/adr/0008-spawn-policy.md` - the gate every execution request must meet;
-   M4's whole risk is growing a second path around it.
-3. `docs/adr/0011-control-plane-vertical-slice.md` and `docs/PROTOCOL.md` - the
-   credential and the wire the dashboard now speaks.
-4. `docs/ARCHITECTURE.md`, `docs/SECURITY.md` and `docs/DEPLOYMENT.md` - the
-   system, the trust model, and how it is deployed.
+1. `tasks/milestone-5.md` - the issues, their Definition of Done, and what M5-1
+   must settle before any code is written.
+2. `docs/adr/0013-dashboard-control.md` and `docs/adr/0008-spawn-policy.md` - the
+   two grants and the one gate every execution request must meet; M5's risk is a
+   new path around them in the shape of a chat box.
+3. `docs/adr/0015-job-listing.md` - the jobs mirror is non-authoritative, which is
+   exactly why resolving a session to a job is a decision and not a lookup.
+4. `docs/adr/0011-control-plane-vertical-slice.md` and `docs/PROTOCOL.md` - the
+   credential and the wire the dashboard speaks.
 5. `docs/GOTCHAS.md` - read this before trusting a green test run.
 
 (For the M3 record, see `tasks/milestone-3.md` and `docs/two-machine-proof.md`.)
 
 ## What to build first
 
-Work through `tasks/milestone-4.md` in issue order; it is complete. No next
-milestone is written: author one before building. The
+Work through `tasks/milestone-5.md` in issue order. M4 is complete; M5-1 is the
+ADR that settles how a selected session resolves to a job, before any code,
+because M5-3 and M5-4 have no landed shape until it is accepted. The
 requirements are frozen: if you find a gap, open an ADR in `docs/adr/` rather than
 inventing a shape that happens to suit the code you are writing.
 

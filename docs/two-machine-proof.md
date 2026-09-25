@@ -487,3 +487,34 @@ TUI, and an empty jobs listing or this proof does not certify exclusive file
 ownership. Acceptance, observed transcript turns, and their attribution remain
 separate: session entries have no originating request ID; this test did not
 resume a file open in another process or verify actual screen-reader speech.
+
+## Dashboard UI re-deploy — `799310b` (2026-09-25)
+
+`main` at `22b252d` had a **red** CI run ([36172651414](https://github.com/tadelv/pi-mesh/actions/runs/36172651414)):
+`pnpm typecheck` failed in `packages/control-plane/test/server.test.ts`, where the
+`setup()` helper's inline `{ fetch?: typeof fetch }` type dropped the newer
+`dashboardHtml` option. Typing the parameter as `Partial<ControlServerOptions>`
+fixed it as **`799310b`**; CI for that commit passed
+([36173737103](https://github.com/tadelv/pi-mesh/actions/runs/36173737103)), and
+that is the deployed revision.
+
+The image was built through the Portainer Docker API from `git archive` of
+`799310b`, then stack **43**, endpoint **2** on `apollo.local` was redeployed from
+its **unchanged** stack file. Its running image is
+`sha256:5213569415132ec979bcc20e91e1ac5a7fd979213edd0e5443a97cecf5535ecd`
+(`pi-mesh/control-plane:dev`). Unlike the `a85666a` run above, the existing
+`pi-mesh-control-plane-data` volume was **not** archived first: the redeploy
+reused it in place with `Prune:false`, so the DB and pairings were retained
+rather than restored. The recreated container answered HTTP 200 for the dashboard
+and HTTP 401 for an unauthenticated API request.
+
+Both agents advanced to `799310b`. The Mac (`artemis`) was rebuilt and restarted
+with `launchctl kickstart -k`; `devpi` was pulled, frozen-installed and rebuilt,
+then gracefully SIGTERM'd and restarted with the same **scoped** control-plane
+opt-in (`--allow-execution=4903a35d-…`). Both listeners answered 200 on `:7330`.
+`GET /api/state`, authenticated with the control-plane's own DB token, listed both
+peers: `artemis` `192.168.12.100` and `devpi` `192.168.12.108`. No source in
+`packages/agent`, `packages/protocol` or `packages/shared` changed between
+`a85666a` and `799310b`, so this run moved the dashboard markup and not agent
+behaviour. The stack still uses the documented `PI_MESH_ALLOW_INSECURE_EXECUTION=1`
+exception; this run did not re-exercise execution.

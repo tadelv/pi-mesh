@@ -12,3 +12,9 @@ LICENSE
 # that Prettier would reflow. .editorconfig already opts markdown out of
 # whitespace trimming for the same reason.
 *.md
+
+# The dashboard markup is the design artifact, and its whitespace is part of the
+# page (transcript bodies render with `white-space: pre-wrap`). Prettier reflows
+# the embedded CSS and JS, churning the whole 54KB file on every touch, so it is
+# left to the editor.
+packages/control-plane/src/dashboard.html

@@ -18,7 +18,7 @@ import {
   fetchAgentCard,
   fetchSessionList,
 } from "./client.js";
-import { dashboard } from "./dashboard.js";
+import { dashboardHtml } from "./dashboard.js";
 import { agentControls } from "./controls.js";
 
 const MAX_BODY_BYTES = 64 * 1024;
@@ -41,6 +41,12 @@ export interface ControlServerOptions {
    * a non-confidential caller, which a loopback test server otherwise cannot.
    */
   confidential?: (request: IncomingMessage) => boolean;
+  /**
+   * Where to read the dashboard markup from. The dev server points this at
+   * src/dashboard.html so editing the page is a browser refresh, no rebuild.
+   * Defaults to the compiled next-to-dist read in dashboard.ts.
+   */
+  dashboardHtml?: () => string;
 }
 export interface ControlServer {
   readonly server: Server;
@@ -79,6 +85,7 @@ export function createControlServer(
   let jobsListingSeq = 0;
   const confidential = options.confidential ?? isConfidential;
   const allowInsecure = options.allowInsecureExecution === true;
+  const serveDashboard = options.dashboardHtml ?? dashboardHtml;
 
   const server = createServer((request, response) => {
     void route(request, response).catch(() =>
@@ -97,7 +104,7 @@ export function createControlServer(
       // it from here is what keeps it out of browser history, referrers and
       // server logs.
       response.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      response.end(dashboard);
+      response.end(serveDashboard());
       return;
     }
     if (url.pathname.startsWith("/api/")) {

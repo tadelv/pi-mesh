@@ -19,7 +19,7 @@
     "dist"
   ],
   "scripts": {
-    "build": "tsc -b",
+    "build": "tsc -b && cp src/dashboard.html dist/dashboard.html",
     "test": "vitest run --passWithNoTests",
     "lint": "eslint . --max-warnings 0",
     "dev": "node dist/cli.js"

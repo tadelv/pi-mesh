@@ -30,6 +30,8 @@
       --success: #286341;
       --border: #cbd1d5;
       --focus: #176b86;
+      --font-ui: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      --font-mono: ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace;
     }
     @media (prefers-color-scheme: dark) {
       :root {
@@ -65,29 +67,32 @@
       overflow: hidden;
       background: var(--body-bg);
       color: var(--text);
-      font: 13px/19px ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace;
-      font-variant-numeric: tabular-nums;
+      font-family: var(--font-ui);
+      font-size: 13px;
+      line-height: 19px;
+      -webkit-font-smoothing: antialiased;
     }
     ::selection { background: var(--selectedBg); color: var(--text); }
     :focus-visible { outline: 2px solid var(--focus); outline-offset: 2px; }
-    button, input, textarea { font: inherit; color: inherit; }
+    button, input, textarea, select { font: inherit; color: inherit; }
     button {
       min-height: 30px;
-      padding: 4px 9px;
+      padding: 5px 11px;
       border: 1px solid var(--border);
-      border-radius: 3px;
+      border-radius: 6px;
       background: var(--container-bg);
       cursor: pointer;
     }
     button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
     button:disabled { opacity: .55; cursor: not-allowed; }
-    input, textarea {
+    input, textarea, select {
       min-height: 30px;
-      padding: 4px 8px;
+      padding: 5px 8px;
       border: 1px solid var(--border);
-      border-radius: 3px;
+      border-radius: 6px;
       background: var(--body-bg);
     }
+    input:focus, textarea:focus, select:focus { border-color: var(--accent); }
     textarea { min-height: 64px; resize: vertical; }
     a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
     .topbar {
@@ -103,9 +108,9 @@
     .topbar button { flex-shrink: 0; white-space: nowrap; }
     .topbar .nav-btn { display: none; }
     h1, h2, h3, p { margin: 0; }
-    h1 { font-size: 15px; line-height: 21px; }
-    h2 { font-size: 15px; line-height: 21px; }
-    h3 { font-size: 13px; line-height: 19px; }
+    h1 { font-size: 15px; line-height: 21px; font-weight: 650; }
+    h2 { font-size: 15px; line-height: 21px; font-weight: 650; }
+    h3 { font-size: 13px; line-height: 19px; font-weight: 600; }
     .topbar h1 { margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .workspace {
       flex: 1 1 auto;
@@ -181,18 +186,29 @@
     #status, #auth-note { min-height: 18px; color: var(--dim); }
     #status[data-error="true"] { color: var(--error); }
     #pairing { margin: 8px 0 14px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--warning); }
-    #auth { padding: 10px 0 16px; }
-    #auth label { display: block; margin-bottom: 6px; }
-    #auth input { width: min(100%, 420px); }
+    #auth {
+      display: flex;
+      flex-direction: column;
+      align-items: flex-start;
+      gap: 8px;
+      max-width: 380px;
+      margin: 6px 0 14px;
+      padding: 16px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--container-bg);
+    }
+    #auth label { color: var(--dim); font-size: 12px; }
+    #auth input { width: 100%; }
     .session-heading { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
     .session-heading h2 { overflow-wrap: anywhere; }
     .transcript { display: flex; flex-direction: column; gap: 14px; padding: 14px 0; }
     .entry { min-width: 0; }
-    .entry-meta { display: flex; gap: 10px; margin-bottom: 5px; color: var(--dim); font-size: 11px; }
+    .entry-meta { display: flex; gap: 10px; margin-bottom: 5px; color: var(--dim); font-size: 11px; font-variant-numeric: tabular-nums; }
     .entry-role { font-weight: 700; color: var(--accent); }
     .entry.assistant .entry-role { color: var(--success); }
     .entry.tool-result .entry-role, .entry.meta-entry .entry-role { color: var(--muted); }
-    .entry-body { max-width: 75ch; overflow-wrap: anywhere; white-space: pre-wrap; font-size: 14px; line-height: 21px; }
+    .entry-body { max-width: 75ch; overflow-wrap: anywhere; white-space: pre-wrap; font-size: 14px; line-height: 21px; font-family: var(--font-mono); }
     .entry.user .entry-body { padding: 8px 10px; background: var(--userMessageBg); color: var(--userMessageText); }
     .entry.assistant .entry-body { padding: 0; }
     .entry.tool-call, .entry.tool-result, .entry.meta-entry { padding: 7px 10px; background: var(--info-bg); }
@@ -203,21 +219,38 @@
     details.tool-payload summary { cursor: pointer; }
     pre { margin: 6px 0 0; max-width: 100%; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); font: inherit; }
     .transcript-actions { display: flex; gap: 8px; padding-top: 2px; }
-    .management-heading { padding: 14px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
-    .agent-section { padding: 15px 0; border-bottom: 1px solid var(--border); }
-    .agent-title { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; margin-bottom: 9px; }
+    .management-heading { padding: 14px 0 4px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+    .agent-section {
+      margin: 10px 0;
+      padding: 14px;
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      background: var(--container-bg);
+    }
+    .agent-title { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+    .agent-title h2 { font-size: 14px; }
+    .agent-host { font-family: var(--font-mono); font-size: 11px; color: var(--muted); }
+    .chip { padding: 2px 8px; border: 1px solid var(--border); border-radius: 999px; background: var(--info-bg); font-size: 11px; color: var(--muted); white-space: nowrap; }
+    .chip-on { color: var(--success); }
+    .chip-off, .chip-unknown { color: var(--warning); }
     .agent-section h3 { margin: 12px 0 5px; }
-    .job { padding: 6px 0; border-top: 1px solid var(--border); }
-    .job-line { overflow-wrap: anywhere; }
+    .control-copy { display: flex; flex-direction: column; gap: 4px; margin-top: 10px; font-size: 11px; text-transform: uppercase; letter-spacing: .04em; color: var(--dim); }
+    .control-copy input { font-family: var(--font-mono); font-size: 11px; text-transform: none; }
+    .job { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; padding: 8px 0; border-top: 1px solid var(--border); }
+    .job-line { flex: 1 1 auto; min-width: 0; overflow-wrap: anywhere; font-family: var(--font-mono); font-size: 12px; }
     .job form, .agent-form { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; margin-top: 8px; }
-    .agent-form label { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; min-width: min(100%, 240px); }
+    #agents .agent-form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; margin-top: 12px; }
+    #agents .agent-form label { display: flex; flex-direction: column; align-items: stretch; gap: 5px; min-width: 0; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--dim); }
+    #agents .agent-form label > input, #agents .agent-form label > textarea, #agents .agent-form label > select { width: 100%; text-transform: none; letter-spacing: 0; }
+    #agents .agent-form p { font-size: 11px; text-transform: none; letter-spacing: 0; }
+    #agents .agent-form > button { justify-self: start; }
     .agent-form textarea { width: min(100%, 420px); }
     .agent-form input { width: min(100%, 320px); }
     .start-review { flex-basis: 100%; }
     .start-review button { margin: 8px 8px 0 0; }
     .result { margin: 6px 0; color: var(--warning); white-space: pre-wrap; overflow-wrap: anywhere; }
     .result.success { color: var(--success); }
-    .notice { margin: 8px 0; padding: 8px 10px; background: var(--info-bg); color: var(--dim); overflow-wrap: anywhere; }
+    .notice { margin: 8px 0; padding: 8px 10px; border-radius: 6px; background: var(--info-bg); color: var(--dim); overflow-wrap: anywhere; }
     .notice.warning { color: var(--warning); }
     [hidden] { display: none !important; }
     @media (max-width: 1000px) {
@@ -835,25 +868,27 @@
     return spawnStates.get(peerId);
   }
   function renderAgent(agent) {
+    const jobs = state.jobs.filter(job => job.agent_id === agent.peer_id);
     const section = node('section', undefined, root);
     section.className = 'agent-section';
     const head = node('header', undefined, section);
     head.className = 'agent-title';
     node('h2', agent.name, head);
-    node('span', agent.host+':'+agent.port, head).className = 'dim';
+    node('span', agent.host+':'+agent.port, head).className = 'agent-host';
     const capable = agent.controls.spawn;
-    if(capable) node('p', 'Execution enabled on this agent.', section).className = 'dim';
-    else {
-      const status = agent.skills === null ? 'Execution capability unknown (agent has not been reached).' : 'Execution is not advertised by this agent.';
-      node('p', status, section).className = 'dim';
+    const chip = node('span', agent.skills === null ? 'capability unknown' : capable ? 'execution enabled' : 'execution not advertised', head);
+    chip.className = 'chip '+(agent.skills === null ? 'chip-unknown' : capable ? 'chip-on' : 'chip-off');
+    if(jobs.length) node('span', jobs.length+(jobs.length === 1 ? ' job' : ' jobs'), head).className = 'chip';
+    if(!capable) {
       const controlLabel = node('label', 'Control id to copy ', section);
+      controlLabel.className = 'control-copy';
       const controlId = node('input', undefined, controlLabel); controlId.readOnly = true; controlId.value = state.control.id;
       const copy = node('button', 'Copy id', section);
       copy.addEventListener('click', async () => {
         try { await navigator.clipboard.writeText(state.control.id); copy.textContent = 'Copied'; }
         catch { controlId.select(); copy.textContent = 'Select and copy'; }
       });
-      node('p', 'Start the agent with --allow-execution='+state.control.id, section).className = 'dim';
+      node('p', 'Start the agent with --allow-execution='+state.control.id, section).className = 'dim hint';
     }
     if(capable) {
       const current = spawnState(agent.peer_id);
@@ -923,7 +958,6 @@
         const outcome = node('p', current.outcome.text, section); outcome.className = 'result'; outcome.setAttribute('role', 'status');
       }
     }
-    const jobs = state.jobs.filter(job => job.agent_id === agent.peer_id);
     const jobsFresh = typeof agent.jobs_synced_at === 'number';
     const jobsAge = jobsFresh ? Date.now() - agent.jobs_synced_at : 0;
     const jobsAgeLabel = jobsAge < 60_000 ? Math.floor(jobsAge / 1000)+'s ago' : Math.floor(jobsAge / 60_000)+'m ago';

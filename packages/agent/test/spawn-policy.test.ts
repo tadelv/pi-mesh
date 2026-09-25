@@ -98,6 +98,14 @@ async function executionServer(
     calls.push(input);
     return { accepted: true };
   });
+  // Registered for the same reason, and load-bearing: this test iterates
+  // EXECUTION_SKILLS, so a skill the harness forgets would answer -32004 "not
+  // served" instead of -32102 "denied" and fail as a harness gap dressed up as
+  // a gate failure.
+  skills.registerExecution("session.set_model", async (input) => {
+    calls.push(input);
+    return { accepted: true };
+  });
   if (includeSpawn) {
     skills.registerExecution("process.spawn", async (input) => {
       calls.push(input);
@@ -382,7 +390,7 @@ describe("capability honesty and the gate", () => {
     // that they agree would compare a value to itself. M2-8 carries the real
     // assertion (the gate's effect on the advertised set).
     const served = servedSkills(false);
-    expect(served).toHaveLength(4);
+    expect(served).toHaveLength(5);
     for (const skill of [
       ...EXECUTION_SKILLS,
       "process.list",
@@ -391,7 +399,7 @@ describe("capability honesty and the gate", () => {
     ] as const) {
       expect(served).not.toContain(skill);
     }
-    expect(servedSkills(true, true)).toHaveLength(10);
+    expect(servedSkills(true, true)).toHaveLength(12);
     expect(servedSkills(true, true)).toContain("process.list");
   });
 

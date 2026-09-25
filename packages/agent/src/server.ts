@@ -50,6 +50,7 @@ import {
   type SkillRegistry,
   type SkillRegistryOptions,
 } from "./skills.js";
+import { PiRpcResponseError } from "./rpc.js";
 import {
   sessionStream,
   type SessionStream,
@@ -144,6 +145,10 @@ function reasonFor(code: number): string | undefined {
   if (code === ErrorCode.SpawnFailed) return "PI_MESH_SPAWN_FAILED";
   if (code === ErrorCode.UnknownJob) return "PI_MESH_UNKNOWN_JOB";
   if (code === ErrorCode.TooManyJobs) return "PI_MESH_TOO_MANY_JOBS";
+  if (code === ErrorCode.CatalogUnavailable) {
+    return "PI_MESH_CATALOG_UNAVAILABLE";
+  }
+  if (code === ErrorCode.JobNotRunning) return "PI_MESH_JOB_NOT_RUNNING";
   // A2A's own errors carry a reason too. The spec makes ErrorInfo a SHOULD for
   // the JSON-RPC binding (a MUST for gRPC and HTTP details), but emitting it
   // only for pi-mesh errors and not for A2A's would be an odd inconsistency,
@@ -163,6 +168,13 @@ function domainFor(code: number): string {
 function errorResponse(id: JsonRpcId, error: unknown): JsonRpcErrorResponse {
   if (error instanceof RpcFailure) {
     return rpcError(id, error.code, error.message);
+  }
+  // A Pi RPC failure is not a pi-mesh application error and carries no code of
+  // ours, but Pi's message IS the diagnostic ("Model not found: x/y"). Falling
+  // through to the generic -32603 discarded it - which ADR 0017 forbids for
+  // set_model, and which was already losing the reason for a refused steer.
+  if (error instanceof PiRpcResponseError) {
+    return rpcError(id, -32603, error.message);
   }
   if (error instanceof PiMeshError) {
     const reason = reasonFor(error.code);
@@ -373,20 +385,25 @@ export class HttpAgentServer implements AgentServer {
   }
 
   async stop(): Promise<void> {
-    if (!this.listening) return;
-    await new Promise<void>((resolve, reject) => {
-      this.server.close((error) =>
-        error === undefined ? resolve() : reject(error),
-      );
-      // close() only stops accepting and then waits for existing sockets, so a
-      // peer holding an SSE stream open would block this forever and an agent
-      // could never be shut down while someone was streaming from it. Ending
-      // the sockets here also fires the request 'close' handler, which stops
-      // the underlying SessionStream.
-      this.server.closeAllConnections();
-    });
-    this.listening = false;
-    this.actualPort = undefined;
+    if (this.listening) {
+      await new Promise<void>((resolve, reject) => {
+        this.server.close((error) =>
+          error === undefined ? resolve() : reject(error),
+        );
+        // close() only stops accepting and then waits for existing sockets, so a
+        // peer holding an SSE stream open would block this forever and an agent
+        // could never be shut down while someone was streaming from it. Ending
+        // the sockets here also fires the request 'close' handler, which stops
+        // the underlying SessionStream.
+        this.server.closeAllConnections();
+      });
+      this.listening = false;
+      this.actualPort = undefined;
+    }
+    // Release the skills' owned resources even when the listener was never
+    // started: an in-flight catalog helper is not tied to the socket's
+    // lifetime, and leaving it running would outlive the agent that owns it.
+    await this.skills.close();
   }
 
   agentCard(): AgentCard {

@@ -302,7 +302,30 @@ describe("A2A HTTP server", () => {
         const response = await httpCallWith(address.port, call(skill, input), {
           "A2A-Version": "1.0",
         });
-        if (skill === "process.stop" || skill === "session.abort") {
+        if (skill === "session.models") {
+          // Read-only, but answered from a Pi process rather than a file: on a
+          // runner with no `pi` it is the stated -32106, never a bare error.
+          // Assert that contract exactly instead of depending on whether `pi`
+          // happens to resolve here - the previous blanket "no error" assertion
+          // passed on a developer machine and would fail in CI.
+          const body = JSON.parse(response.body) as {
+            error?: { code?: number };
+            result?: {
+              message?: {
+                parts?: { data?: { result?: { models?: unknown } } }[];
+              };
+            };
+          };
+          if (body.error !== undefined) {
+            expect(body.error.code).toBe(-32106); // PI_MESH_CATALOG_UNAVAILABLE
+          } else {
+            expect(
+              Array.isArray(
+                body.result?.message?.parts?.[0]?.data?.result?.models,
+              ),
+            ).toBe(true);
+          }
+        } else if (skill === "process.stop" || skill === "session.abort") {
           expect(JSON.parse(response.body).error.code).toBe(-32004);
         } else {
           expect(JSON.parse(response.body).error).toBeUndefined();

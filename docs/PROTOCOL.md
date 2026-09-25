@@ -45,6 +45,8 @@ Each skill also declares its **exposure**:
 | `session.list` | peer | `{}` | `{ sessions: SessionSummary[] }` |
 | `session.read` | peer | `{ id, since? }` | `{ entries: Event[] }` |
 | `session.stream` | peer | `{ id }` | SSE stream of `Event` |
+| `session.models` | peer (ungated; read) | `{ job_id? }` | `{ models: Model[] }` |
+| `session.set_model` | **gated on the spawn policy** | `{ job_id, provider, model_id }` | Pi `set_model` model data |
 | `process.list` | peer (ungated; job manager required) | `{}` | `{ jobs: [{ job_id, session_id (nullable), pid (nullable), project, cwd, state, started_at, exit? }] }` |
 | `session.steer` | **gated on the spawn policy** | `{ job_id (mesh id, not PID), message (≤4096 UTF-8 bytes) }` | Pi RPC response; refused with `-32102` when closed |
 | `session.abort` | peer (ungated) | `{ job_id (mesh id, not PID) }` | Pi RPC response |
@@ -64,7 +66,10 @@ are load-bearing:
 - `process.spawn` takes a required, non-blank `prompt` that starts the first
 turn. It takes **no `argv`**. The server constructs the command line; a remote
 caller chooses a project, not a program. Peer-chosen argv could change the
-provider, the session directory, or which extensions load.
+session directory or which extensions load. Model selection is the bounded
+exception: `session.set_model` names an exact provider and model id from the
+agent's fresh Pi catalog; the agent compares both fields for equality before
+forwarding, so remote callers cannot use Pi's fuzzy matching.
 - `process.spawn`'s `cwd`, when given, must resolve inside the workspace root
   (which defaults to the user's home directory), because the realpath check is
   an accident guard and project selector. It is not a sandbox: the spawned
@@ -398,6 +403,8 @@ once a transport exists to carry it.
 | `-32103` | `PI_MESH_UNKNOWN_JOB` | Unknown job |
 | `-32104` | `PI_MESH_TOO_MANY_JOBS` | Job concurrency or start-rate limit exceeded |
 | `-32105` | `PI_MESH_SPAWN_FAILED` | Process failed to start or become ready |
+| `-32106` | `PI_MESH_CATALOG_UNAVAILABLE` | The model catalog could not be obtained |
+| `-32107` | `PI_MESH_JOB_NOT_RUNNING` | The named job is tracked but not running |
 
 Two conditions are deliberately **not** error codes:
 

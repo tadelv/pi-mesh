@@ -6,6 +6,7 @@ import { ErrorCode, PiMeshError } from "@pi-mesh/shared";
 import { PeerRegistry } from "./registry.js";
 import { SessionStore, type SessionStoreOptions } from "./sessions.js";
 import { JobStartTimeoutError, type JobManager } from "./jobs.js";
+import { ModelCatalog, hasExactModel } from "./model-catalog.js";
 import { assertInsideWorkspace, resolveWorkspaceRoot } from "./spawner.js";
 
 export type SkillInput = Record<string, unknown>;
@@ -15,6 +16,9 @@ export interface SkillRegistryOptions extends SessionStoreOptions {
   registry?: PeerRegistry;
   jobs?: JobManager;
   workspaceRoot?: string;
+  piBinary?: string;
+  modelCatalogTtlMs?: number;
+  modelCatalogTimeoutMs?: number;
 }
 
 export const ALWAYS_SERVED_SKILLS: readonly Skill[] = [
@@ -22,6 +26,7 @@ export const ALWAYS_SERVED_SKILLS: readonly Skill[] = [
   "session.list",
   "session.read",
   "session.stream",
+  "session.models",
 ];
 
 export const JOB_SKILLS: readonly Skill[] = [
@@ -42,6 +47,7 @@ export const JOB_SKILLS: readonly Skill[] = [
 export const EXECUTION_SKILLS: readonly Skill[] = [
   "process.spawn",
   "session.steer",
+  "session.set_model",
   "mesh.handoff",
 ];
 
@@ -95,6 +101,7 @@ function peerSummaries(registry: PeerRegistry): PeerSummary[] {
 
 export class SkillRegistry {
   private readonly handlers = new Map<Skill, SkillHandler>();
+  private readonly closers: (() => Promise<void> | void)[] = [];
 
   register(skill: Skill, handler: SkillHandler): this {
     // The other direction of drift from registerExecution. `EXECUTION_SKILLS`
@@ -130,6 +137,23 @@ export class SkillRegistry {
     return this;
   }
 
+  /**
+   * Register a resource this registry owns and must release on shutdown.
+   *
+   * The catalog helper is the reason: its `pi --mode rpc` child can be
+   * in-flight when the agent stops, and nothing outside this registry holds a
+   * reference to it.
+   */
+  onClose(closer: () => Promise<void> | void): this {
+    this.closers.push(closer);
+    return this;
+  }
+
+  /** Release owned resources. Safe to call more than once. */
+  async close(): Promise<void> {
+    await Promise.allSettled(this.closers.map((closer) => closer()));
+  }
+
   has(skill: string): skill is Skill {
     return this.handlers.has(skill as Skill);
   }
@@ -153,6 +177,17 @@ export function createSkillRegistry(
   const sessions = new SessionStore(options);
   const registry = options.registry ?? new PeerRegistry();
   const skills = new SkillRegistry();
+  const catalog = new ModelCatalog({
+    ...(options.piBinary === undefined ? {} : { piBinary: options.piBinary }),
+    ...(options.modelCatalogTtlMs === undefined
+      ? {}
+      : { ttlMs: options.modelCatalogTtlMs }),
+    ...(options.modelCatalogTimeoutMs === undefined
+      ? {}
+      : { timeoutMs: options.modelCatalogTimeoutMs }),
+  });
+  // A killed agent must not leave the helper's child behind: shutdown closes it.
+  skills.onClose(() => catalog.close());
 
   // Registered UNCONDITIONALLY, exactly like session.steer - and that is
   // load-bearing, not a style choice. The gate can only report "execution is
@@ -416,6 +451,106 @@ export function createSkillRegistry(
       message,
       streamingBehavior: "steer",
     });
+  });
+
+  skills.register("session.models", async (input) => {
+    if (input.job_id === undefined) {
+      try {
+        return { models: await catalog.get() };
+      } catch (error) {
+        throw new PiMeshError(
+          ErrorCode.CatalogUnavailable,
+          `Model catalog unavailable: ${error instanceof Error ? error.message : String(error)}`,
+          { cause: error },
+        );
+      }
+    }
+    const jobId = requiredString(input, "job_id");
+    if (options.jobs === undefined) {
+      throw new PiMeshError(-32004, "session.models requires a job manager");
+    }
+    const job = options.jobs.get(jobId);
+    if (job === undefined) {
+      throw new PiMeshError(ErrorCode.UnknownJob, `Unknown job: ${jobId}`);
+    }
+    if (job.state !== "running") {
+      throw new PiMeshError(
+        ErrorCode.JobNotRunning,
+        `Job is not running: ${jobId}`,
+      );
+    }
+    try {
+      const response = await options.jobs.send(jobId, {
+        type: "get_available_models",
+      });
+      const models = (response.data as { models?: unknown } | undefined)
+        ?.models;
+      if (!Array.isArray(models))
+        throw new Error("Pi returned an invalid model catalog");
+      return { models };
+    } catch (error) {
+      if (error instanceof PiMeshError) throw error;
+      throw new PiMeshError(
+        ErrorCode.CatalogUnavailable,
+        `Model catalog unavailable: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
+  });
+  skills.registerExecution("session.set_model", async (input) => {
+    const jobId = requiredString(input, "job_id");
+    const provider = requiredString(input, "provider");
+    const modelId = requiredString(input, "model_id");
+    if (
+      jobId.trim().length === 0 ||
+      provider.trim().length === 0 ||
+      modelId.trim().length === 0
+    ) {
+      throw new PiMeshError(
+        -32602,
+        "session.set_model fields must be non-blank",
+      );
+    }
+    if (options.jobs === undefined) {
+      throw new PiMeshError(-32004, "session.set_model requires a job manager");
+    }
+    const job = options.jobs.get(jobId);
+    if (job === undefined) {
+      throw new PiMeshError(ErrorCode.UnknownJob, `Unknown job: ${jobId}`);
+    }
+    if (job.state !== "running") {
+      throw new PiMeshError(
+        ErrorCode.JobNotRunning,
+        `Job is not running: ${jobId}`,
+      );
+    }
+    let models: unknown[];
+    try {
+      const response = await options.jobs.send(jobId, {
+        type: "get_available_models",
+      });
+      const result = (response.data as { models?: unknown } | undefined)
+        ?.models;
+      if (!Array.isArray(result))
+        throw new Error("Pi returned an invalid model catalog");
+      models = result;
+    } catch (error) {
+      if (error instanceof PiMeshError) throw error;
+      throw new PiMeshError(
+        ErrorCode.CatalogUnavailable,
+        `Model catalog unavailable: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    }
+    if (!hasExactModel(models, provider, modelId)) {
+      throw new PiMeshError(-32602, "Model is not in the Pi catalog");
+    }
+    const response = await options.jobs.send(jobId, {
+      type: "set_model",
+      provider,
+      modelId,
+    });
+    return response.data;
   });
 
   skills.register("mesh.peers", async () => ({

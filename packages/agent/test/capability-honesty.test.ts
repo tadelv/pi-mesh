@@ -19,6 +19,7 @@ const PI_BINARY = fileURLToPath(
 const EXECUTION_SKILLS = [
   "process.spawn",
   "session.steer",
+  "session.set_model",
   "mesh.handoff",
 ].sort();
 const ALWAYS_SKILLS = [
@@ -26,6 +27,7 @@ const ALWAYS_SKILLS = [
   "session.list",
   "session.read",
   "session.stream",
+  "session.models",
 ].sort();
 const GATE_OPEN_SKILLS = [
   ...ALWAYS_SKILLS,
@@ -211,13 +213,13 @@ describe("M2-8 capability honesty", () => {
     expect(enabled.cardSkills).toEqual(enabled.capsSkills);
   });
 
-  it("clause 5: DISABLED advertises exactly the four always-served skills", () => {
+  it("clause 5: DISABLED advertises exactly the five always-served skills", () => {
     expect(disabled.cardSkills).toEqual(ALWAYS_SKILLS);
     expect(disabled.capsSkills).toEqual(ALWAYS_SKILLS);
     expect(disabled.capsSkills.length).toBeGreaterThan(0);
   });
 
-  it("clause 6: ENABLED advertises all ten job and execution skills", () => {
+  it("clause 6: ENABLED advertises all twelve job and execution skills", () => {
     expect(enabled.cardSkills).toEqual(GATE_OPEN_SKILLS);
     expect(enabled.capsSkills).toEqual(GATE_OPEN_SKILLS);
   });

@@ -340,7 +340,7 @@ describe("process and session control skills", () => {
   it("T8 advertises only what the machine can serve, from two separate facts", () => {
     // No job manager: the job skills are absent, and so are the execution skills
     // whose handler needs one.
-    expect(servedSkills(false)).toHaveLength(4);
+    expect(servedSkills(false)).toHaveLength(5);
     for (const skill of ["process.list", "process.stop", "session.abort"]) {
       expect(servedSkills(false)).not.toContain(skill);
       expect(servedSkills(true, true)).toContain(skill);
@@ -358,7 +358,7 @@ describe("process and session control skills", () => {
     // mesh.handoff delegates to the local process.spawn, so it needs the manager
     // too - the indirection that made this wrong twice.
     expect(servedSkills(false, true)).toEqual([...ALWAYS_SERVED_SKILLS]);
-    expect(servedSkills(true, true)).toHaveLength(10);
+    expect(servedSkills(true, true)).toHaveLength(12);
     expect(servedSkills(true, true)).toContain("session.steer");
   });
 
@@ -376,6 +376,7 @@ describe("process and session control skills", () => {
     const inputs: Record<string, unknown> = {
       "process.spawn": { project: "p", prompt: "hi" },
       "session.steer": { job_id: "j", message: "hi" },
+      "session.set_model": { job_id: "j", provider: "p", model_id: "m" },
       "mesh.handoff": {
         task: "t",
         project: "p",

@@ -293,6 +293,47 @@ it("does not let an older failed listing erase a newer listing's freshness", asy
   expect(after.jobs.map((job) => job.job_id)).toEqual(["from-second"]);
 });
 
+it("keeps a newer failed listing's freshness withdrawal after an older success arrives", async () => {
+  let release!: () => void;
+  const gate = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { base, headers, waitForListing } = await setup({
+    gates: [Promise.resolve(), gate],
+    failListings: [2],
+    jobsFor: (index) => [
+      { job_id: index === 0 ? "baseline" : "obsolete", state: "running" },
+    ],
+  });
+  // A real successful baseline makes the later withdrawal observable.
+  expect((await sync(base, headers)).status).toBe(200);
+  expect((await state(base, headers)).agents[0]!.jobs_synced_at).not.toBeNull();
+  expect((await state(base, headers)).jobs.map((job) => job.job_id)).toEqual([
+    "baseline",
+  ]);
+
+  const oldListed = waitForListing(1);
+  const oldSync = sync(base, headers);
+  await oldListed;
+  const newerListed = waitForListing(2);
+  const newerSync = sync(base, headers);
+  await newerListed;
+  expect((await newerSync).status).toBe(200);
+  expect((await state(base, headers)).agents[0]!.jobs_synced_at).toBeNull();
+
+  release();
+  expect((await oldSync).status).toBe(200);
+  const after = await state(base, headers);
+  expect(
+    after.agents[0]!.jobs_synced_at,
+    "newer failed jobs listing keeps the mirror unconfirmed",
+  ).toBeNull();
+  expect(
+    after.jobs.map((job) => job.job_id),
+    "older success cannot replace rows after the newer failure",
+  ).toEqual(["baseline"]);
+});
+
 it("does not let an older failed card fetch erase a newer listing's freshness", async () => {
   // The same ordering rule must cover a failure BEFORE any listing starts. The
   // first sync's card fetch is held open and then fails; the second sync starts

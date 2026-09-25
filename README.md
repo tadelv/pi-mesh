@@ -15,7 +15,7 @@ losing visibility into what each instance is doing. pi-mesh gives you:
 - **Direct handoff** — agents pass tasks and context to each other.
 - **Fleet overview** — a web dashboard for sessions, projects and the jobs the
   agents are actually running.
-- **Steering** — attach to any session from the dashboard and redirect it.
+- **Steering** — prompt the selected session when its agent confirms a running job and has opted in; an accepted request is checked against a new transcript turn, whose origin cannot be proven.
 - **Process control** — start and stop Pi sessions on remote devices.
 
 ## Install

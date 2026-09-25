@@ -162,7 +162,14 @@ history, a referrer or a proxy log by default (ADR 0014).
 ### Dashboard control is execution
 
 The dashboard can start, steer, stop and abort sessions on a paired agent
-(ADR 0013). That does not weaken the boundary, but it moves it:
+(ADR 0013). Prompting the session shown in the transcript is the **same gated
+`session.steer` call**, not a new session-addressed grant: the dashboard resolves
+the selected session to a confirmed running job, and the agent's local execution
+opt-in remains decisive (ADR 0016). A matching new user turn in the transcript
+is observation, not proof that this dashboard request caused it; neither the
+session log nor the agent reply names the writer. An accepted steer without an
+observed turn remains unconfirmed, never silently labelled delivered. That does
+not weaken the boundary, but it moves it:
 
 - Starting and steering still require the **agent's** local opt-in. A machine
   started without `--allow-execution`, or with the control plane's id not in its

@@ -388,6 +388,12 @@ export function createSkillRegistry(
     if (message.trim().length === 0) {
       throw new PiMeshError(-32602, "Skill input requires non-blank message");
     }
+    if (Buffer.byteLength(message, "utf8") > 4096) {
+      throw new PiMeshError(
+        -32602,
+        "session.steer message exceeds 4096 UTF-8 bytes",
+      );
+    }
     if (options.jobs === undefined) {
       throw new PiMeshError(-32004, "session.steer requires a job manager");
     }

@@ -20,8 +20,8 @@ The dashboard borrows Pi's exported session transcript grammar; the stylesheet s
 ## Typography and layout
 
 - Monospace stack: `ui-monospace`, Cascadia Code, Source Code Pro, Menlo, Consolas, DejaVu Sans Mono.
-- Transcript base: 12px / 18px. Transcript entry metadata, including timestamps: 10px; session-list metadata inherits the 12px base. Tabular numerals for times and IDs.
-- A 320px fixed, independently scrolling session sidebar sits beside the main scrolling column; below 760px the sidebar becomes a shallow top region.
+- Dashboard base: 13px / 19px; transcript bodies: 14px / 21px. Transcript entry metadata, including timestamps: 11px. Tabular numerals for times and IDs.
+- A 320px fixed, independently scrolling session sidebar sits beside the main scrolling column; below 760px it becomes a content-sized top region, capped at 38vh / 300px so short lists do not leave an empty panel.
 - Session text measures at most 75ch and wraps long tokens and paths.
 
 ## Primitives
@@ -31,3 +31,5 @@ The dashboard borrows Pi's exported session transcript grammar; the stylesheet s
 - Tool calls, tool results, and thinking payloads use native collapsed `<details>` disclosure.
 - Session info and model changes are compact labeled entries; cache state remains explicit.
 - Controls use native buttons, labeled inputs, visible keyboard focus, and high-contrast light/dark tokens.
+- The selected transcript ends with its own compact prompt composer or a specific unavailability reason; statuses distinguish sending, agent acceptance, an observed turn with unverified origin, and unconfirmed delivery. Only short statuses are announced, not the whole log.
+- Agent management remains separate: Start offers agent-scoped cached project values through a native datalist and asks for inline confirmation before spawning; the pending state blocks duplicate starts, while the returned job/session/PID or refusal stays visible beside that agent.

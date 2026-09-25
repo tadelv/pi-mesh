@@ -21,6 +21,8 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm -r build
+      - run: pnpm exec playwright install --with-deps chromium
+      - run: pnpm test:browser
       # Type-checks tests too. The build only covers src/, and vitest strips
       # types, so without this step compile-time assertions in tests - and
       # plain type errors in tests - are never checked by anything.

@@ -62,7 +62,7 @@ export const dashboard = `<!doctype html>
       margin: 0;
       background: var(--body-bg);
       color: var(--text);
-      font: 12px/var(--line-height) ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace;
+      font: 13px/19px ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace;
       font-variant-numeric: tabular-nums;
     }
     ::selection { background: var(--selectedBg); color: var(--text); }
@@ -77,7 +77,7 @@ export const dashboard = `<!doctype html>
       cursor: pointer;
     }
     button:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-    button:disabled { opacity: .55; cursor: wait; }
+    button:disabled { opacity: .55; cursor: not-allowed; }
     input, textarea {
       min-height: 30px;
       padding: 4px 8px;
@@ -95,11 +95,13 @@ export const dashboard = `<!doctype html>
       padding: 8px 16px;
       background: var(--container-bg);
       border-bottom: 1px solid var(--border);
+      flex-wrap: wrap;
     }
+    .topbar button { flex-shrink: 0; white-space: nowrap; }
     h1, h2, h3, p { margin: 0; }
-    h1 { font-size: 13px; line-height: 18px; }
-    h2 { font-size: 13px; line-height: 18px; }
-    h3 { font-size: 12px; line-height: 18px; }
+    h1 { font-size: 15px; line-height: 21px; }
+    h2 { font-size: 15px; line-height: 21px; }
+    h3 { font-size: 13px; line-height: 19px; }
     .topbar h1 { margin-right: auto; }
     .workspace { display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); min-height: calc(100vh - 52px); }
     .sidebar {
@@ -147,11 +149,11 @@ export const dashboard = `<!doctype html>
     .session-heading h2 { overflow-wrap: anywhere; }
     .transcript { display: flex; flex-direction: column; gap: 18px; padding: 16px 0; }
     .entry { min-width: 0; }
-    .entry-meta { display: flex; gap: 10px; margin-bottom: 4px; color: var(--dim); font-size: 10px; }
+    .entry-meta { display: flex; gap: 10px; margin-bottom: 5px; color: var(--dim); font-size: 11px; }
     .entry-role { font-weight: 700; color: var(--accent); }
     .entry.assistant .entry-role { color: var(--success); }
     .entry.tool-result .entry-role, .entry.meta-entry .entry-role { color: var(--muted); }
-    .entry-body { max-width: 75ch; overflow-wrap: anywhere; white-space: pre-wrap; }
+    .entry-body { max-width: 75ch; overflow-wrap: anywhere; white-space: pre-wrap; font-size: 14px; line-height: 21px; }
     .entry.user .entry-body { padding: 8px 10px; background: var(--userMessageBg); color: var(--userMessageText); }
     .entry.assistant .entry-body { padding: 0; }
     .entry.tool-call, .entry.tool-result, .entry.meta-entry { padding: 7px 10px; background: var(--info-bg); }
@@ -162,23 +164,28 @@ export const dashboard = `<!doctype html>
     details.tool-payload summary { cursor: pointer; }
     pre { margin: 6px 0 0; max-width: 100%; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); font: inherit; }
     .transcript-actions { display: flex; gap: 8px; padding-top: 6px; border-top: 1px solid var(--border); }
+    .management-heading { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border); }
     .agent-section { padding: 15px 0; border-bottom: 1px solid var(--border); }
     .agent-title { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; margin-bottom: 9px; }
     .agent-section h3 { margin: 12px 0 5px; }
     .job { padding: 6px 0; border-top: 1px solid var(--border); }
     .job-line { overflow-wrap: anywhere; }
-    .job form, .agent-form { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin-top: 6px; }
-    .agent-form label { display: flex; gap: 5px; align-items: center; }
+    .job form, .agent-form { display: flex; gap: 8px; align-items: flex-end; flex-wrap: wrap; margin-top: 8px; }
+    .agent-form label { display: flex; flex-direction: column; align-items: flex-start; gap: 5px; min-width: min(100%, 240px); }
     .agent-form textarea { width: min(100%, 420px); }
-    .agent-form input { width: min(100%, 280px); }
+    .agent-form input { width: min(100%, 320px); }
+    .start-review { flex-basis: 100%; }
+    .start-review button { margin: 8px 8px 0 0; }
     .result { margin: 6px 0; color: var(--warning); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .result.success { color: var(--success); }
     .notice { margin: 8px 0; padding: 8px 10px; background: var(--info-bg); color: var(--dim); overflow-wrap: anywhere; }
     .notice.warning { color: var(--warning); }
     [hidden] { display: none !important; }
     @media (max-width: 760px) {
       .workspace { display: block; }
-      .sidebar { position: static; height: min(38vh, 300px); min-height: 150px; border-right: 0; border-bottom: 1px solid var(--border); }
+      .sidebar { position: static; height: auto; max-height: min(38vh, 300px); min-height: 0; border-right: 0; border-bottom: 1px solid var(--border); }
       .content { padding: 14px 12px 28px; }
+      .agent-form label { width: 100%; }
       .topbar { padding-inline: 12px; }
       .session-heading { align-items: flex-start; flex-direction: column; gap: 3px; }
     }
@@ -208,7 +215,8 @@ export const dashboard = `<!doctype html>
       <p id="auth-note" role="status"></p>
       <p id="status" role="status"></p>
       <p id="pairing"></p>
-      <section id="transcript-panel" hidden aria-live="polite"></section>
+      <p id="transcript-status" role="status" aria-live="polite"></p>
+      <section id="transcript-panel" hidden></section>
       <section id="agents" aria-label="Agents and jobs"></section>
     </main>
   </div>
@@ -223,8 +231,8 @@ export const dashboard = `<!doctype html>
   const messages = new Map();
   const node = (tag, text, parent) => { const e = document.createElement(tag); if(text !== undefined) e.textContent = String(text ?? ''); parent.append(e); return e; };
   function needToken(message) { token = ''; localStorage.removeItem('pi_mesh_token'); document.querySelector('#auth').hidden = false; document.querySelector('#auth-note').textContent = message || ''; root.replaceChildren(); sessionList.replaceChildren(); }
-  async function api(path, method='GET', body) {
-    const r = await fetch(path, {method, headers:{'X-Pi-Mesh-Ui':token, ...(body === undefined ? {} : {'content-type':'application/json'})}, ...(body === undefined ? {} : {body:JSON.stringify(body)})});
+  async function api(path, method='GET', body, signal) {
+    const r = await fetch(path, {method, headers:{'X-Pi-Mesh-Ui':token, ...(body === undefined ? {} : {'content-type':'application/json'})}, ...(body === undefined ? {} : {body:JSON.stringify(body)}), ...(signal ? {signal} : {})});
     const result = await r.json();
     if(!r.ok) { const error=Error(result.message || result.error || ('Request failed: '+r.status)); error.status=r.status; if(r.status === 401) needToken('The dashboard token was rejected. Paste it again.'); throw error; }
     return result;
@@ -285,6 +293,50 @@ export const dashboard = `<!doctype html>
     if(typeof event.data !== 'string') return event.data || {};
     try { return JSON.parse(event.data); } catch { return {text:event.data}; }
   }
+  function matchingUserTurn(event, message, baselineIds) {
+    if(!event.entry_id || baselineIds.has(event.entry_id)) return false;
+    const data = parseEntry(event);
+    const payload = data.message && typeof data.message === 'object' ? data.message : data;
+    if(payload.role !== 'user') return false;
+    if(typeof payload.content === 'string') return payload.content === message;
+    return Array.isArray(payload.content) && payload.content.some(part => part?.type === 'text' && part.text === message);
+  }
+  async function observePrompt(owner, baseline, submitted, current) {
+    const baselineIds = new Set(baseline.events.map(event => event.entry_id).filter(Boolean));
+    const deadline = Date.now() + 15000;
+    while(Date.now() < deadline && selected === owner) {
+      await new Promise(resolve => setTimeout(resolve, Math.min(1000, deadline-Date.now())));
+      if(selected !== owner) {
+        current.status = 'Accepted; observation interrupted by session switch. Delivery is unconfirmed.';
+        return;
+      }
+      if(Date.now() >= deadline) break;
+      const data = await fetchSessionPage(owner.agentId, owner.sessionId, undefined, false, AbortSignal.timeout(deadline-Date.now()));
+      if(selected !== owner) {
+        current.status = 'Accepted; observation interrupted by session switch. Delivery is unconfirmed.';
+        return;
+      }
+      if(data.stale) {
+        owner.transcript = data;
+        current.status = 'Accepted, but the transcript could not be verified. Delivery is unconfirmed.';
+        renderTranscript(data, owner);
+        document.querySelector('#transcript-status').textContent = current.status;
+        return;
+      }
+      const appended = data.total > baseline.total && data.events.some(event => matchingUserTurn(event, submitted, baselineIds));
+      if(appended) {
+        owner.transcript = data;
+        if(current.draft === submitted) current.draft = '';
+        current.status = 'Matching turn observed in this session; origin not verified.';
+        renderTranscript(data, owner);
+        return;
+      }
+    }
+    if(selected === owner) {
+      current.status = 'Accepted, but no new turn was observed. Delivery is unconfirmed.';
+      renderTranscript(owner.transcript ?? baseline, owner);
+    } else current.status = 'Accepted; observation interrupted by session switch. Delivery is unconfirmed.';
+  }
   function payload(parent, label, value) {
     const details = node('details', undefined, parent);
     details.className = 'tool-payload';
@@ -332,12 +384,16 @@ export const dashboard = `<!doctype html>
       if(!body.childNodes.length && type !== 'message') node('div', data.text || type, body);
     }
   }
-  async function fetchSessionPage(agentId, sessionId, before, all) {
+  async function fetchSessionPage(agentId, sessionId, before, all, signal) {
     const query = all ? '?all=1' : before ? '?before='+encodeURIComponent(before) : '';
-    return api('/api/sessions/'+encodeURIComponent(agentId)+'/'+encodeURIComponent(sessionId)+query);
+    return api('/api/sessions/'+encodeURIComponent(agentId)+'/'+encodeURIComponent(sessionId)+query, 'GET', undefined, signal);
   }
   async function openSession(agentId, sessionId) {
+    if(selected) { const previous = promptState(selected); previous.jobId = ''; previous.confirmed = false; }
+    const next = promptState({agentId, sessionId}); next.jobId = ''; next.confirmed = false;
     selected = {agentId, sessionId};
+    const status = document.querySelector('#transcript-status');
+    status.textContent = 'Loading session '+sessionId+'.';
     // Every await below re-checks ownership before touching the transcript. A
     // slow request for one session must never render over, or erase, another
     // session the operator has since opened.
@@ -348,9 +404,13 @@ export const dashboard = `<!doctype html>
     node('p', 'Loading session…', transcriptPanel).className = 'dim';
     try {
       const data = await fetchSessionPage(agentId, sessionId);
-      if(selected === owner) renderTranscript(data, owner);
+      if(selected === owner) {
+        renderTranscript(data, owner, true);
+        status.textContent = data.stale ? 'Could not verify session '+owner.sessionId+'.' : 'Loaded session '+owner.sessionId+'.';
+      }
     } catch(error) {
       if(selected !== owner) return;
+      status.textContent = 'Could not load session '+owner.sessionId+'.';
       transcriptPanel.replaceChildren();
       node('p', error.message, transcriptPanel).className = 'result';
     }
@@ -358,17 +418,21 @@ export const dashboard = `<!doctype html>
   // The owner is the selection this transcript belongs to. Paging controls carry
   // it because they outlive the click that opened them: a page that arrives
   // after a different session was opened belongs to a transcript that is gone.
-  function renderTranscript(data, owner) {
+  function renderTranscript(data, owner, focusHeading = false) {
+    owner.transcript = data;
     transcriptPanel.replaceChildren();
     const session = state.sessions.find(item => item.agent_id === owner.agentId && item.session_id === owner.sessionId);
     const heading = node('header', undefined, transcriptPanel);
     heading.className = 'session-heading';
-    node('h2', session?.name || selected.sessionId, heading);
+    const title = node('h2', session?.name || owner.sessionId, heading);
+    if(focusHeading) { title.tabIndex = -1; title.focus(); }
     node('span', basename(session?.project), heading).className = 'dim';
-    if(data.stale) node('p', 'Cached transcript · agent offline', transcriptPanel).className = 'notice';
+    if(data.stale) node('p', 'This transcript could not be verified with the agent; showing cached entries.', transcriptPanel).className = 'notice warning';
     const list = node('div', undefined, transcriptPanel);
     list.className = 'transcript';
+    if(data.events.length === 0) node('p', data.stale ? 'No cached transcript entries.' : 'No transcript entries yet; the session may still be starting.', list).className = 'dim';
     for(const event of data.events) renderEntry(event, list);
+    renderPromptAvailability(data, owner);
     const actions = node('div', undefined, transcriptPanel);
     actions.className = 'transcript-actions';
     if(data.hasEarlier) {
@@ -380,8 +444,9 @@ export const dashboard = `<!doctype html>
         try {
           const older = await fetchSessionPage(owner.agentId, owner.sessionId, oldest);
           if(selected !== owner) return;
-          const combined = {...data, events:[...older.events, ...data.events], hasEarlier:older.hasEarlier};
-          renderTranscript(combined, owner);
+          const combined = {...data, events:[...older.events, ...data.events], hasEarlier:older.hasEarlier, stale:data.stale || older.stale};
+          renderTranscript(combined, owner, true);
+          document.querySelector('#transcript-status').textContent = 'Earlier entries loaded for session '+owner.sessionId+'.';
         } catch(error) {
           if(selected !== owner) return;
           node('span', error.message, actions).className = 'result';
@@ -395,7 +460,10 @@ export const dashboard = `<!doctype html>
         all.disabled = true;
         try {
           const everything = await fetchSessionPage(owner.agentId, owner.sessionId, undefined, true);
-          if(selected === owner) renderTranscript(everything, owner);
+          if(selected === owner) {
+            renderTranscript(everything, owner, true);
+            document.querySelector('#transcript-status').textContent = 'All entries loaded for session '+owner.sessionId+'.';
+          }
         } catch(error) {
           if(selected !== owner) return;
           node('span', error.message, actions).className = 'result';
@@ -404,12 +472,126 @@ export const dashboard = `<!doctype html>
       });
     }
   }
+  const promptStates = new Map();
+  function promptState(owner) {
+    const key = owner.agentId+'\\0'+owner.sessionId;
+    if(!promptStates.has(key)) promptStates.set(key, {draft:'', status:'', pending:false, jobId:'', confirmed:false, candidateIds:''});
+    return promptStates.get(key);
+  }
+  function promptEligibility(data, owner) {
+    const agent = state.agents.find(item => item.peer_id === owner.agentId);
+    const matched = state.jobs.filter(job => job.agent_id === owner.agentId && job.session_id === owner.sessionId);
+    const running = matched.filter(job => job.state === 'running');
+    const reasons = [];
+    if(data.stale) reasons.push('Prompting is unavailable until this transcript is verified with the agent.');
+    if(!agent || typeof agent.jobs_synced_at !== 'number') reasons.push('Jobs have not been confirmed with this agent. Sync to check before prompting.');
+    if(agent?.skills === null) reasons.push('Steering capability is unknown because this agent has not been verified.');
+    else if(agent && !agent.controls.steer) reasons.push('This agent has not enabled steering for this control plane.');
+    if(state.execution_transport === 'refused') reasons.push('Prompting requires TLS or loopback on this connection.');
+    if(reasons.length === 0) {
+      if(running.length === 0 && matched.length > 0) reasons.push('The job for this session is no longer running.');
+      else if(running.length === 0) reasons.push('No job is running for this session.');
+    }
+    return {agent, matched, running, reasons};
+  }
+  function renderPromptAvailability(data, owner) {
+    const section = node('section', undefined, transcriptPanel);
+    section.className = 'agent-section';
+    node('h3', 'Prompt this session', section);
+    const {agent, running, reasons} = promptEligibility(data, owner);
+    const current = promptState(owner);
+    const candidateIds = running.map(job => job.job_id).sort().join('\\0');
+    if(current.candidateIds !== candidateIds) { current.candidateIds = candidateIds; current.jobId = ''; current.confirmed = false; }
+    for(const reason of reasons) node('p', reason, section).className = 'notice warning';
+    if(reasons.length || running.length === 0) return;
+    let jobId = running[0].job_id;
+    if(running.length > 1) {
+      node('p', 'More than one job claims this session. Choose which job to prompt.', section).className = 'notice warning';
+      const label = node('label', 'Choose a job ', section);
+      const select = node('select', undefined, label);
+      node('option', 'Select a job…', select).value = '';
+      for(const job of running) {
+        const option = node('option', job.job_id+' · PID '+(job.pid ?? 'unknown')+' · '+job.project+' · started '+job.created_at, select);
+        option.value = job.job_id;
+      }
+      select.value = current.jobId;
+      const confirmLabel = node('label', undefined, section);
+      const confirm = node('input', undefined, confirmLabel);
+      confirm.type = 'checkbox';
+      confirm.checked = current.confirmed && !!select.value;
+      node('span', 'I chose this job intentionally', confirmLabel);
+      select.addEventListener('change', () => { current.jobId = select.value; current.confirmed = false; confirm.checked = false; send.disabled = true; });
+      confirm.addEventListener('change', () => { current.confirmed = confirm.checked; send.disabled = !select.value || !confirm.checked || current.pending || !current.draft.trim() || new TextEncoder().encode(current.draft).length > 4096; });
+      jobId = select.value;
+    }
+    const form = node('form', undefined, section);
+    form.className = 'agent-form';
+    const label = node('label', 'Message ', form);
+    const textarea = node('textarea', undefined, label);
+    textarea.value = current.draft;
+    textarea.setAttribute('aria-label', 'Message to session');
+    const bytes = node('span', new TextEncoder().encode(current.draft).length+' / 4096 bytes', form);
+    const send = node('button', 'Send', form);
+    send.type = 'submit';
+    send.disabled = current.pending || new TextEncoder().encode(current.draft).length > 4096 || !current.draft.trim() || (running.length > 1 && (!jobId || !current.confirmed));
+    const status = node('p', current.status, section);
+    status.className = 'notice'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
+    textarea.addEventListener('input', () => {
+      current.draft = textarea.value;
+      const size = new TextEncoder().encode(current.draft).length;
+      bytes.textContent = size+' / 4096 bytes';
+      send.disabled = current.pending || size > 4096 || !current.draft.trim() || (running.length > 1 && (!current.jobId || !current.confirmed));
+    });
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const size = new TextEncoder().encode(current.draft).length;
+      const eligibility = promptEligibility(owner.transcript ?? data, owner);
+      const liveCandidateIds = eligibility.running.map(job => job.job_id).sort().join('\\0');
+      if(liveCandidateIds !== candidateIds) { current.jobId = ''; current.confirmed = false; return; }
+      const chosen = eligibility.running.find(job => job.job_id === (eligibility.running.length === 1 ? eligibility.running[0].job_id : current.jobId));
+      if(current.pending || selected !== owner || eligibility.reasons.length || !chosen || (eligibility.running.length > 1 && !current.confirmed) || !current.draft.trim() || size > 4096) return;
+      const submitted = current.draft;
+      current.pending = true;
+      current.status = 'Sending to agent…';
+      send.disabled = true;
+      status.textContent = current.status;
+      try {
+        const baseline = owner.transcript ?? data;
+        const result = await api('/api/agents/'+encodeURIComponent(agent.peer_id)+'/steer', 'POST', {job_id:chosen.job_id, message:submitted});
+        if(result.ok === false) current.status = 'Agent refusal ('+String(result.code)+'): '+String(result.message ?? '');
+        else {
+          current.status = 'Accepted; checking transcript.';
+          status.textContent = current.status;
+          try { await observePrompt(owner, baseline, submitted, current); }
+          catch { current.status = selected === owner ? 'Accepted, but no new turn was observed. Delivery is unconfirmed.' : 'Accepted; observation interrupted by session switch. Delivery is unconfirmed.'; }
+        }
+      } catch(error) {
+        current.status = error.status === 403 ? 'Control-plane transport refusal: confidential_transport_required.' : error.status === 502 ? 'Agent call failed (502): '+error.message : error.message || 'Agent call failed.';
+      } finally {
+        current.pending = false;
+        if(selected === owner) {
+          if(section.isConnected && !promptEligibility(owner.transcript ?? data, owner).reasons.length) {
+            status.textContent = current.status;
+            send.disabled = !current.draft.trim() || new TextEncoder().encode(current.draft).length > 4096 || (running.length > 1 && (!current.jobId || !current.confirmed));
+          } else renderTranscript(owner.transcript ?? data, owner);
+        } else if(selected?.agentId === owner.agentId && selected?.sessionId === owner.sessionId) {
+          // A->B->A has a new owner object but the result still belongs to A.
+          renderTranscript(selected.transcript ?? data, selected);
+        }
+      }
+    });
+  }
   function showTransportNotice() {
     if(state.execution_transport && state.execution_transport !== 'confidential') {
       node('p', state.execution_transport === 'insecure_override'
         ? 'Warning: execution is allowed over this plaintext connection (--allow-insecure-execution). Anyone who captures a dashboard request can spawn on an opted-in agent.'
         : 'Execution is unavailable over this connection. It needs TLS or loopback, or PI_MESH_ALLOW_INSECURE_EXECUTION=1 on a LAN you trust.', root).className = 'notice warning';
     }
+  }
+  const spawnStates = new Map();
+  function spawnState(peerId) {
+    if(!spawnStates.has(peerId)) spawnStates.set(peerId, {project:'', prompt:'', cwd:'', review:null, pending:false, outcome:null});
+    return spawnStates.get(peerId);
   }
   function renderAgent(agent) {
     const section = node('section', undefined, root);
@@ -433,17 +615,72 @@ export const dashboard = `<!doctype html>
       node('p', 'Start the agent with --allow-execution='+state.control.id, section).className = 'dim';
     }
     if(capable) {
+      const current = spawnState(agent.peer_id);
+      const projects = [...new Set([
+        ...state.sessions.filter(session => session.agent_id === agent.peer_id).map(session => session.project),
+        ...state.jobs.filter(job => job.agent_id === agent.peer_id).map(job => job.project),
+      ].filter(project => typeof project === 'string' && project.trim()))];
       const form = node('form', undefined, section); form.className = 'agent-form';
-      const projectLabel = node('label', 'Project ', form); const project = node('input', undefined, projectLabel); project.required = true;
-      const promptLabel = node('label', 'Prompt ', form); const prompt = node('textarea', undefined, promptLabel); prompt.required = true;
-      const cwdLabel = node('label', 'Working directory (optional) ', form); const cwd = node('input', undefined, cwdLabel);
-      node('button', 'Start', form);
-      form.addEventListener('submit', event => {
-        event.preventDefault();
-        if(!window.confirm('Start a session on '+agent.name+'?')) return;
-        void act(agent, 'spawn', {project:project.value, prompt:prompt.value, ...(cwd.value ? {cwd:cwd.value} : {})}, agent.peer_id+':spawn');
+      const projectLabel = node('label', 'Project ', form); const project = node('input', undefined, projectLabel); project.required = true; project.value = current.project; project.setAttribute('list', 'projects-'+agent.peer_id);
+      const suggestions = node('datalist', undefined, form); suggestions.id = 'projects-'+agent.peer_id;
+      for(const value of projects) { const option = node('option', undefined, suggestions); option.value = value; option.label = basename(value); }
+      if(projects.length) node('p', 'Suggestions from cached sessions and jobs for this agent; cached is not live.', form).className = 'dim';
+      else node('p', 'No cached projects for this agent yet. Enter a project name.', form).className = 'dim';
+      const promptLabel = node('label', 'Prompt ', form); const prompt = node('textarea', undefined, promptLabel); prompt.required = true; prompt.value = current.prompt;
+      const cwdLabel = node('label', 'Working directory (optional) ', form); const cwd = node('input', undefined, cwdLabel); cwd.value = current.cwd;
+      project.disabled = prompt.disabled = cwd.disabled = current.pending;
+      const reviewButton = node('button', 'Review start', form); reviewButton.type = 'button'; reviewButton.hidden = !!current.review;
+      reviewButton.disabled = current.pending || !project.value.trim() || !prompt.value.trim();
+      const review = node('div', undefined, form); review.className = 'start-review notice'; review.hidden = !current.review;
+      const reviewText = node('p', '', review);
+      const submit = node('button', 'Start', review); submit.type = 'submit'; submit.disabled = current.pending;
+      const cancel = node('button', 'Cancel', review); cancel.type = 'button'; cancel.disabled = current.pending;
+      function showReview() {
+        review.hidden = !current.review;
+        reviewButton.hidden = !!current.review;
+        reviewText.textContent = current.review ? 'Start one session on '+agent.name+' for '+current.review.project+(current.review.cwd ? ' in '+current.review.cwd : '')+'?' : '';
+      }
+      showReview();
+      for(const [input, key] of [[project, 'project'], [prompt, 'prompt'], [cwd, 'cwd']]) input.addEventListener('input', () => {
+        current[key] = input.value;
+        current.review = null;
+        showReview();
+        reviewButton.disabled = current.pending || !project.value.trim() || !prompt.value.trim();
       });
-      showMessage(section, agent.peer_id+':spawn');
+      reviewButton.addEventListener('click', () => {
+        if(current.pending || !project.value.trim() || !prompt.value.trim()) return;
+        current.review = {project:project.value, prompt:prompt.value, cwd:cwd.value};
+        showReview(); submit.focus();
+      });
+      cancel.addEventListener('click', () => { current.review = null; showReview(); reviewButton.focus(); });
+      const pendingStatus = node('p', current.pending ? 'Starting session…' : '', section); pendingStatus.className = 'result'; pendingStatus.setAttribute('role', 'status'); pendingStatus.setAttribute('aria-live', 'polite');
+      form.addEventListener('submit', async event => {
+        event.preventDefault();
+        const approved = current.review;
+        if(current.pending || !approved || approved.project !== project.value || approved.prompt !== prompt.value || approved.cwd !== cwd.value) return;
+        current.pending = true;
+        current.outcome = {kind:'pending', text:'Starting session…'};
+        submit.disabled = cancel.disabled = project.disabled = prompt.disabled = cwd.disabled = true;
+        pendingStatus.textContent = 'Starting session…';
+        try {
+          const response = await api('/api/agents/'+encodeURIComponent(agent.peer_id)+'/spawn', 'POST', {project:approved.project, prompt:approved.prompt, ...(approved.cwd ? {cwd:approved.cwd} : {})});
+          if(response.ok === false) current.outcome = {kind:'refusal', text:'Agent refusal ('+String(response.code)+'): '+String(response.message ?? '')};
+          else { current.outcome = {kind:'success', ...response.result}; current.review = null; }
+        } catch(error) {
+          current.outcome = {kind:'transport', text:error.status === 403 ? 'Control-plane transport refusal: confidential_transport_required.' : error.status === 502 ? 'Agent call failed (502): '+error.message : error.message || 'Agent call failed.'};
+        } finally {
+          current.pending = false;
+          try { await load(); } catch { render(); }
+        }
+      });
+      if(current.outcome?.kind === 'success') {
+        const outcome = node('p', 'Started job '+current.outcome.job_id+', session '+current.outcome.session_id+', PID '+String(current.outcome.pid ?? 'unknown')+'.', section); outcome.className = 'result success'; outcome.setAttribute('role', 'status');
+        const open = node('button', 'Open session', section); open.addEventListener('click', () => void openSession(agent.peer_id, current.outcome.session_id));
+        if(!state.sessions.some(session => session.agent_id === agent.peer_id && session.session_id === current.outcome.session_id))
+          node('p', 'Session not in the cached list yet. Open to check it, or Sync to add it to the list.', section).className = 'dim';
+      } else if(current.outcome) {
+        const outcome = node('p', current.outcome.text, section); outcome.className = 'result'; outcome.setAttribute('role', 'status');
+      }
     }
     const jobs = state.jobs.filter(job => job.agent_id === agent.peer_id);
     const jobsFresh = typeof agent.jobs_synced_at === 'number';
@@ -457,13 +694,7 @@ export const dashboard = `<!doctype html>
       const key = agent.peer_id+':'+job.job_id;
       if(agent.controls.stop) { const stop = node('button', 'Stop', item); stop.addEventListener('click', () => void act(agent, 'stop', {job_id:job.job_id}, key+':stop')); }
       if(agent.controls.abort) { const abort = node('button', 'Abort', item); abort.addEventListener('click', () => void act(agent, 'abort', {job_id:job.job_id}, key+':abort')); }
-      if(job.state === 'running' && agent.controls.steer) {
-        const steer = node('form', undefined, item); steer.className = 'job form';
-        const messageLabel = node('label', 'Steer ', steer); const message = node('input', undefined, messageLabel); message.required = true;
-        node('button', 'Send', steer);
-        steer.addEventListener('submit', event => { event.preventDefault(); void act(agent, 'steer', {job_id:job.job_id, message:message.value}, key+':steer'); });
-      }
-      showMessage(item, key+':stop'); showMessage(item, key+':abort'); showMessage(item, key+':steer');
+      showMessage(item, key+':stop'); showMessage(item, key+':abort');
     }
   }
   function render() {
@@ -475,6 +706,8 @@ export const dashboard = `<!doctype html>
       const session = state.sessions.find(item => item.agent_id === selected.agentId && item.session_id === selected.sessionId);
       if(session && transcriptPanel.hidden === false) void refreshSelected();
     }
+    node('h2', 'Agent management', root).className = 'management-heading';
+    if(state.agents.length === 0) node('p', 'No paired agents yet. Pair an agent to begin.', root).className = 'dim';
     for(const agent of state.agents) renderAgent(agent);
   }
   let refreshPending = false;

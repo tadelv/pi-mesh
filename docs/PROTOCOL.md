@@ -46,7 +46,7 @@ Each skill also declares its **exposure**:
 | `session.read` | peer | `{ id, since? }` | `{ entries: Event[] }` |
 | `session.stream` | peer | `{ id }` | SSE stream of `Event` |
 | `process.list` | peer (ungated; job manager required) | `{}` | `{ jobs: [{ job_id, session_id (nullable), pid (nullable), project, cwd, state, started_at, exit? }] }` |
-| `session.steer` | **gated on the spawn policy** | `{ job_id (mesh id, not PID), message }` | Pi RPC response; refused with `-32102` when closed |
+| `session.steer` | **gated on the spawn policy** | `{ job_id (mesh id, not PID), message (≤4096 UTF-8 bytes) }` | Pi RPC response; refused with `-32102` when closed |
 | `session.abort` | peer (ungated) | `{ job_id (mesh id, not PID) }` | Pi RPC response |
 | `process.spawn` | **gated on the spawn policy** | `{ project, cwd?, prompt }` | `{ job_id, pid, session_id }` |
 | `process.stop` | peer (ungated) | `{ job_id (mesh id, not PID) }` | `{ job_id, state, pid }` |
@@ -81,6 +81,10 @@ provider, the session directory, or which extensions load.
   the caller sees success and the session does not move. The prompt form queues as
   a steer while a turn runs and starts a turn when the session is idle, which is
   what steering a running job means.
+
+A `session.steer` message must be non-blank and at most 4096 UTF-8 bytes.
+The agent rejects an oversized direct skill call with `-32602` before sending it
+to Pi.
 
 Steering is gated with spawning because injected prompts cause tool
 execution. Stopping is not gated: `session.abort` and `process.stop` are

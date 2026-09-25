@@ -71,11 +71,11 @@ export function createControlServer(
    * land in the same millisecond, and a clock can move backwards; comparing
    * timestamps then lets an older answer overwrite a newer one and be labelled
    * fresh. `jobsWrites` counts this control plane's own writes to an agent's
-   * rows; `jobsListingApplied` records the sequence number of the newest listing
-   * that has been applied, so listings also cannot apply out of order.
+   * rows; `jobsListingSettled` records the newest completed attempt, including
+   * failures, so an older success cannot undo a newer failure's withdrawal.
    */
   const jobsWrites = new Map<string, number>();
-  const jobsListingApplied = new Map<string, number>();
+  const jobsListingSettled = new Map<string, number>();
   let jobsListingSeq = 0;
   const confidential = options.confidential ?? isConfidential;
   const allowInsecure = options.allowInsecureExecution === true;
@@ -319,7 +319,7 @@ export function createControlServer(
             // that are exactly the agent's list.
             const sequence = ++jobsListingSeq;
             const superseded = (): boolean =>
-              (jobsListingApplied.get(agent.peer_id) ?? 0) > sequence;
+              (jobsListingSettled.get(agent.peer_id) ?? 0) > sequence;
             // NOTE: capabilities are deliberately NOT ordered by `sequence`, only
             // the jobs mirror is. An older sync's card can therefore overwrite or
             // clear a newer one's for a moment, showing stale controls until the
@@ -330,12 +330,8 @@ export function createControlServer(
             // bug as the three the reviews found, and the next reader will be
             // standing in this exact spot.
             const card = await fetchAgentCard(target, callOptions);
-            if (card === undefined) {
-              agentCaps.delete(agent.peer_id);
-              if (!superseded()) jobsSyncedAt.delete(agent.peer_id);
-            } else {
-              agentCaps.set(agent.peer_id, card.skills);
-            }
+            if (card === undefined) agentCaps.delete(agent.peer_id);
+            else agentCaps.set(agent.peer_id, card.skills);
             if (card?.skills.includes("process.list")) {
               const writesAtStart = jobsWrites.get(agent.peer_id) ?? 0;
               try {
@@ -355,30 +351,39 @@ export function createControlServer(
                 // freshness claim that a newer listing established.
                 const overtakenByWrite =
                   (jobsWrites.get(agent.peer_id) ?? 0) !== writesAtStart;
-                if (!overtakenByWrite && !superseded()) {
-                  store.replaceJobs(
-                    agent.peer_id,
-                    result.jobs.map((job) => ({
-                      job_id: job.job_id,
-                      session_id: job.session_id,
-                      pid: job.pid,
-                      project: job.project,
-                      created_at: job.started_at,
-                      state: job.state,
-                    })),
-                  );
-                  jobsListingApplied.set(agent.peer_id, sequence);
-                  jobsSyncedAt.set(agent.peer_id, (options.now ?? Date.now)());
+                if (!superseded()) {
+                  if (!overtakenByWrite) {
+                    store.replaceJobs(
+                      agent.peer_id,
+                      result.jobs.map((job) => ({
+                        job_id: job.job_id,
+                        session_id: job.session_id,
+                        pid: job.pid,
+                        project: job.project,
+                        created_at: job.started_at,
+                        state: job.state,
+                      })),
+                    );
+                    jobsSyncedAt.set(
+                      agent.peer_id,
+                      (options.now ?? Date.now)(),
+                    );
+                  }
+                  jobsListingSettled.set(agent.peer_id, sequence);
                 }
               } catch {
-                // A failure may withdraw the claim only if nothing newer has
-                // already established one. The rows themselves are untouched.
-                if (!superseded()) jobsSyncedAt.delete(agent.peer_id);
+                // A failure withdraws freshness and supersedes older attempts.
+                // The cached rows themselves are untouched.
+                if (!superseded()) {
+                  jobsSyncedAt.delete(agent.peer_id);
+                  jobsListingSettled.set(agent.peer_id, sequence);
+                }
               }
             } else if (!superseded()) {
-              // This agent cannot report jobs, so whatever is cached is not a
-              // mirror of anything - unless a newer listing just made it one.
+              // Without a process.list capability the cache is not a confirmed
+              // mirror; this also supersedes any older in-flight listing.
               jobsSyncedAt.delete(agent.peer_id);
+              jobsListingSettled.set(agent.peer_id, sequence);
             }
             try {
               const sessions = await fetchSessionList(target, callOptions);

@@ -266,6 +266,77 @@ describe("process and session control skills", () => {
     }
   });
 
+  it("T7 limits session.steer messages to 4096 UTF-8 bytes", async () => {
+    const test = await setup("steer");
+    try {
+      const started = await test.record();
+      const registry = createSkillRegistry({ jobs: test.jobs });
+      const exactAscii = "a".repeat(4096);
+      await expect(
+        registry.invoke("session.steer", {
+          job_id: started.id,
+          message: exactAscii,
+        }),
+      ).resolves.toMatchObject({ success: true, accepted: true });
+      const asciiDelivery = `steer-delivered=${exactAscii}\n`;
+      const asciiDeadline = Date.now() + 2_000;
+      while (
+        !test.output.join("").includes(asciiDelivery) &&
+        Date.now() < asciiDeadline
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(
+        test.output.join(""),
+        "exact 4096-byte steer reaches the fixture",
+      ).toContain(asciiDelivery);
+
+      await expect(
+        registry.invoke("session.steer", {
+          job_id: started.id,
+          message: "a".repeat(4097),
+        }),
+      ).rejects.toMatchObject({
+        code: -32602,
+        message: expect.stringMatching(/message.*4096.*UTF-8 bytes/i),
+      });
+      expect(test.output.join("").match(/steer-delivered=/g)).toHaveLength(1);
+
+      const exactMultibyte = "é".repeat(2048);
+      await expect(
+        registry.invoke("session.steer", {
+          job_id: started.id,
+          message: exactMultibyte,
+        }),
+      ).resolves.toMatchObject({ success: true, accepted: true });
+      // stderr is emitted in arbitrary chunks. Count complete ASCII record
+      // prefixes, not array entries; chunk.toString() may split UTF-8 bytes.
+      const secondDeadline = Date.now() + 2_000;
+      while (
+        (test.output.join("").match(/steer-delivered=/g) ?? []).length < 2 &&
+        Date.now() < secondDeadline
+      ) {
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(
+        test.output.join("").match(/steer-delivered=/g),
+        "multibyte boundary sends a second prompt",
+      ).toHaveLength(2);
+      await expect(
+        registry.invoke("session.steer", {
+          job_id: started.id,
+          message: "é".repeat(2049),
+        }),
+      ).rejects.toMatchObject({
+        code: -32602,
+        message: expect.stringMatching(/message.*4096.*UTF-8 bytes/i),
+      });
+      expect(test.output.join("").match(/steer-delivered=/g)).toHaveLength(2);
+    } finally {
+      await test.close();
+    }
+  });
+
   it("T8 advertises only what the machine can serve, from two separate facts", () => {
     // No job manager: the job skills are absent, and so are the execution skills
     // whose handler needs one.

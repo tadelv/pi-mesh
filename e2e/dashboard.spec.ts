@@ -1638,3 +1638,431 @@ test("dashboard start suggests agent projects, confirms inline, and guards dupli
     }
   }
 });
+
+test("selected-session model control is capability-, job-, and owner-bound", async ({
+  browser,
+}) => {
+  const store = new ControlStore(":memory:");
+  store.controlName("Model Control");
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const page = await browser.newPage();
+  const token = store.dashboardToken();
+  const fixtureErrors: string[] = [];
+  const timestamp = new Date(0).toISOString();
+  let scenario = "ready";
+  let resolveModelsA!: () => void;
+  let modelsAStarted!: () => void;
+  let modelsARequestCount = 0;
+  let holdTranscriptA = false;
+  let releaseTranscriptA!: () => void;
+  const transcriptAGate = new Promise<void>((resolve) => {
+    releaseTranscriptA = resolve;
+  });
+  const modelsAGate = new Promise<void>((resolve) => {
+    resolveModelsA = resolve;
+  });
+  const modelsAStartedGate = new Promise<void>((resolve) => {
+    modelsAStarted = resolve;
+  });
+  const body = {
+    job_id: "job-model",
+    provider: "provider-a",
+    model_id: "model-a",
+  };
+  try {
+    const { port } = await control.start();
+    await page.addInitScript(
+      (value) => localStorage.setItem("pi_mesh_token", value),
+      token,
+    );
+    await page.route("**/api/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const authorized = request.headers()["x-pi-mesh-ui"] === token;
+      if (!authorized)
+        fixtureErrors.push("model API request omitted dashboard token header");
+      if (
+        request.method() === "GET" &&
+        url.pathname === "/api/state" &&
+        url.search === "" &&
+        request.postData() === null
+      ) {
+        const skills =
+          scenario === "no-capability"
+            ? ["session.steer"]
+            : ["session.steer", "session.models", "session.set_model"];
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            control: { id: "control-a", name: "Model Control" },
+            agents: [
+              {
+                peer_id: "peer-a",
+                name: "Agent A",
+                host: "127.0.0.1",
+                port: 7330,
+                paired_at: timestamp,
+                skills,
+                controls: {
+                  spawn: false,
+                  steer: true,
+                  stop: false,
+                  abort: false,
+                  models: skills.includes("session.models"),
+                  setModel: skills.includes("session.set_model"),
+                },
+                jobs_synced_at: 1,
+              },
+            ],
+            sessions: [
+              {
+                agent_id: "peer-a",
+                session_id: "session-a",
+                project: "/work/a",
+                name: "Session A",
+                started_at: timestamp,
+                updated_at: timestamp,
+                synced_at: timestamp,
+              },
+              {
+                agent_id: "peer-a",
+                session_id: "session-b",
+                project: "/work/b",
+                name: "Session B",
+                started_at: timestamp,
+                updated_at: timestamp,
+                synced_at: timestamp,
+              },
+            ],
+            jobs:
+              scenario === "no-job"
+                ? []
+                : [
+                    {
+                      agent_id: "peer-a",
+                      job_id:
+                        scenario === "replaced" ? "job-model-2" : "job-model",
+                      session_id: "session-a",
+                      pid: 123,
+                      project: "/work/a",
+                      created_at: timestamp,
+                      state: "running",
+                    },
+                    ...(scenario === "owner-race"
+                      ? [
+                          {
+                            agent_id: "peer-a",
+                            job_id: "job-model-b",
+                            session_id: "session-b",
+                            pid: 456,
+                            project: "/work/b",
+                            created_at: timestamp,
+                            state: "running",
+                          },
+                        ]
+                      : []),
+                  ],
+            execution_transport: "confidential",
+          }),
+        });
+        return;
+      }
+      if (
+        request.method() === "GET" &&
+        /^\/api\/sessions\/peer-a\/session-(a|b)$/.test(url.pathname) &&
+        url.search === "" &&
+        request.postData() === null
+      ) {
+        // Held only in the mismatch phase, so load() can publish the new state
+        // while the panel still shows the previous Confirm button.
+        if (holdTranscriptA && url.pathname.endsWith("session-a"))
+          await transcriptAGate;
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            events: [],
+            hasEarlier: false,
+            total: 0,
+            all: false,
+            stale: false,
+          }),
+        });
+        return;
+      }
+      if (
+        request.method() === "POST" &&
+        url.pathname === "/api/sync" &&
+        request.postData() === null
+      ) {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true }),
+        });
+        return;
+      }
+      if (
+        request.method() === "GET" &&
+        url.pathname === "/api/agents/peer-a/models" &&
+        request.postData() === null &&
+        ((url.search === "?job_id=job-model" &&
+          ["ready", "owner-race", "unusable", "catalog-unavailable"].includes(
+            scenario,
+          )) ||
+          (url.search === "?job_id=job-model-2" && scenario === "replaced") ||
+          (url.search === "?job_id=job-model-b" && scenario === "owner-race"))
+      ) {
+        if (url.search === "?job_id=job-model" && scenario === "owner-race") {
+          modelsARequestCount += 1;
+          // Gate only the FIRST request: a retry after returning to A must be
+          // served immediately while the earlier one is still pending.
+          if (modelsARequestCount === 1) {
+            modelsAStarted();
+            await modelsAGate;
+          }
+        }
+        if (scenario === "unusable") {
+          // A catalog with no usable entries is not a working control.
+          await route.fulfill({
+            contentType: "application/json",
+            body: JSON.stringify({
+              models: [{ id: 7, provider: null, name: "" }],
+            }),
+          });
+          return;
+        }
+        if (scenario === "catalog-unavailable") {
+          await route.fulfill({
+            contentType: "application/json",
+            body: JSON.stringify({
+              ok: false,
+              code: -32106,
+              message: "helper timed out",
+            }),
+          });
+          return;
+        }
+        const model =
+          url.search === "?job_id=job-model-b"
+            ? { id: "model-b", provider: "provider-b", name: "Model B" }
+            : url.search === "?job_id=job-model-2"
+              ? { id: "model-a2", provider: "provider-a", name: "Model A2" }
+              : { id: "model-a", provider: "provider-a", name: "Model A" };
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({ models: [model] }),
+        });
+        return;
+      }
+      if (
+        request.method() === "POST" &&
+        url.pathname === "/api/agents/peer-a/setmodel" &&
+        url.search === "" &&
+        request.postData() === JSON.stringify(body) &&
+        scenario === "ready"
+      ) {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: false,
+            code: -32602,
+            message: "Requested provider/model pair is not in the catalog",
+          }),
+        });
+        return;
+      }
+      fixtureErrors.push(
+        `unexpected request ${request.method()} ${url.pathname}${url.search} body=${request.postData()}`,
+      );
+      await route.fulfill({
+        status: 400,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "unexpected_request" }),
+      });
+    });
+    await page.goto(`http://127.0.0.1:${port}`);
+    await page.getByRole("button", { name: /Session A/ }).click();
+    const panel = page.locator("#transcript-panel");
+    const selector = panel.getByLabel("Available model");
+    await expect(
+      selector,
+      "advertised capability and live job expose agent model catalog",
+    ).toBeVisible();
+    await expect(selector.locator("option")).toContainText([
+      "Choose a model…",
+      "Model A (provider-a)",
+    ]);
+    await selector.selectOption({ label: "Model A (provider-a)" });
+    await panel.getByRole("button", { name: "Review model change" }).click();
+    await expect(panel).toContainText("Change to Model A (provider-a)?");
+    await panel.getByRole("button", { name: "Confirm model change" }).click();
+    await expect(panel).toContainText(
+      "Agent refusal (-32602): Requested provider/model pair is not in the catalog",
+    );
+
+    scenario = "owner-race";
+    await page.reload();
+    await page.getByRole("button", { name: /Session A/ }).click();
+    await modelsAStartedGate;
+    await page.getByRole("button", { name: /Session B/ }).click();
+    await expect(
+      panel
+        .getByLabel("Available model")
+        .getByRole("option", { name: "Model B (provider-b)" }),
+    ).toBeAttached();
+    // Back to A while its FIRST catalog request is STILL PENDING. The shared
+    // in-flight flag must not block A's retry, and the discarded request must
+    // not strand the panel on "Loading…".
+    await page.getByRole("button", { name: /Session A/ }).click();
+    await expect(
+      panel
+        .getByLabel("Available model")
+        .getByRole("option", { name: "Model A (provider-a)" }),
+      "returning to A re-fetches while its earlier request is still pending",
+    ).toBeAttached();
+    // Let the discarded first request settle: it must not clear the newer
+    // request's state or blank the catalog the operator is looking at.
+    resolveModelsA();
+    await expect(
+      panel
+        .getByLabel("Available model")
+        .getByRole("option", { name: "Model A (provider-a)" }),
+      "the discarded request does not clobber the newer owner's catalog",
+    ).toBeAttached();
+    await expect(
+      panel
+        .getByLabel("Available model")
+        .getByRole("option", { name: "Model B (provider-b)" }),
+    ).toHaveCount(0);
+
+    // Same page, the running job for this session is REPLACED. A stale catalog
+    // or a pending confirmation from the old job would otherwise be sent to the
+    // new one.
+    scenario = "ready";
+    await page.reload();
+    await page.getByRole("button", { name: /Session A/ }).click();
+    await selector.selectOption({ label: "Model A (provider-a)" });
+    await panel.getByRole("button", { name: "Review model change" }).click();
+    await expect(panel).toContainText("Change to Model A (provider-a)?");
+    scenario = "replaced";
+    await page.getByRole("button", { name: "Sync" }).click();
+    await expect(
+      panel
+        .getByLabel("Available model")
+        .getByRole("option", { name: "Model A2 (provider-a)" }),
+      "a replacement job re-fetches its own catalog",
+    ).toBeAttached();
+    await expect(
+      panel
+        .getByLabel("Available model")
+        .getByRole("option", { name: "Model A (provider-a)" }),
+      "the previous job's catalog is not reused",
+    ).toHaveCount(0);
+    await expect(
+      panel,
+      "a pending confirmation from the previous job is cleared",
+    ).not.toContainText("Change to Model A (provider-a)?");
+
+    // Confirming in the window where load() has published the new state but the
+    // asynchronous transcript refresh has not replaced the old button: the job
+    // is already gone, so the explanation must still be rendered, and rendered
+    // before the reasons path returns.
+    scenario = "ready";
+    await page.reload();
+    await page.getByRole("button", { name: /Session A/ }).click();
+    await selector.selectOption({ label: "Model A (provider-a)" });
+    await panel.getByRole("button", { name: "Review model change" }).click();
+    await expect(panel).toContainText("Change to Model A (provider-a)?");
+    holdTranscriptA = true;
+    scenario = "no-job";
+    await page.getByRole("button", { name: "Sync" }).click();
+    await expect(page.locator("#agents")).toContainText(
+      "No jobs reported by the agent.",
+    );
+    await panel.getByRole("button", { name: "Confirm model change" }).click();
+    await expect(
+      panel,
+      "the mismatch explanation is rendered even when the job is gone",
+    ).toContainText(
+      "The running job for this session changed; choose a model again.",
+    );
+    await expect(panel).toContainText(
+      "No running job is known for this session.",
+    );
+    // Publish the replacement state BEFORE releasing the held refresh, so the
+    // released refresh renders with the new job rather than the no-job state it
+    // was started against. Waiting on the agents panel makes that ordering
+    // observable instead of a race with the next Sync.
+    scenario = "replaced";
+    await page.getByRole("button", { name: "Sync" }).click();
+    await expect(page.locator("#agents")).toContainText("job-model-2");
+    releaseTranscriptA();
+    holdTranscriptA = false;
+
+    // The notice survives the rerender and clears on the operator's next
+    // action, leaving no stale warning paragraph in the DOM.
+    await expect(
+      panel
+        .getByLabel("Available model")
+        .getByRole("option", { name: "Model A2 (provider-a)" }),
+    ).toBeAttached();
+    await expect(panel).toContainText(
+      "The running job for this session changed; choose a model again.",
+    );
+    await panel
+      .getByLabel("Available model")
+      .selectOption({ label: "Model A2 (provider-a)" });
+    await panel.getByRole("button", { name: "Review model change" }).click();
+    await expect(
+      panel,
+      "Review clears the mismatch warning rather than leaving it in the DOM",
+    ).not.toContainText(
+      "The running job for this session changed; choose a model again.",
+    );
+
+    // A catalog nobody can choose from says so.
+    scenario = "unusable";
+    await page.reload();
+    await page.getByRole("button", { name: /Session A/ }).click();
+    await expect(panel).toContainText(
+      "The agent reported models, but none with a usable id, provider and name.",
+    );
+    await expect(panel.getByLabel("Available model")).toHaveCount(0);
+
+    // -32106 is a stated reason, not an empty selector.
+    scenario = "catalog-unavailable";
+    await page.reload();
+    await page.getByRole("button", { name: /Session A/ }).click();
+    await expect(panel).toContainText("Model catalog unavailable:");
+    await expect(panel.getByLabel("Available model")).toHaveCount(0);
+
+    scenario = "no-capability";
+    await page.reload();
+    await page.getByRole("button", { name: /Session A/ }).click();
+    await expect(panel).toContainText(
+      "This agent does not advertise model changes (session.set_model).",
+    );
+    await expect(panel.getByLabel("Available model")).toHaveCount(0);
+
+    scenario = "no-job";
+    await page.reload();
+    await page.getByRole("button", { name: /Session A/ }).click();
+    await expect(panel).toContainText(
+      "No running job is known for this session.",
+    );
+    await expect(panel.getByLabel("Available model")).toHaveCount(0);
+    expect(
+      fixtureErrors,
+      "model fixture rejects unexpected methods, paths, headers, queries, and bodies",
+    ).toEqual([]);
+  } finally {
+    // Release a still-held route handler so an earlier assertion failure cannot
+    // strand this request and hang the teardown.
+    releaseTranscriptA();
+    await page.close();
+    try {
+      await control.stop();
+    } finally {
+      store.close();
+    }
+  }
+});

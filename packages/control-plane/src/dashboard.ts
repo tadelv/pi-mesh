@@ -475,7 +475,7 @@ export const dashboard = `<!doctype html>
   const promptStates = new Map();
   function promptState(owner) {
     const key = owner.agentId+'\\0'+owner.sessionId;
-    if(!promptStates.has(key)) promptStates.set(key, {draft:'', status:'', pending:false, jobId:'', confirmed:false, candidateIds:''});
+    if(!promptStates.has(key)) promptStates.set(key, {draft:'', status:'', pending:false, jobId:'', confirmed:false, candidateIds:'', modelJobId:'', models:null, modelsLoading:false, modelsFailed:false, modelRequestOwner:null, modelStatus:'', modelNotice:'', modelPending:false, modelCandidate:null});
     return promptStates.get(key);
   }
   function promptEligibility(data, owner) {
@@ -494,12 +494,181 @@ export const dashboard = `<!doctype html>
     }
     return {agent, matched, running, reasons};
   }
+  function usableModel(model) {
+    return !!model && typeof model.id === 'string' && typeof model.provider === 'string' && typeof model.name === 'string';
+  }
+  async function loadModels(owner, agent, jobId, current) {
+    // Block only a second request from THIS owner for the same job. A newer
+    // owner (A -> B -> A) must be able to retry while an older, discarded
+    // request is still in flight, or the panel strands on "Loading…" - the
+    // in-flight flag is shared state, and the older owner no longer exists.
+    if(current.modelJobId === jobId && current.modelsLoading && current.modelRequestOwner === owner) return;
+    if(current.modelJobId === jobId && (current.models !== null || current.modelsFailed)) return;
+    current.modelJobId = jobId;
+    current.modelRequestOwner = owner;
+    current.models = null;
+    current.modelsFailed = false;
+    current.modelsLoading = true;
+    current.modelStatus = 'Loading models reported by this agent…';
+    try {
+      const result = await api('/api/agents/'+encodeURIComponent(agent.peer_id)+'/models?job_id='+encodeURIComponent(jobId));
+      if(current.modelRequestOwner !== owner || current.modelJobId !== jobId) return;
+      if(result.ok === false) {
+        current.modelsFailed = true;
+        current.modelStatus = result.code === -32106 ? 'Model catalog unavailable: '+String(result.message ?? 'Pi could not report models.') : 'Agent refusal ('+String(result.code)+'): '+String(result.message ?? '');
+      } else if(!Array.isArray(result.models)) {
+        current.modelsFailed = true;
+        current.modelStatus = 'The agent returned an invalid model catalog.';
+      } else if(result.models.length > 0 && result.models.filter(usableModel).length === 0) {
+        // A catalog nobody can choose from is not a working control: say so
+        // instead of rendering an empty selector with no reason.
+        current.modelsFailed = true;
+        current.modelStatus = 'The agent reported models, but none with a usable id, provider and name.';
+      } else {
+        current.models = result.models;
+        current.modelStatus = result.models.length ? '' : 'The agent reported no available models.';
+      }
+    } catch(error) {
+      if(current.modelRequestOwner === owner && current.modelJobId === jobId) {
+        current.modelsFailed = true;
+        current.modelStatus = error.status === 502 ? 'Could not reach the agent for its model catalog.' : error.message || 'Could not load models.';
+      }
+    } finally {
+      // Only the request that still owns the state may clear the flag, and only
+      // it re-renders: an older discarded request must neither clobber a newer
+      // owner's in-flight load nor leave the newer owner unrendered.
+      if(current.modelRequestOwner === owner) {
+        current.modelsLoading = false;
+        const currentOwner = selected;
+        if(currentOwner && currentOwner.agentId === owner.agentId && currentOwner.sessionId === owner.sessionId) {
+          renderTranscript(currentOwner.transcript ?? {events:[], stale:true}, currentOwner);
+        }
+      }
+    }
+  }
+  function renderModelAvailability(data, owner, current) {
+    const section = node('section', undefined, transcriptPanel);
+    section.className = 'agent-section';
+    node('h3', 'Change model', section);
+    const ownerState = current;
+    // Rendered BEFORE the reasons early-return below: the notice explains an
+    // action the operator just took, and the same window can also have removed
+    // or made ambiguous the running job, which returns early.
+    const notice = ownerState.modelNotice ? node('p', ownerState.modelNotice, section) : null;
+    if(notice) notice.className = 'notice warning';
+    const agent = state.agents.find(item => item.peer_id === owner.agentId);
+    const matched = state.jobs.filter(job => job.agent_id === owner.agentId && job.session_id === owner.sessionId);
+    const running = matched.filter(job => job.state === 'running');
+    const reasons = [];
+    if(!agent || agent.skills === null) reasons.push('Model-control capability is unknown because this agent has not been verified.');
+    else if(!agent.controls.setModel) reasons.push('This agent does not advertise model changes (session.set_model).');
+    if(data.stale) reasons.push('Model changes are unavailable until this transcript is verified with the agent.');
+    if(!agent || typeof agent.jobs_synced_at !== 'number') reasons.push('A live job has not been confirmed with this agent. Sync to check before changing its model.');
+    if(state.execution_transport === 'refused') reasons.push('Changing the model requires TLS or loopback on this connection.');
+    if(running.length === 0) reasons.push(matched.length ? 'The job for this session is no longer running.' : 'No running job is known for this session.');
+    if(running.length > 1) reasons.push('More than one running job claims this session; model control needs one unambiguous job.');
+    for(const reason of reasons) node('p', reason, section).className = 'notice warning';
+    if(reasons.length) return;
+    const job = running[0];
+    // A replacement running job for the same session must not inherit the old
+    // job's catalog or a pending confirmation: Confirm would then send the old
+    // choice to the NEW job.
+    if(ownerState.modelJobId !== job.job_id) {
+      ownerState.modelJobId = job.job_id;
+      ownerState.modelRequestOwner = null;
+      ownerState.models = null;
+      ownerState.modelsLoading = false;
+      ownerState.modelsFailed = false;
+      ownerState.modelStatus = '';
+      ownerState.modelCandidate = null;
+    }
+    const status = node('p', ownerState.modelStatus, section);
+    status.className = 'notice'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
+    if(ownerState.models === null) {
+      void loadModels(owner, agent, job.job_id, ownerState);
+      return;
+    }
+    if(ownerState.models.length === 0) return;
+    const usable = ownerState.models.filter(usableModel);
+    if(usable.length === 0) {
+      node('p', 'The agent reported models, but none with a usable id, provider and name.', section).className = 'notice warning';
+      return;
+    }
+    const label = node('label', 'Available model ', section);
+    const select = node('select', undefined, label);
+    node('option', 'Choose a model…', select).value = '';
+    for(const model of usable) {
+      const option = node('option', model.name+' ('+model.provider+')', select);
+      option.value = JSON.stringify({provider:model.provider, model_id:model.id});
+    }
+    const review = node('button', 'Review model change', section);
+    review.type = 'button'; review.disabled = ownerState.modelPending;
+    const confirmation = node('div', undefined, section);
+    const confirmationText = node('p', '', confirmation);
+    const confirm = node('button', 'Confirm model change', confirmation);
+    confirm.type = 'button'; confirm.disabled = ownerState.modelPending;
+    const cancel = node('button', 'Cancel', confirmation);
+    cancel.type = 'button'; cancel.disabled = ownerState.modelPending;
+    confirmation.hidden = !ownerState.modelCandidate;
+    if(ownerState.modelCandidate) confirmationText.textContent = 'Change to '+ownerState.modelCandidate.name+' ('+ownerState.modelCandidate.provider+')?';
+    review.addEventListener('click', () => {
+      if(!select.value || ownerState.modelPending || selected !== owner) return;
+      const pair = JSON.parse(select.value);
+      const model = ownerState.models.find(value => value.id === pair.model_id && value.provider === pair.provider);
+      if(!model) return;
+      ownerState.modelNotice = '';
+      if(notice) notice.remove();
+      ownerState.modelCandidate = {provider:model.provider, model_id:model.id, name:model.name};
+      confirmationText.textContent = 'Change to '+model.name+' ('+model.provider+')?';
+      confirmation.hidden = false;
+    });
+    cancel.addEventListener('click', () => { ownerState.modelCandidate = null; confirmation.hidden = true; });
+    confirm.addEventListener('click', async () => {
+      const candidate = ownerState.modelCandidate;
+      if(!candidate || ownerState.modelPending || selected !== owner) return;
+      // Re-derive the job from the CURRENT state rather than trusting the render
+      // that produced this button: the running set can change under a live page.
+      const live = state.jobs.filter(item => item.agent_id === owner.agentId && item.session_id === owner.sessionId && item.state === 'running');
+      if(live.length !== 1 || live[0].job_id !== job.job_id) {
+        // A separate notice, not modelStatus: the render below resets
+        // modelStatus for the new job, which would erase the explanation the
+        // operator needs. The notice survives until their next action.
+        ownerState.modelNotice = 'The running job for this session changed; choose a model again.';
+        ownerState.modelJobId = '';
+        ownerState.modelRequestOwner = null;
+        ownerState.models = null;
+        ownerState.modelsFailed = false;
+        ownerState.modelCandidate = null;
+        renderTranscript(owner.transcript ?? data, owner);
+        return;
+      }
+      ownerState.modelNotice = '';
+      if(notice) notice.remove();
+      ownerState.modelPending = true;
+      ownerState.modelStatus = 'Changing model…';
+      review.disabled = confirm.disabled = cancel.disabled = select.disabled = true;
+      status.textContent = ownerState.modelStatus;
+      try {
+        const result = await api('/api/agents/'+encodeURIComponent(agent.peer_id)+'/setmodel', 'POST', {job_id:job.job_id, provider:candidate.provider, model_id:candidate.model_id});
+        if(selected !== owner) return;
+        ownerState.modelStatus = result.ok === false ? 'Agent refusal ('+String(result.code)+'): '+String(result.message ?? '') : 'Agent accepted the model change to '+candidate.name+'.';
+        ownerState.modelCandidate = null;
+      } catch(error) {
+        if(selected !== owner) return;
+        ownerState.modelStatus = error.status === 403 ? 'Control-plane transport refusal: confidential_transport_required.' : error.status === 502 ? 'Agent call failed (502): '+error.message : error.message || 'Agent call failed.';
+      } finally {
+        ownerState.modelPending = false;
+        if(selected === owner) renderTranscript(owner.transcript ?? data, owner);
+      }
+    });
+  }
   function renderPromptAvailability(data, owner) {
     const section = node('section', undefined, transcriptPanel);
     section.className = 'agent-section';
     node('h3', 'Prompt this session', section);
     const {agent, running, reasons} = promptEligibility(data, owner);
     const current = promptState(owner);
+    renderModelAvailability(data, owner, current);
     const candidateIds = running.map(job => job.job_id).sort().join('\\0');
     if(current.candidateIds !== candidateIds) { current.candidateIds = candidateIds; current.jobId = ''; current.confirmed = false; }
     for(const reason of reasons) node('p', reason, section).className = 'notice warning';

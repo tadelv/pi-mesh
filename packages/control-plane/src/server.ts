@@ -139,8 +139,64 @@ export function createControlServer(
         });
         return;
       }
+      const modelsMatch = /^\/api\/agents\/([^/]+)\/models$/.exec(url.pathname);
+      if (request.method === "GET" && modelsMatch !== null) {
+        let peerId: string;
+        try {
+          peerId = decodeURIComponent(modelsMatch[1]!);
+        } catch {
+          json(response, 400, { error: "invalid_input" });
+          return;
+        }
+        const agent = store.getAgent(peerId);
+        if (agent === undefined) {
+          json(response, 404, { error: "unknown_agent" });
+          return;
+        }
+        try {
+          const result = await callAgent<{ models: unknown[] }>(
+            {
+              peerId: agent.peer_id,
+              host: agent.host,
+              port: agent.port,
+              credential: agent.credential,
+            },
+            "session.models",
+            url.searchParams.has("job_id")
+              ? { job_id: url.searchParams.get("job_id") }
+              : {},
+            {
+              controlId: store.controlId(),
+              ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+            },
+          );
+          if (!Array.isArray(result?.models))
+            throw new AgentUnreachableError(
+              "Agent returned a malformed session.models result",
+            );
+          json(response, 200, { models: result.models });
+        } catch (error) {
+          if (error instanceof AgentSkillError) {
+            json(response, 200, {
+              ok: false,
+              code: error.code,
+              message: error.message,
+            });
+          } else if (error instanceof AgentUnreachableError) {
+            json(response, 502, {
+              error: "agent_unreachable",
+              message: error.message,
+            });
+          } else {
+            throw error;
+          }
+        }
+        return;
+      }
       const executionMatch =
-        /^\/api\/agents\/([^/]+)\/(spawn|steer|stop|abort)$/.exec(url.pathname);
+        /^\/api\/agents\/([^/]+)\/(spawn|steer|stop|abort|setmodel)$/.exec(
+          url.pathname,
+        );
       if (request.method === "POST" && executionMatch !== null) {
         // The one thing a plaintext LAN observer must not be able to
         // originate. This credential is reusable, the mesh's is not (ADR 0007),
@@ -183,6 +239,7 @@ export function createControlServer(
           steer: "session.steer",
           stop: "process.stop",
           abort: "session.abort",
+          setmodel: "session.set_model",
         }[action]!;
         try {
           const result = await callAgent<Record<string, unknown>>(

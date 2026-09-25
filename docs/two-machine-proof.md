@@ -418,3 +418,72 @@ local execution gate refused the request **before** a job lookup; it does not
 show an active gate-closed job receiving a steer. Finally, `devpi` was
 restarted with the explicit control id restored. The following sync reported
 `controls.steer:true`, a confirmed empty job table, and no leaked Pi process.
+
+## Saved-session Resume — inactive Pi file on devpi (2026-09-25)
+
+The merged implementation is `9936e64`; the deployed revision is **`a85666a`**
+(the follow-up fixes an existing fake-clock browser-test race). Its first CI run
+failed because a single 16-second clock advance skipped the test's first
+observation fetch on Linux; after requiring an early read, 12 focused local
+repetitions and the complete local gates passed. CI for `a85666a` passed
+([run 36163401944](https://github.com/tadelv/pi-mesh/actions/runs/36163401944)).
+The image was built through the Portainer Docker API from `git archive` of that
+commit, then stack **43**, endpoint **2** on `apollo.local` was redeployed from
+its unchanged stack file. Its running image is
+`sha256:f175c700217868307057f71385e1a21bedc90e7215c22eb84f656d6d3651944b`;
+its existing `pi-mesh-control-plane_pi-mesh-control-plane-data` volume remains
+mounted at `/var/lib/pi-mesh`. Before redeployment the stopped container's
+volume was archived to `~/.pi-mesh/backups/control-plane-before-a85666a.tar`
+(28,911,616 bytes, SHA-256
+`62a51e79e5132bba52da064ca6181e7bb5a3098ea34839e9fa1c69aa1e863a43`).
+The container was restarted and answered HTTP 200 before redeployment; the new
+container answered HTTP 200 for the dashboard and HTTP 401 for an unauthenticated
+API request. Portainer's Docker proxy returned HTTP 400 for `containers/start`
+after the backup despite an empty request; `containers/restart` recovered the
+stopped container. No database or pairing was replaced.
+
+`devpi` advanced from `c9786e6` to `a85666a` with a clean checkout, frozen
+install and build. Its agent was gracefully restarted with the same **scoped**
+control-plane opt-in; it runs Node 22.23.2 and Pi **0.85.1** (the earlier
+source/CLI experiment used Pi 0.87.1 on the Mac). Before the test, a sync showed
+`controls.resume:true`, a fresh jobs listing, and no Pi process. A **new**
+managed test session was created with an initial prompt, rather than reopening
+any active TUI or a valuable saved conversation. Its observed user and assistant
+turns were five entries in session `01a0d983-f766-704b-9302-25212bd2f4d0`.
+The initial job `126ee508-4efa-4448-b95f-57aba14c7a1e` was stopped; a fresh
+agent listing then contained no running/starting job for that session.
+
+    POST /api/agents/bf55e82f…/resume {"session_id":"01a0d983…"}
+      -> HTTP 200 {"ok":false,"code":-32602}  (acknowledgement omitted)
+    POST /api/agents/bf55e82f…/resume
+      {"session_id":"01a0d983…","acknowledge_concurrent_writers":true}
+      -> HTTP 200 {"ok":true,"result":{"job_id":"86e89570-9d56-41e5-8ca8-8a8deeb5d475",
+          "session_id":"01a0d983…","pid":<number>}}
+    GET /api/state -> devpi jobs_synced_at:null
+    POST /api/sync; GET /api/state -> jobs_synced_at present, exactly that job
+      running for that session
+    POST /api/agents/bf55e82f…/steer {"job_id":"86e89570…",
+      "message":"Reply with exactly RESUME-A85666A-OK on one line. Do not run tools."}
+      -> HTTP 200 {"ok":true}
+    GET /api/sessions/bf55e82f…/01a0d983… -> stale:false, total:8;
+      new user and assistant turns both contain RESUME-A85666A-OK
+    POST /api/agents/bf55e82f…/stop -> state:"exited"; devpi Pi count:0
+
+For the execution-gate control, `devpi` was restarted **without** opt-in at the
+same revision. A sync showed `controls.resume:false`; a direct Resume request
+with acknowledgement returned `-32102` from the agent, with the transcript
+still at eight entries and no Pi process. Scoped opt-in was restored; a final
+sync showed `controls.resume:true`, a fresh listing with no running job, and
+no Pi process. A headless browser against the **deployed** dashboard selected
+this saved session: the corruption/history-loss warning was visible, the
+confirmation was unchecked, and clicking Resume without checking it sent zero
+Resume requests. This was a browser read/guard check, **not** a browser Resume
+submission; actual execution above used the dashboard API.
+
+The stack still uses the documented `PI_MESH_ALLOW_INSECURE_EXECUTION=1`
+exception: these authenticated execution requests travelled over plaintext LAN
+HTTP, **not TLS**. The agent cannot detect another independently launched Pi
+TUI, and an empty jobs listing or this proof does not certify exclusive file
+ownership. Acceptance, observed transcript turns, and their attribution remain
+separate: session entries have no originating request ID; this test did not
+resume a file open in another process or verify actual screen-reader speech.

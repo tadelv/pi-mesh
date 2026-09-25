@@ -16,6 +16,7 @@
     "test:browser": "playwright test",
     "lint": "pnpm -r --if-present lint",
     "dev": "./scripts/dev.sh",
+    "dashboard:dev": "node scripts/dashboard-dev.mjs",
     "format": "prettier --write .",
     "format:check": "prettier --check ."
   },

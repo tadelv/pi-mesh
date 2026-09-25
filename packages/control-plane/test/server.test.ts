@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { pairTokenId, pairingProof } from "@pi-mesh/protocol";
 import { afterEach, describe, expect, it } from "vitest";
 import {
+  type ControlServerOptions,
   ControlStore,
   PairingService,
   createControlServer,
@@ -19,7 +20,7 @@ afterEach(async () => {
   for (const server of servers.splice(0)) await server.stop();
   for (const store of stores.splice(0)) store.close();
 });
-async function setup(serverOptions: { fetch?: typeof fetch } = {}) {
+async function setup(serverOptions: Partial<ControlServerOptions> = {}) {
   const root = await mkdtemp(join(tmpdir(), "pi-mesh-control-test-"));
   const store = new ControlStore(join(root, "control.db"));
   stores.push(store);

@@ -1,8 +1,9 @@
 # Two-machine proof (M1 exit criteria, and M2-9)
 
-Transcripted evidence from the actual machines, not from a fixture. Everything
-below was run by hand on 2026-09-22 and is pasted verbatim; nothing here is a
-summary of a test that passed.
+Transcripted evidence from actual machines, not from a fixture. The original
+M1 run below was performed by hand on 2026-09-22 and pasted verbatim. Later
+sections cover subsequent milestones and quote bounded excerpts of recorded
+requests and responses; they are not verbatim full logs.
 
 - **A** — macOS, `en0` `192.168.12.100`
 - **B** — Raspberry Pi, `devpi.local` = `192.168.12.108`, aarch64, Raspberry Pi OS
@@ -331,7 +332,89 @@ waits), so it was stopped through the dashboard route:
 job really ended rather than merely being labelled so.
 
 **Not shown here:** the browser rendering of the freshness label. It is asserted
-at source level in `packages/control-plane/test/server.test.ts` because this
-project has no DOM harness; the hand check was that the page reads "Jobs — from
-the agent" with an age for devpi and "Jobs — cached, not synced from this agent"
-for a machine that has never listed.
+at source level in `packages/control-plane/test/server.test.ts` because the project had no DOM
+harness **at the time of M4**. The M5 Chromium harness covers later dashboard
+behaviour; the M4 hand check was that the page read "Jobs — from the agent" with
+an age for devpi and "Jobs — cached, not synced from this agent" for a machine
+that had never listed.
+
+## M5 — prompting the selected session on devpi (2026-09-25)
+
+The Mac checkout and the agent on `devpi.local` ran **`c9786e6`**. Portainer
+stack **43** on `apollo.local` (endpoint 2) was rebuilt from `git archive` of
+that commit and redeployed onto image
+`sha256:bcd2b838c6c23742ebaa9816806e7ea3004d555599d449afc5ac203ae6792034`.
+The recreated container was running on that image and retained its existing
+`/var/lib/pi-mesh` volume. The dashboard answered HTTP 200; its API answered
+401 without the token. CI for this commit passed
+([run 36078332699](https://github.com/tadelv/pi-mesh/actions/runs/36078332699)).
+
+**Transport limitation:** this existing stack uses
+`PI_MESH_ALLOW_INSECURE_EXECUTION=1`, so the dashboard execution requests below
+travelled over plaintext LAN HTTP. This is the explicit ADR 0014 exception,
+**not** evidence of TLS or a confidential operator connection. The dashboard
+token was sent in a header, never in a URL or this transcript.
+
+`devpi` was restarted with the control plane's id in its explicit local opt-in:
+
+    node packages/agent/dist/cli.js start --allow-execution=4903a35d-815f-4a2c-9eaf-f5af5593e394
+
+After a control-plane sync, `controls.spawn` and `controls.steer` were true. The
+requests below went through the **existing dashboard routes**, not a new
+session-addressed execution route. The first spawn supplied an initial prompt
+so this was a real, active Pi session rather than an idle process that merely
+accepted a queued steer:
+
+    POST /api/agents/bf55e82f…/spawn
+    {"project":"m5-dashboard-proof","cwd":"pi-mesh",
+     "prompt":"Reply with exactly M5-START-READY on one line. Do not run tools."}
+    -> HTTP 200 {"ok":true,"result":{"job_id":"586fc282-f5de-4b10-9ee3-e6491f96ac1a",
+       "pid":28842,"session_id":"01a0d603-7715-7172-9c59-cfa1673b6638"}}
+
+    GET /api/sessions/bf55e82f…/01a0d603…
+    -> stale:false, total:5
+       message user      Reply with exactly M5-START-READY on one line. Do not run tools.
+       message assistant M5-START-READY
+
+A second sync reported `jobs_synced_at` present and exactly one **running** job
+claiming that `(agent_id, session_id)`, with the returned job id. The transcript
+had five entries before sending:
+
+    POST /api/agents/bf55e82f…/steer
+    {"job_id":"586fc282-f5de-4b10-9ee3-e6491f96ac1a",
+     "message":"Reply with exactly M5-DASHBOARD-STEER-RECEIVED on one line. Do not run tools."}
+    -> HTTP 200 {"ok":true,"result":{"type":"response","command":"prompt","success":true}}
+
+    GET /api/sessions/bf55e82f…/01a0d603…
+    -> stale:false, total:7
+       c8db9e8b message user      Reply with exactly M5-DASHBOARD-STEER-RECEIVED on one line. Do not run tools.
+       9e506d8f message assistant M5-DASHBOARD-STEER-RECEIVED
+
+The new user entry **and** assistant response are real Pi session-log entries
+from the second machine. The agent's accepted HTTP response alone would not
+have established either. A session entry has no originating request/job id, so
+an identical prompt from another writer would remain indistinguishable; the
+browser truthfully labels a matching entry “origin not verified.” This run
+shows the turn was acted on, not cryptographic attribution to this request.
+The requests were made through the API used by the dashboard, not by clicking
+a browser button; the browser ownership/confirmation UI is covered separately
+by Playwright, and actual screen-reader speech has not been checked.
+
+The job was stopped through `/api/agents/bf55e82f…/stop`, which answered
+`state:"exited",pid:28842`. For the denial control, `devpi` was restarted at
+the **same commit without** `--allow-execution`. A sync then reported
+`controls.steer:false` and no confirmed jobs listing, so the selected-session
+composer would be unavailable. A direct request to the existing steer route
+was refused by the agent's execution gate, not mistaken for a transport error:
+
+    POST /api/agents/bf55e82f…/steer  (same job id and text as above)
+    -> HTTP 200 {"ok":false,"code":-32102,
+       "message":"Execution is disabled on this machine … : session.steer"}
+    GET /api/sessions/bf55e82f…/01a0d603… -> stale:false, total:7 (unchanged)
+    devpi: ps -eo args | grep -cE '^pi$' -> 0
+
+Because the restart cleared the agent's in-memory job table, this proves the
+local execution gate refused the request **before** a job lookup; it does not
+show an active gate-closed job receiving a steer. Finally, `devpi` was
+restarted with the explicit control id restored. The following sync reported
+`controls.steer:true`, a confirmed empty job table, and no leaked Pi process.

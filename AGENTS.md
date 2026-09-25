@@ -97,14 +97,15 @@ aborts on a paired agent by calling the agent's existing gated skills
 path, and a per-agent opt-in by the control plane's id. The transcript is in
 `docs/two-machine-proof.md` under "M4 - dashboard control".
 
-**Milestone 5 is authored and not started** (`tasks/milestone-5.md`): prompting
-the session you are reading, a start form that needs no blocking dialog or
-memorised project name, and the browser-test decision the reviews named. M5-1 is
-an ADR and comes before any code. Everything the documents promise is built
-except this, the items in `README.md`'s "Someday" list, and the deferred
-encryption in `docs/SECURITY.md`.
+**Milestone 5 is implemented and verified** (`tasks/milestone-5.md`): the
+selected-session prompt, an inline-reviewed Start form, and Chromium regression
+coverage. ADR 0016 fixes the identity and refusal model. The real-Pi prompt
+turn, response, gate-closed refusal, deployed Portainer image and limitations
+are recorded under "M5" in `docs/two-machine-proof.md`. Actual screen-reader
+speech is not verified. What remains is `README.md`'s "Someday" list and the
+deferred encryption in `docs/SECURITY.md`.
 
-Read order for picking up M5 - nothing here needs context beyond these files:
+Read order for revisiting M5 or changing its execution path:
 
 1. `tasks/milestone-5.md` - the issues, their Definition of Done, and what M5-1
    must settle before any code is written.
@@ -121,11 +122,10 @@ Read order for picking up M5 - nothing here needs context beyond these files:
 
 ## What to build first
 
-Work through `tasks/milestone-5.md` in issue order. M4 is complete; M5-1 is the
-ADR that settles how a selected session resolves to a job, before any code,
-because M5-3 and M5-4 have no landed shape until it is accepted. The
-requirements are frozen: if you find a gap, open an ADR in `docs/adr/` rather than
-inventing a shape that happens to suit the code you are writing.
+M5 is complete; do not reimplement it. For a new issue, read its requirements,
+ADR 0016 if it touches the selected-session prompt, and `docs/GOTCHAS.md`
+before trusting tests. The requirements are frozen: if you find a gap, open an
+ADR in `docs/adr/` rather than inventing a shape that suits the code.
 
 ## What NOT to do
 

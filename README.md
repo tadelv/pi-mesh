@@ -107,13 +107,18 @@ See [docs/SECURITY.md](docs/SECURITY.md).
 
 Pre-alpha. The **agent** is a working LAN mesh for reading, streaming and
 (review-gated) executing Pi sessions across machines. The **control plane**
-serves a dashboard that pairs with agents, caches sessions and mirrors agent jobs in SQLite, and can
-start, steer, stop and abort sessions on agents that have opted in; it depends
-on no agent to start. Milestone 4 is
-implemented and verified across three machines (a Portainer-managed control
-plane on one host, agents on two others). The clause still unproven on hardware
-is the offline cache against a device that goes away, which is exercised
-in-process only. See [tasks/milestone-4.md](tasks/milestone-4.md) and
+serves a dashboard that pairs with agents, caches sessions and mirrors agent
+jobs in SQLite, and can start, steer, stop and abort sessions on agents that
+have opted in; it depends on no agent to start. The dashboard now prompts the
+selected session only when a confirmed running job and steering opt-in permit
+it, and starts sessions with project suggestions and inline review. Milestone 4
+was verified across three machines. Milestone 5's new turn, response and
+opt-out refusal were verified on a real Pi through the dashboard API, while
+the browser behaviour is covered by Chromium tests
+([proof](docs/two-machine-proof.md)); a matching log entry is not proof of
+request origin. The offline-cache clause against a device that goes away
+remains exercised in-process only, not on hardware. See
+[tasks/milestone-5.md](tasks/milestone-5.md) and
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
 
 ## Someday

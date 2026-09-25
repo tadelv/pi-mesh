@@ -1,247 +1,264 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 //
-// Fixtures for scripts/dashboard-dev.mjs. Shapes match the control-plane store,
-// not the wire: sessions are SessionSummary, events are protocol Events
-// (entryId/data), which upsertEvents serialises to the CachedEvent the
-// dashboard reads back. Between them they exercise every primitive in
-// DESIGN.md: session rows, user/assistant/tool/thinking entries, a failed tool
-// result, session_info, model_change, an image part, and a job per agent.
+// Fixtures for scripts/dashboard-dev.mjs. These are Pi session-file entries, not
+// protocol Events: dashboard-dev writes each session to a JSONL file and points
+// a real HttpAgentServer at it, so the list, the read, the capability card and
+// the jobs mirror all travel the real wire. That is deliberate - a stub that
+// answers any request shape would hide a wire-format bug forever (AGENTS.md).
+//
+// Entry payloads sit at the top level of a line (Pi's own shape); the agent
+// wraps each into an Event on read. Timestamps are relative to now so the
+// dashboard's "N minutes ago" column reads sensibly.
 
-const mac = "agent-mac-studio";
-const pi = "agent-pi-5";
-const credential = "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=";
+export const controlId = "33333333-3333-4333-8333-333333333333";
+export const credential = Buffer.alloc(32, 7).toString("base64");
+export const swarmKey = Buffer.from("pi-mesh dashboard dev fixture swarm key");
 
-export const agents = [
-  {
-    peer_id: mac,
-    name: "Mac Studio",
-    host: "127.0.0.1",
-    port: 7330,
+// What a mock agent's running job reports for get_available_models. session.models
+// and session.set_model both read the catalog through the job when a job_id is
+// given (which the dashboard always does), so this single list is what the
+// picker shows and what set_model validates against.
+export const models = [
+  { id: "claude-sonnet-4-5", provider: "anthropic", name: "Claude Sonnet 4.5" },
+  { id: "claude-haiku-4-5", provider: "anthropic", name: "Claude Haiku 4.5" },
+  { id: "gpt-5.1-codex", provider: "openai", name: "GPT-5.1 Codex" },
+];
+
+const DASHBOARD = "9c1e7d4a-2b3f-4c8e-9a10-5d6e7f8a9b0c";
+const FLAKE = "3b7d9e11-6a24-4f0b-8c3d-2e5f109a7b44";
+const NIGHTLY = "c4a1f0e2-88b7-4d19-a6f3-77e2c0b4d9a1";
+
+export function createFixtures(now = Date.now()) {
+  const at = (minutesAgo) => new Date(now - minutesAgo * 60_000).toISOString();
+
+  return {
+    controlId,
     credential,
-    paired_at: "2025-09-20T09:04:00.000Z",
-  },
-  {
-    peer_id: pi,
-    name: "raspberry-pi-5",
-    host: "192.168.1.42",
-    port: 7330,
-    credential,
-    paired_at: "2025-09-21T11:32:00.000Z",
-  },
-];
-
-/** Session ids, referenced by jobs and events below. */
-export const sessionIds = {
-  dashboard: "9c1e7d4a-2b3f-4c8e-9a10-5d6e7f8a9b0c",
-  flake: "3b7d9e11-6a24-4f0b-8c3d-2e5f109a7b44",
-  nightly: "c4a1f0e2-88b7-4d19-a6f3-77e2c0b4d9a1",
-};
-
-export const sessions = [
-  {
-    agent_id: mac,
-    synced_at: "2025-09-25T15:40:00.000Z",
-    sessions: [
+    swarmKey,
+    agents: [
       {
-        id: sessionIds.dashboard,
-        project: "/Users/vid/development/repos/pi-mesh",
-        name: "Dashboard design pass",
-        started_at: "2025-09-25T13:02:00.000Z",
-        updated_at: "2025-09-25T15:38:00.000Z",
-      },
-      {
-        id: sessionIds.flake,
-        project: "/Users/vid/development/repos/reaprime",
-        name: "MMR transport flake",
-        started_at: "2025-09-24T08:15:00.000Z",
-        updated_at: "2025-09-24T09:51:00.000Z",
-      },
-    ],
-  },
-  {
-    agent_id: pi,
-    synced_at: "2025-09-25T15:40:00.000Z",
-    sessions: [
-      {
-        id: sessionIds.nightly,
-        project: "/srv/pi/streamline-bridge",
-        name: "Nightly CI triage",
-        started_at: "2025-09-25T02:00:00.000Z",
-        updated_at: "2025-09-25T02:12:00.000Z",
-      },
-    ],
-  },
-];
-
-export const jobs = [
-  {
-    agent_id: mac,
-    job_id: "job-9f31c2",
-    session_id: sessionIds.dashboard,
-    pid: 4721,
-    project: "/Users/vid/development/repos/pi-mesh",
-    created_at: "2025-09-25T13:02:00.000Z",
-    state: "running",
-  },
-  {
-    agent_id: pi,
-    job_id: "job-4a02be",
-    session_id: sessionIds.nightly,
-    pid: null,
-    project: "/srv/pi/streamline-bridge",
-    created_at: "2025-09-25T02:00:00.000Z",
-    state: "stopped",
-  },
-];
-
-const t = (minute) =>
-  `2025-09-25T15:${String(minute).padStart(2, "0")}:00.000Z`;
-
-export const events = [
-  {
-    agent_id: mac,
-    session_id: sessionIds.dashboard,
-    events: [
-      {
-        entryId: "e-1",
-        type: "session_info",
-        timestamp: t(2),
-        data: {
-          name: "Dashboard design pass",
+        peerId: "agent-mac-studio",
+        name: "Mac Studio",
+        // One running job, linked to the dashboard session, so the jobs mirror
+        // is populated and the selected session is prompt-eligible.
+        job: {
+          project: "/Users/vid/development/repos/pi-mesh",
           cwd: "/Users/vid/development/repos/pi-mesh",
+          name: "Dashboard design pass",
+          pid: 4721,
+          sessionId: DASHBOARD,
         },
-      },
-      {
-        entryId: "e-2",
-        type: "message",
-        timestamp: t(3),
-        data: {
-          message: {
-            role: "user",
-            content:
-              "The dashboard works but it is not a design anyone would use. Look at the session list and the transcript and tell me what is wrong.",
-          },
-        },
-      },
-      {
-        entryId: "e-3",
-        type: "message",
-        timestamp: t(4),
-        data: {
-          message: {
-            role: "assistant",
-            content: [
+        sessions: [
+          {
+            id: DASHBOARD,
+            project: "/Users/vid/development/repos/pi-mesh",
+            name: "Dashboard design pass",
+            started_at: at(150),
+            entries: [
               {
-                type: "thinking",
-                thinking:
-                  "Density is fine; hierarchy is not. Every sidebar row is name+project in the same weight, and every transcript entry wears an identical grey meta line, so nothing tells you where you are.",
+                type: "session_info",
+                id: "d-1",
+                parentId: null,
+                timestamp: at(150),
+                name: "Dashboard design pass",
+                cwd: "/Users/vid/development/repos/pi-mesh",
               },
               {
-                type: "text",
-                text: "Two things, both about hierarchy. The sidebar renders name and project as one undifferentiated line, and every transcript entry has the same meta treatment — so the eye has nothing to anchor on. Let me read the renderer before changing it.",
+                type: "message",
+                id: "d-2",
+                parentId: "d-1",
+                timestamp: at(148),
+                message: {
+                  role: "user",
+                  content:
+                    "The dashboard works but it is not a design anyone would use. Look at the session list and the transcript and tell me what is wrong.",
+                },
+              },
+              {
+                type: "message",
+                id: "d-3",
+                parentId: "d-2",
+                timestamp: at(146),
+                message: {
+                  role: "assistant",
+                  content: [
+                    {
+                      type: "thinking",
+                      thinking:
+                        "Density is fine; hierarchy is not. Every sidebar row is name+project at the same weight, and every transcript entry wears an identical grey meta line, so nothing tells the eye where it is.",
+                    },
+                    {
+                      type: "text",
+                      text: "Two things, both about hierarchy. The sidebar renders name and project as one undifferentiated line, and every transcript entry has the same meta treatment - so the eye has nothing to anchor on. Let me read the renderer before changing it.",
+                    },
+                  ],
+                },
+              },
+              {
+                type: "message",
+                id: "d-4",
+                parentId: "d-3",
+                timestamp: at(145),
+                message: {
+                  role: "assistant",
+                  content: [
+                    {
+                      type: "text",
+                      text: "Reading the entry renderer first.",
+                    },
+                    {
+                      type: "toolCall",
+                      name: "read",
+                      arguments: {
+                        path: "packages/control-plane/src/dashboard.html",
+                        offset: 340,
+                        limit: 60,
+                      },
+                    },
+                  ],
+                },
+              },
+              {
+                type: "message",
+                id: "d-5",
+                parentId: "d-4",
+                timestamp: at(144),
+                message: {
+                  role: "toolResult",
+                  name: "read",
+                  isError: false,
+                  content:
+                    "function renderEntry(event, parent) {\n  const data = parseEntry(event);\n  const type = String(data.type || event.type || 'entry');\n  ...",
+                },
+              },
+              {
+                type: "model_change",
+                id: "d-6",
+                parentId: "d-5",
+                timestamp: at(143),
+                provider: "anthropic",
+                modelId: "claude-sonnet-4-5",
+              },
+              {
+                type: "message",
+                id: "d-7",
+                parentId: "d-6",
+                timestamp: at(142),
+                message: {
+                  role: "toolResult",
+                  name: "lint",
+                  isError: true,
+                  content:
+                    "packages/control-plane/src/dashboard.html\n  1:1  error  Missing SPDX licence header",
+                },
+              },
+              {
+                type: "message",
+                id: "d-8",
+                parentId: "d-7",
+                timestamp: at(3),
+                message: {
+                  role: "assistant",
+                  content: [
+                    {
+                      type: "text",
+                      text: "The lint failure is a missing licence header, not a design issue. Fixed; the markup carries SPDX like the rest of the sources.",
+                    },
+                    { type: "image", mimeType: "image/png" },
+                  ],
+                },
+              },
+              {
+                type: "message",
+                id: "d-9",
+                parentId: "d-8",
+                timestamp: at(2),
+                message: { role: "user", content: "Ship it." },
               },
             ],
           },
-        },
-      },
-      {
-        entryId: "e-4",
-        type: "tool_call",
-        timestamp: t(5),
-        data: {
-          name: "read",
-          arguments: {
-            path: "packages/control-plane/src/dashboard.ts",
-            offset: 340,
-            limit: 60,
-          },
-        },
-      },
-      {
-        entryId: "e-5",
-        type: "message",
-        timestamp: t(6),
-        data: {
-          message: {
-            role: "toolResult",
-            name: "read",
-            content:
-              "function renderEntry(event, parent) {\n  const data = parseEntry(event);\n  const type = String(data.type || event.type || 'entry');\n  ...",
-            isError: false,
-          },
-        },
-      },
-      {
-        entryId: "e-6",
-        type: "model_change",
-        timestamp: t(7),
-        data: { provider: "anthropic", modelId: "claude-sonnet-4-5" },
-      },
-      {
-        entryId: "e-7",
-        type: "message",
-        timestamp: t(8),
-        data: {
-          message: {
-            role: "toolResult",
-            name: "lint",
-            content:
-              "packages/control-plane/src/dashboard.html\n  1:1  error  Missing SPDX header",
-            isError: true,
-          },
-        },
-      },
-      {
-        entryId: "e-8",
-        type: "message",
-        timestamp: t(9),
-        data: {
-          message: {
-            role: "assistant",
-            content: [
+          {
+            id: FLAKE,
+            project: "/Users/vid/development/repos/reaprime",
+            name: "MMR transport flake",
+            started_at: at(1500),
+            entries: [
               {
-                type: "text",
-                text: "The lint failure is a missing licence header, not a design issue. Fixed; the markup file carries SPDX like the rest of the sources.",
+                type: "session_info",
+                id: "f-1",
+                parentId: null,
+                timestamp: at(1500),
+                name: "MMR transport flake",
+                cwd: "/Users/vid/development/repos/reaprime",
               },
-              { type: "image", mimeType: "image/png" },
+              {
+                type: "message",
+                id: "f-2",
+                parentId: "f-1",
+                timestamp: at(1490),
+                message: {
+                  role: "assistant",
+                  content: [
+                    {
+                      type: "text",
+                      text: "Reproduced once in 400 runs. Parking until the flake is worth a bisect.",
+                    },
+                  ],
+                },
+              },
             ],
           },
-        },
+        ],
       },
       {
-        entryId: "e-9",
-        type: "message",
-        timestamp: t(10),
-        data: { message: { role: "user", content: "Ship it." } },
+        peerId: "agent-pi-5",
+        name: "raspberry-pi-5",
+        // No job: the agent is reachable and its sessions list, but its jobs
+        // mirror is empty, so the selected session shows the "no running job"
+        // prompt state rather than an eligible one.
+        sessions: [
+          {
+            id: NIGHTLY,
+            project: "/srv/pi/streamline-bridge",
+            name: "Nightly CI triage",
+            started_at: at(400),
+            entries: [
+              {
+                type: "session_info",
+                id: "n-1",
+                parentId: null,
+                timestamp: at(400),
+                name: "Nightly CI triage",
+                cwd: "/srv/pi/streamline-bridge",
+              },
+              {
+                type: "message",
+                id: "n-2",
+                parentId: "n-1",
+                timestamp: at(390),
+                message: {
+                  role: "assistant",
+                  content: [
+                    {
+                      type: "text",
+                      text: "Three failing jobs overnight; two are the known flake. Triaging the third.",
+                    },
+                  ],
+                },
+              },
+            ],
+          },
+        ],
+      },
+      {
+        // Paired in the store, no server behind it: the capability-unknown
+        // state, which is what every control disabled for want of evidence
+        // looks like.
+        peerId: "agent-offline-laptop",
+        name: "offline-laptop",
+        unreachable: true,
+        sessions: [],
       },
     ],
-  },
-  {
-    agent_id: pi,
-    session_id: sessionIds.nightly,
-    events: [
-      {
-        entryId: "n-1",
-        type: "session_info",
-        timestamp: t(5),
-        data: { name: "Nightly CI triage", cwd: "/srv/pi/streamline-bridge" },
-      },
-      {
-        entryId: "n-2",
-        type: "message",
-        timestamp: t(6),
-        data: {
-          message: {
-            role: "assistant",
-            content: [
-              {
-                type: "text",
-                text: "Three failing jobs overnight; two are the known flake. Triaging the third.",
-              },
-            ],
-          },
-        },
-      },
-    ],
-  },
-];
+  };
+}

@@ -45,10 +45,11 @@ To iterate without a mesh:
     pnpm -r build        # once, for the store and server the script imports
     pnpm dashboard:dev   # http://127.0.0.1:7331, dashboard token `dev`
 
-`scripts/dashboard-dev.mjs` runs the control plane against an in-memory store seeded from
-`scripts/dashboard-fixtures.mjs` - no mDNS, no pairing, no `pi-mesh-agent`. It reads
-`src/dashboard.html` on every request, so an edit is a browser refresh, no rebuild. Two
-limits are deliberate: no agent is present, so transcripts render through the normal
-"could not be verified" cache path and the execution controls stay disabled; this serves
-the reading surface, not the control path. A state that must be visible here belongs in
-the fixtures, not in a live agent.
+`scripts/dashboard-dev.mjs` runs the control plane against real `HttpAgentServer`s from
+`@pi-mesh/agent`, backed by fixture session files and a fake job handle, plus one
+paired-but-unreachable agent. No mDNS, no pairing handshake and no real Pi are involved,
+but capabilities, sessions, jobs, transcripts and the model catalog all travel the real
+wire, so the execution controls are genuinely enabled for the reachable agents and
+unknown for the offline one. It reads `src/dashboard.html` on every request, so an edit
+is a browser refresh, no rebuild. A state that must be visible here belongs in
+`scripts/dashboard-fixtures.mjs`, not in a live agent.

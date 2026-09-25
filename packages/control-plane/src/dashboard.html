@@ -9,7 +9,8 @@
     :root {
       color-scheme: light;
       --line-height: 18px;
-      --sidebar-width: 320px;
+      --sidebar-width: 300px;
+      --agents-width: 360px;
       --body-bg: #f5f6f7;
       --container-bg: #fff;
       --info-bg: #edf0f2;
@@ -55,9 +56,13 @@
       }
     }
     * { box-sizing: border-box; }
-    html, body { min-height: 100%; }
+    html, body { height: 100%; }
     body {
       margin: 0;
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
       background: var(--body-bg);
       color: var(--text);
       font: 13px/19px ui-monospace, 'Cascadia Code', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace;
@@ -86,38 +91,43 @@
     textarea { min-height: 64px; resize: vertical; }
     a { color: var(--accent); text-decoration-thickness: 1px; text-underline-offset: 3px; }
     .topbar {
+      flex: 0 0 auto;
       display: flex;
       align-items: center;
-      gap: 12px;
+      gap: 10px;
       min-height: 52px;
-      padding: 8px 16px;
+      padding: 8px 14px;
       background: var(--container-bg);
       border-bottom: 1px solid var(--border);
-      flex-wrap: wrap;
     }
     .topbar button { flex-shrink: 0; white-space: nowrap; }
+    .topbar .nav-btn { display: none; }
     h1, h2, h3, p { margin: 0; }
     h1 { font-size: 15px; line-height: 21px; }
     h2 { font-size: 15px; line-height: 21px; }
     h3 { font-size: 13px; line-height: 19px; }
-    .topbar h1 { margin-right: auto; }
-    .workspace { display: grid; grid-template-columns: var(--sidebar-width) minmax(0, 1fr); min-height: calc(100vh - 52px); }
-    .sidebar {
-      position: sticky;
-      top: 0;
-      align-self: start;
-      height: calc(100vh - 52px);
-      min-height: 360px;
+    .topbar h1 { margin-right: auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .workspace {
+      flex: 1 1 auto;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: var(--sidebar-width) minmax(0, 1fr) var(--agents-width);
       overflow: hidden;
+    }
+    .sidebar, .agents-pane {
       display: flex;
       flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
       background: var(--container-bg);
-      border-right: 1px solid var(--border);
     }
-    .sidebar-head { padding: 12px; border-bottom: 1px solid var(--border); }
+    .sidebar { border-right: 1px solid var(--border); }
+    .agents-pane { border-left: 1px solid var(--border); }
+    .sidebar-head { flex: 0 0 auto; padding: 12px; border-bottom: 1px solid var(--border); }
     .sidebar-head label { display: block; margin-bottom: 5px; color: var(--dim); }
     #search { width: 100%; }
-    #session-list { overflow: auto; padding: 4px 0; }
+    #session-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 4px 0; }
     .session-link {
       display: block;
       width: 100%;
@@ -135,7 +145,38 @@
     .session-project, .session-age, .dim { color: var(--dim); }
     .agent-label { padding: 9px 12px 4px; color: var(--muted); border-top: 1px solid var(--border); }
     .empty { padding: 12px; color: var(--dim); }
-    .content { min-width: 0; max-width: 1000px; width: 100%; padding: 18px 24px 40px; }
+    .content {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      min-height: 0;
+      overflow: hidden;
+    }
+    .content-head { flex: 0 0 auto; padding: 10px 18px 0; }
+    .content-head > :empty { display: none; }
+    #agents { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; padding: 0 14px 28px; }
+    #transcript-panel {
+      flex: 1 1 auto;
+      min-height: 0;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+      padding: 0 18px;
+    }
+    #transcript-panel > * { flex: 0 0 auto; }
+    #transcript-panel > .transcript { flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+    .composer-dock {
+      flex: 0 0 auto;
+      max-height: 42vh;
+      overflow-y: auto;
+      padding: 6px 0 10px;
+      border-top: 1px solid var(--border);
+      background: var(--container-bg);
+    }
+    .composer-dock .agent-section { padding: 6px 0 0; border-bottom: 0; }
+    .composer-dock .agent-section h3 { margin: 0 0 4px; }
+    .composer-dock textarea { min-height: 46px; }
+    .composer-dock .agent-form { margin-top: 0; }
     .toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 14px; }
     #status, #auth-note { min-height: 18px; color: var(--dim); }
     #status[data-error="true"] { color: var(--error); }
@@ -145,7 +186,7 @@
     #auth input { width: min(100%, 420px); }
     .session-heading { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; padding-bottom: 12px; border-bottom: 1px solid var(--border); }
     .session-heading h2 { overflow-wrap: anywhere; }
-    .transcript { display: flex; flex-direction: column; gap: 18px; padding: 16px 0; }
+    .transcript { display: flex; flex-direction: column; gap: 14px; padding: 14px 0; }
     .entry { min-width: 0; }
     .entry-meta { display: flex; gap: 10px; margin-bottom: 5px; color: var(--dim); font-size: 11px; }
     .entry-role { font-weight: 700; color: var(--accent); }
@@ -161,8 +202,8 @@
     details.tool-payload { margin-top: 6px; color: var(--dim); }
     details.tool-payload summary { cursor: pointer; }
     pre { margin: 6px 0 0; max-width: 100%; overflow: auto; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--text); font: inherit; }
-    .transcript-actions { display: flex; gap: 8px; padding-top: 6px; border-top: 1px solid var(--border); }
-    .management-heading { margin-top: 22px; padding-top: 18px; border-top: 1px solid var(--border); }
+    .transcript-actions { display: flex; gap: 8px; padding-top: 2px; }
+    .management-heading { padding: 14px 0 6px; font-size: 12px; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
     .agent-section { padding: 15px 0; border-bottom: 1px solid var(--border); }
     .agent-title { display: flex; align-items: baseline; gap: 9px; flex-wrap: wrap; margin-bottom: 9px; }
     .agent-section h3 { margin: 12px 0 5px; }
@@ -179,13 +220,23 @@
     .notice { margin: 8px 0; padding: 8px 10px; background: var(--info-bg); color: var(--dim); overflow-wrap: anywhere; }
     .notice.warning { color: var(--warning); }
     [hidden] { display: none !important; }
-    @media (max-width: 760px) {
-      .workspace { display: block; }
-      .sidebar { position: static; height: auto; max-height: min(38vh, 300px); min-height: 0; border-right: 0; border-bottom: 1px solid var(--border); }
-      .content { padding: 14px 12px 28px; }
+    @media (max-width: 1000px) {
+      .topbar .nav-btn { display: inline-flex; }
+      .workspace { grid-template-columns: minmax(0, 1fr); }
+      .workspace > .sidebar, .workspace > .content, .workspace > .agents-pane { display: none; }
+      .workspace[data-view="sessions"] > .sidebar { display: flex; }
+      .workspace[data-view="session"] > .content { display: flex; }
+      .workspace[data-view="agents"] > .agents-pane { display: flex; }
+      .sidebar, .agents-pane { border-left: 0; border-right: 0; }
+      #transcript-panel { padding: 0 12px; }
+      .content-head { padding: 10px 12px 0; }
       .agent-form label { width: 100%; }
-      .topbar { padding-inline: 12px; }
-      .session-heading { align-items: flex-start; flex-direction: column; gap: 3px; }
+      .composer-dock { max-height: 55vh; }
+      button { min-height: 34px; }
+    }
+    @media (max-width: 640px) {
+      .topbar { flex-wrap: wrap; }
+      .session-heading { align-items: flex-start; flex-direction: column; gap: 2px; }
     }
     @media (prefers-reduced-motion: no-preference) {
       .entry { animation: arrive .18s ease-out both; }
@@ -195,28 +246,34 @@
 </head>
 <body>
   <header class="topbar">
+    <button id="nav-sessions" class="nav-btn" type="button">Sessions</button>
     <h1 id="title">Pi Mesh</h1>
     <button id="pair" type="button">Pair agent</button>
     <button id="sync" type="button">Sync</button>
+    <button id="nav-agents" class="nav-btn" type="button">Agents</button>
   </header>
-  <div class="workspace">
+  <div class="workspace" id="workspace" data-view="sessions">
     <aside class="sidebar" aria-label="Sessions">
       <div class="sidebar-head"><label for="search">Find a session</label><input id="search" type="search" placeholder="Name or project" autocomplete="off"></div>
       <nav id="session-list" aria-label="Recent sessions"></nav>
     </aside>
     <main class="content">
-      <form id="auth" hidden>
-        <label for="auth-token">Paste dashboard token</label>
-        <input id="auth-token" type="password" autocomplete="off" placeholder="pi-mesh-control-plane token">
-        <button type="submit">Connect</button>
-      </form>
-      <p id="auth-note" role="status"></p>
-      <p id="status" role="status"></p>
-      <p id="pairing"></p>
-      <p id="transcript-status" role="status" aria-live="polite"></p>
+      <div class="content-head">
+        <form id="auth" hidden>
+          <label for="auth-token">Paste dashboard token</label>
+          <input id="auth-token" type="password" autocomplete="off" placeholder="pi-mesh-control-plane token">
+          <button type="submit">Connect</button>
+        </form>
+        <p id="auth-note" role="status"></p>
+        <p id="status" role="status"></p>
+        <p id="pairing"></p>
+        <p id="transcript-status" role="status" aria-live="polite"></p>
+      </div>
       <section id="transcript-panel" hidden></section>
-      <section id="agents" aria-label="Agents and jobs"></section>
     </main>
+    <aside class="agents-pane" aria-label="Agents and jobs">
+      <section id="agents"></section>
+    </aside>
   </div>
 <script>
 (() => {
@@ -226,9 +283,15 @@
   const root = document.querySelector('#agents');
   const sessionList = document.querySelector('#session-list');
   const transcriptPanel = document.querySelector('#transcript-panel');
+  const workspace = document.querySelector('#workspace');
   const messages = new Map();
+  // Below 1000px only one pane is shown; these switches pick it. On a wide
+  // screen the attribute is inert and all three panes are visible.
+  function showView(view) { workspace.dataset.view = view; }
+  document.querySelector('#nav-sessions').addEventListener('click', () => showView('sessions'));
+  document.querySelector('#nav-agents').addEventListener('click', () => showView('agents'));
   const node = (tag, text, parent) => { const e = document.createElement(tag); if(text !== undefined) e.textContent = String(text ?? ''); parent.append(e); return e; };
-  function needToken(message) { token = ''; localStorage.removeItem('pi_mesh_token'); document.querySelector('#auth').hidden = false; document.querySelector('#auth-note').textContent = message || ''; root.replaceChildren(); sessionList.replaceChildren(); }
+  function needToken(message) { showView('session'); token = ''; localStorage.removeItem('pi_mesh_token'); document.querySelector('#auth').hidden = false; document.querySelector('#auth-note').textContent = message || ''; root.replaceChildren(); sessionList.replaceChildren(); }
   async function api(path, method='GET', body, signal) {
     const r = await fetch(path, {method, headers:{'X-Pi-Mesh-Ui':token, ...(body === undefined ? {} : {'content-type':'application/json'})}, ...(body === undefined ? {} : {body:JSON.stringify(body)}), ...(signal ? {signal} : {})});
     const result = await r.json();
@@ -390,6 +453,7 @@
     if(selected) { const previous = promptState(selected); previous.jobId = ''; previous.confirmed = false; }
     const next = promptState({agentId, sessionId}); next.jobId = ''; next.confirmed = false;
     selected = {agentId, sessionId};
+    showView('session');
     const status = document.querySelector('#transcript-status');
     status.textContent = 'Loading session '+sessionId+'.';
     // Every await below re-checks ownership before touching the transcript. A
@@ -405,6 +469,8 @@
       if(selected === owner) {
         renderTranscript(data, owner, true);
         status.textContent = data.stale ? 'Could not verify session '+owner.sessionId+'.' : 'Loaded session '+owner.sessionId+'.';
+        const list = transcriptPanel.querySelector('.transcript');
+        if(list) list.scrollTop = list.scrollHeight;
       }
     } catch(error) {
       if(selected !== owner) return;
@@ -431,7 +497,7 @@
     if(data.events.length === 0) node('p', data.stale ? 'No cached transcript entries.' : 'No transcript entries yet; the session may still be starting.', list).className = 'dim';
     for(const event of data.events) renderEntry(event, list);
     renderPromptAvailability(data, owner);
-    const actions = node('div', undefined, transcriptPanel);
+    const actions = node('div', undefined, list);
     actions.className = 'transcript-actions';
     if(data.hasEarlier) {
       const earlier = node('button', 'Load earlier entries', actions);
@@ -469,6 +535,12 @@
         }
       });
     }
+    // Everything appended after the scrolling transcript - the model and prompt
+    // sections and the paging actions - is moved into a dock that stays pinned
+    // to the bottom of the panel, so the composer never scrolls out of reach.
+    const dock = node('div', undefined, transcriptPanel);
+    dock.className = 'composer-dock';
+    while (list.nextElementSibling && list.nextElementSibling !== dock) dock.append(list.nextElementSibling);
   }
   const promptStates = new Map();
   function promptState(owner) {
@@ -661,12 +733,14 @@
     });
   }
   function renderPromptAvailability(data, owner) {
+    const current = promptState(owner);
+    // Appended to the panel first, so it lands at the top of the dock and the
+    // composer below it is the last thing at the frame's bottom edge.
+    renderModelAvailability(data, owner, current);
     const section = node('section', undefined, transcriptPanel);
     section.className = 'agent-section';
     node('h3', 'Prompt this session', section);
     const {agent, running, reasons} = promptEligibility(data, owner);
-    const current = promptState(owner);
-    renderModelAvailability(data, owner, current);
     const candidateIds = running.map(job => job.job_id).sort().join('\0');
     if(current.candidateIds !== candidateIds) { current.candidateIds = candidateIds; current.jobId = ''; current.confirmed = false; }
     for(const reason of reasons) node('p', reason, section).className = 'notice warning';

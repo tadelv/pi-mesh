@@ -21,7 +21,8 @@ The dashboard borrows Pi's exported session transcript grammar; the stylesheet s
 
 - Monospace stack: `ui-monospace`, Cascadia Code, Source Code Pro, Menlo, Consolas, DejaVu Sans Mono.
 - Dashboard base: 13px / 19px; transcript bodies: 14px / 21px. Transcript entry metadata, including timestamps: 11px. Tabular numerals for times and IDs.
-- A 320px fixed, independently scrolling session sidebar sits beside the main scrolling column; below 760px it becomes a content-sized top region, capped at 38vh / 300px so short lists do not leave an empty panel.
+- Fixed-height shell: a 300px session sidebar, the transcript column, and a 360px agent/jobs panel, each scrolling independently. The composer is docked to the bottom of the transcript column so it never scrolls out of reach.
+- Below 1000px the three panes collapse to one at a time; the header's Sessions and Agents buttons switch panes, and opening a session selects the transcript.
 - Session text measures at most 75ch and wraps long tokens and paths.
 
 ## Primitives
@@ -31,7 +32,7 @@ The dashboard borrows Pi's exported session transcript grammar; the stylesheet s
 - Tool calls, tool results, and thinking payloads use native collapsed `<details>` disclosure.
 - Session info and model changes are compact labeled entries; cache state remains explicit.
 - Controls use native buttons, labeled inputs, visible keyboard focus, and high-contrast light/dark tokens.
-- The selected transcript ends with its own compact prompt composer or a specific unavailability reason; statuses distinguish sending, agent acceptance, an observed turn with unverified origin, and unconfirmed delivery. Only short statuses are announced, not the whole log.
+- The selected transcript ends in a composer docked to the bottom of its column, above it the model control, or a specific unavailability reason; statuses distinguish sending, agent acceptance, an observed turn with unverified origin, and unconfirmed delivery. Only short statuses are announced, not the whole log.
 - Agent management remains separate: Start offers agent-scoped cached project values through a native datalist and asks for inline confirmation before spawning; the pending state blocks duplicate starts, while the returned job/session/PID or refusal stays visible beside that agent.
 
 ## Working on the dashboard

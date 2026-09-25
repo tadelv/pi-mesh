@@ -8,7 +8,12 @@ const controlId = "33333333-3333-4333-8333-333333333333";
 const token = "dashboard-token";
 const credential = Buffer.alloc(32, 7).toString("base64");
 
-type Job = { job_id: string; state: string };
+type Job = {
+  job_id: string;
+  state: string;
+  session_id?: string;
+  acknowledge_concurrent_writers?: boolean;
+};
 
 const resources: Array<{ stop(): Promise<void>; close?(): void }> = [];
 afterEach(async () => {
@@ -139,6 +144,20 @@ async function setup(
             session_id: "session-2",
             pid: 42,
           });
+        case "session.resume":
+          if (
+            body.params?.message?.parts?.[0]?.data?.input?.session_id !==
+              "session-1" ||
+            body.params?.message?.parts?.[0]?.data?.input
+              ?.acknowledge_concurrent_writers !== true
+          ) {
+            return new Response(null, { status: 400 });
+          }
+          return rpc(init, {
+            job_id: "resumed-1",
+            session_id: "session-1",
+            pid: 43,
+          });
         case "process.stop":
           return rpc(init, {
             job_id: body.params?.message?.parts?.[0]?.data?.input?.job_id,
@@ -180,6 +199,16 @@ const stop = (base: string, headers: Record<string, string>, jobId: string) =>
     method: "POST",
     headers,
     body: JSON.stringify({ job_id: jobId }),
+  });
+
+const resume = (base: string, headers: Record<string, string>) =>
+  fetch(`${base}/api/agents/${agentId}/resume`, {
+    method: "POST",
+    headers,
+    body: JSON.stringify({
+      session_id: "session-1",
+      acknowledge_concurrent_writers: true,
+    }),
   });
 
 it("withdraws the freshness claim once this control plane writes a job itself", async () => {
@@ -228,6 +257,47 @@ it("does not let a stale listing clobber a write that landed mid-flight", async 
   expect(after.jobs.map((job) => job.job_id)).toContain("spawned-1");
   expect(after.jobs.map((job) => job.job_id)).not.toContain("stale-1");
   expect(after.agents[0]!.jobs_synced_at).toBeNull();
+});
+
+it("resume withdraws jobs freshness and rejects an overlapping pre-resume listing", async () => {
+  let release!: () => void;
+  const held = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  const { base, headers, waitForListing } = await setup({
+    gates: [Promise.resolve(), held],
+    jobsFor: (index) =>
+      index < 2 ? [] : [{ job_id: "resumed-1", state: "running" }],
+  });
+  expect((await sync(base, headers)).status).toBe(200);
+  expect((await state(base, headers)).agents[0]!.jobs_synced_at).not.toBeNull();
+  const entered = waitForListing(1);
+  const staleSync = sync(base, headers);
+  try {
+    await entered;
+    const response = await resume(base, headers);
+    expect(response.status).toBe(200);
+    expect(((await response.json()) as { ok: boolean }).ok).toBe(true);
+    expect(
+      (await state(base, headers)).agents[0]!.jobs_synced_at,
+      "resume must withdraw a pre-resume freshness claim",
+    ).toBeNull();
+    release();
+    expect((await staleSync).status).toBe(200);
+    const after = await state(base, headers);
+    expect(
+      after.agents[0]!.jobs_synced_at,
+      "an overlapping pre-resume listing cannot restore freshness",
+    ).toBeNull();
+    expect(after.jobs.map((job) => job.job_id)).not.toContain("resumed-1");
+    expect((await sync(base, headers)).status).toBe(200);
+    const confirmed = await state(base, headers);
+    expect(confirmed.agents[0]!.jobs_synced_at).not.toBeNull();
+    expect(confirmed.jobs.map((job) => job.job_id)).toEqual(["resumed-1"]);
+  } finally {
+    release();
+    await staleSync.catch(() => undefined);
+  }
 });
 
 it("applies concurrent listings in order, not by completion", async () => {

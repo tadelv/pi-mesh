@@ -106,6 +106,10 @@ async function executionServer(
     calls.push(input);
     return { accepted: true };
   });
+  skills.registerExecution("session.resume", async (input) => {
+    calls.push(input);
+    return { accepted: true };
+  });
   if (includeSpawn) {
     skills.registerExecution("process.spawn", async (input) => {
       calls.push(input);
@@ -399,7 +403,7 @@ describe("capability honesty and the gate", () => {
     ] as const) {
       expect(served).not.toContain(skill);
     }
-    expect(servedSkills(true, true)).toHaveLength(12);
+    expect(servedSkills(true, true)).toHaveLength(13);
     expect(servedSkills(true, true)).toContain("process.list");
   });
 

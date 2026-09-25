@@ -108,11 +108,12 @@ See [docs/SECURITY.md](docs/SECURITY.md).
 Pre-alpha. The **agent** is a working LAN mesh for reading, streaming and
 (review-gated) executing Pi sessions across machines. The **control plane**
 serves a dashboard that pairs with agents, caches sessions and mirrors agent
-jobs in SQLite, and can start, steer, stop and abort sessions on agents that
-have opted in; it depends on no agent to start. The dashboard now prompts the
+jobs in SQLite, and can start, steer, stop, abort and resume sessions on agents
+that have opted in; it depends on no agent to start. The dashboard prompts a
 selected session only when a confirmed running job and steering opt-in permit
-it, and starts sessions with project suggestions and inline review. Milestone 4
-was verified across three machines. Milestone 5's new turn, response and
+it, and starts sessions with project suggestions and inline review. Resume is
+explicitly confirmed with a warning that concurrent Pi TUI writers can corrupt
+the session or lose history. Milestone 4 was verified across three machines. Milestone 5's new turn, response and
 opt-out refusal were verified on a real Pi through the dashboard API, while
 the browser behaviour is covered by Chromium tests
 ([proof](docs/two-machine-proof.md)); a matching log entry is not proof of

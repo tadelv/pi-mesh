@@ -20,6 +20,7 @@ const EXECUTION_SKILLS = [
   "process.spawn",
   "session.steer",
   "session.set_model",
+  "session.resume",
   "mesh.handoff",
 ].sort();
 const ALWAYS_SKILLS = [

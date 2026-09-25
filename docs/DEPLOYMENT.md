@@ -238,7 +238,7 @@ of it and derive a per-agent credential (ADR 0011). Pairing writes
 
 ### Enabling execution
 
-Pairing grants reading, not execution (ADR 0008). To let the dashboard start or
+Pairing grants reading, not execution (ADR 0008). To let the dashboard start, resume or
 steer on a machine, restart its agent with the control plane's **id** in the allow
 list:
 
@@ -258,8 +258,8 @@ hide.
 
 ### Execution requires a confidential connection
 
-A second, separate condition applies to the operator's side (ADR 0014). The four
-execution routes are served only to a request that arrived over TLS or from
+A second, separate condition applies to the operator's side (ADR 0014). The five
+control routes (start, resume, steer, stop and abort) are served only to a request that arrived over TLS or from
 loopback, because the dashboard token is otherwise a reusable credential
 crossing a plaintext LAN - and a browser on an insecure origin cannot sign its
 requests, so there is no way to make that credential non-replayable. A refused

@@ -35,6 +35,18 @@ async function waitForGone(pid: number, ms = 3_000): Promise<boolean> {
 }
 
 describe("Pi RPC client", () => {
+  it("opens the requested existing session file instead of a session directory", async () => {
+    const sessionFile = "/tmp/exact-session.jsonl";
+    const rpc = makeClient("unicode", { sessionFile });
+    try {
+      expect(rpc.argv).toContain("--session");
+      expect(rpc.argv).toContain(sessionFile);
+      expect(rpc.argv).not.toContain("--session-dir");
+    } finally {
+      await rpc.close();
+    }
+  });
+
   it("preserves U+2028 inside a JSON string", async () => {
     const rpc = makeClient("unicode");
     try {
@@ -245,12 +257,19 @@ const silentLogger = {
 
 function makeClient(
   mode: string,
-  options: { maxRecordBytes?: number; shutdownTimeoutMs?: number } = {},
+  options: {
+    maxRecordBytes?: number;
+    shutdownTimeoutMs?: number;
+    sessionFile?: string;
+  } = {},
 ): PiRpcClient {
   return new PiRpcClient({
     piBinary: process.execPath,
     binaryArgs: [fixture],
     sessionDir: process.cwd(),
+    ...(options.sessionFile === undefined
+      ? {}
+      : { sessionFile: options.sessionFile }),
     name: "rpc-test",
     requestTimeoutMs: 1_000,
     shutdownTimeoutMs: 100,

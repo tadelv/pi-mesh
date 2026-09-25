@@ -1,6 +1,14 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import { mkdir, mkdtemp } from "node:fs/promises";
+import {
+  mkdir,
+  mkdtemp,
+  realpath,
+  rm,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -17,6 +25,7 @@ import {
   type JobRecord,
 } from "../src/index.js";
 import { PiRpcClient } from "../src/rpc.js";
+import { sessionDirectory } from "../src/sessions.js";
 
 const fixture = fileURLToPath(
   new URL("./fixtures/rpc-stub.mjs", import.meta.url),
@@ -126,6 +135,210 @@ function withDeadline<T>(promise: Promise<T>, ms = 2_000): Promise<T> {
 }
 
 describe("process and session control skills", () => {
+  it("R1 session.resume reuses the exact verified session file without a prompt", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "pi-mesh-resume-"));
+    const workspace = join(parent, "workspace");
+    const cwd = join(workspace, "project");
+    const sessionsRoot = join(parent, "sessions");
+    await mkdir(cwd, { recursive: true });
+    const directory = sessionDirectory(cwd, sessionsRoot);
+    await mkdir(directory, { recursive: true });
+    const sessionId = "123e4567-e89b-42d3-a456-426614174101";
+    const sessionFile = join(directory, `${sessionId}.jsonl`);
+    await writeFile(
+      sessionFile,
+      `${JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: "2025-01-01T00:00:00.000Z", cwd })}\n`,
+    );
+    let spawned: Record<string, unknown> | undefined;
+    const commands: unknown[] = [];
+    let notifySpawned: (() => void) | undefined;
+    const didSpawn = new Promise<void>((resolve) => {
+      notifySpawned = resolve;
+    });
+    let markReady: (() => void) | undefined;
+    const ready = new Promise<void>((resolve) => {
+      markReady = () => {
+        reportSession();
+        resolve();
+      };
+    });
+    let reportSession: () => void = () => undefined;
+    const jobs = new JobManager({
+      spawnJob: (spec, report) => {
+        spawned = spec as unknown as Record<string, unknown>;
+        reportSession = () => report.session(sessionId);
+        notifySpawned?.();
+        return {
+          pid: 321,
+          argv: [],
+          stdioClosed: false,
+          ready,
+          command: async (command) => {
+            commands.push(command);
+            return { success: true };
+          },
+          close: async () => undefined,
+        };
+      },
+      logger,
+    });
+    const registry = createSkillRegistry({
+      jobs,
+      sessionsRoot,
+      workspaceRoot: workspace,
+    });
+    try {
+      await expect(
+        Promise.race([
+          registry.invoke("session.resume", { session_id: sessionId }),
+          didSpawn.then(() => {
+            throw new Error("Clause R1: unacknowledged resume spawned Pi");
+          }),
+        ]),
+        "Clause R1: direct resume requires explicit concurrent-writer acknowledgement",
+      ).rejects.toMatchObject({
+        code: -32602,
+        message: expect.stringContaining("acknowledge_concurrent_writers"),
+      });
+      expect(
+        jobs.list(),
+        "Clause R1: no unacknowledged resume may spawn Pi",
+      ).toHaveLength(0);
+      const firstResume = registry.invoke("session.resume", {
+        session_id: sessionId,
+        acknowledge_concurrent_writers: true,
+      });
+      await didSpawn;
+      await expect(
+        Promise.race([
+          registry.invoke("session.resume", {
+            session_id: sessionId,
+            acknowledge_concurrent_writers: true,
+          }),
+          new Promise<never>((_, reject) =>
+            setTimeout(
+              () =>
+                reject(
+                  new Error(
+                    "Clause R1: concurrent resume was not refused before starting",
+                  ),
+                ),
+              250,
+            ),
+          ),
+        ]),
+      ).rejects.toMatchObject({
+        code: ErrorCode.JobNotRunning,
+        message: expect.stringContaining("already owns session"),
+      });
+      markReady?.();
+      await expect(firstResume).resolves.toEqual({
+        job_id: expect.any(String),
+        pid: 321,
+        session_id: sessionId,
+      });
+      expect(
+        spawned?.sessionFile,
+        "Clause R1: resume must pass the exact verified file to Pi",
+      ).toBe(await realpath(sessionFile));
+      expect(
+        spawned?.cwd,
+        "Clause R1: resume must use the session header cwd",
+      ).toBe(await realpath(cwd));
+      expect(jobs.list()).toHaveLength(1);
+      expect(commands, "Clause R1: resuming must not send a prompt").toEqual(
+        [],
+      );
+      await expect(
+        registry.invoke("session.resume", {
+          session_id: sessionId,
+          acknowledge_concurrent_writers: true,
+        }),
+      ).rejects.toMatchObject({
+        code: ErrorCode.JobNotRunning,
+        message: expect.stringContaining("already owns session"),
+      });
+      expect(
+        jobs.list(),
+        "Clause R1: a running session must not get a second writer",
+      ).toHaveLength(1);
+    } finally {
+      markReady?.();
+      await jobs.shutdown();
+    }
+  });
+
+  it("R2 refuses unknown, ambiguous, out-of-workspace and escaping resume files without spawning", async () => {
+    const parent = await mkdtemp(join(tmpdir(), "pi-mesh-resume-invalid-"));
+    const workspace = join(parent, "workspace");
+    const cwd = join(workspace, "project");
+    const sessionsRoot = join(parent, "sessions");
+    await mkdir(cwd, { recursive: true });
+    await mkdir(sessionsRoot);
+    const realCwd = await realpath(cwd);
+    const sessionId = "123e4567-e89b-42d3-a456-426614174103";
+    const directory = sessionDirectory(cwd, sessionsRoot);
+    await mkdir(directory);
+    const sessionFile = join(directory, "first.jsonl");
+    const duplicate = join(directory, "second.jsonl");
+    const header = (project: string) =>
+      `${JSON.stringify({ type: "session", version: 3, id: sessionId, timestamp: "2025-01-01T00:00:00.000Z", cwd: project })}\n`;
+    let spawned = 0;
+    const jobs = new JobManager({
+      spawnJob: () => {
+        spawned++;
+        throw new Error("Clause R2: refused resume must not spawn Pi");
+      },
+      logger,
+    });
+    const registry = createSkillRegistry({
+      jobs,
+      sessionsRoot,
+      workspaceRoot: workspace,
+    });
+    const resume = () =>
+      registry.invoke("session.resume", {
+        session_id: sessionId,
+        acknowledge_concurrent_writers: true,
+      });
+    try {
+      await expect(
+        resume(),
+        "Clause R2: unknown ID is refused",
+      ).rejects.toMatchObject({ code: ErrorCode.UnknownSession });
+      await writeFile(sessionFile, header(realCwd));
+      await writeFile(duplicate, header(realCwd));
+      await expect(
+        resume(),
+        "Clause R2: ambiguous ID is refused",
+      ).rejects.toMatchObject({
+        code: ErrorCode.UnknownSession,
+        message: expect.stringContaining("Ambiguous"),
+      });
+      await unlink(duplicate);
+      const outside = join(parent, "outside");
+      await mkdir(outside);
+      await writeFile(sessionFile, header(await realpath(outside)));
+      await expect(
+        resume(),
+        "Clause R2: cwd outside workspace is refused",
+      ).rejects.toMatchObject({ code: ErrorCode.SpawnDenied });
+      await unlink(sessionFile);
+      const external = join(parent, "external-session-dir");
+      await mkdir(external);
+      await writeFile(join(external, "outside.jsonl"), header(realCwd));
+      await symlink(external, join(sessionsRoot, "linked"));
+      await expect(
+        resume(),
+        "Clause R2: file outside sessions root is refused",
+      ).rejects.toMatchObject({ code: ErrorCode.SpawnDenied });
+      expect(spawned, "Clause R2: no refused case may spawn Pi").toBe(0);
+    } finally {
+      await jobs.shutdown();
+      await rm(parent, { recursive: true, force: true });
+    }
+  });
+
   it("T1 refuses an unknown process.stop job through the registry", async () => {
     const jobs = new JobManager({
       spawnJob: () => {
@@ -358,7 +571,7 @@ describe("process and session control skills", () => {
     // mesh.handoff delegates to the local process.spawn, so it needs the manager
     // too - the indirection that made this wrong twice.
     expect(servedSkills(false, true)).toEqual([...ALWAYS_SERVED_SKILLS]);
-    expect(servedSkills(true, true)).toHaveLength(12);
+    expect(servedSkills(true, true)).toHaveLength(13);
     expect(servedSkills(true, true)).toContain("session.steer");
   });
 
@@ -377,6 +590,7 @@ describe("process and session control skills", () => {
       "process.spawn": { project: "p", prompt: "hi" },
       "session.steer": { job_id: "j", message: "hi" },
       "session.set_model": { job_id: "j", provider: "p", model_id: "m" },
+      "session.resume": { session_id: "123e4567-e89b-42d3-a456-426614174101" },
       "mesh.handoff": {
         task: "t",
         project: "p",

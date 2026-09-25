@@ -7,6 +7,7 @@ export type Skill =
   | "session.read"
   | "session.stream"
   | "session.steer"
+  | "session.resume"
   | "session.models"
   | "session.set_model"
   | "session.abort"

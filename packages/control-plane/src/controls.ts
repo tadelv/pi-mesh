@@ -7,6 +7,7 @@ export function agentControls(skills: string[] | null): {
   abort: boolean;
   models: boolean;
   setModel: boolean;
+  resume: boolean;
 } {
   return {
     spawn: skills?.includes("process.spawn") ?? false,
@@ -15,5 +16,6 @@ export function agentControls(skills: string[] | null): {
     abort: skills?.includes("session.abort") ?? false,
     models: skills?.includes("session.models") ?? false,
     setModel: skills?.includes("session.set_model") ?? false,
+    resume: skills?.includes("session.resume") ?? false,
   };
 }

@@ -275,6 +275,99 @@ it("routes steer, stop, and abort to the real agent's corresponding effects", as
   ]);
 });
 
+it("proxies session.resume unchanged and preserves agent refusals", async () => {
+  const store = new ControlStore(":memory:");
+  resources.push({ stop: async () => undefined, close: () => store.close() });
+  store.setMeta("control_id", controlId);
+  store.setMeta("dashboard_token", "dashboard-token");
+  store.upsertAgent({
+    peer_id: agentId,
+    name: "agent",
+    host: "127.0.0.1",
+    port: 1,
+    credential,
+    paired_at: "now",
+  });
+  let refusalMode = false;
+  const calls: unknown[] = [];
+  const control = createControlServer({
+    store,
+    host: "127.0.0.1",
+    port: 0,
+    fetch: async (_input, init) => {
+      const request = JSON.parse(String(init?.body)) as {
+        id: string;
+        params: {
+          message: {
+            parts: Array<{ data: { skill: string; input: unknown } }>;
+          };
+        };
+      };
+      calls.push(request.params.message.parts[0]!.data);
+      return new Response(
+        JSON.stringify({
+          jsonrpc: "2.0",
+          id: request.id,
+          ...(refusalMode
+            ? { error: { code: -32102, message: "Execution is not enabled" } }
+            : {
+                result: {
+                  message: {
+                    parts: [
+                      {
+                        data: {
+                          result: {
+                            job_id: "resume-job",
+                            session_id: "saved-session",
+                            pid: 4321,
+                          },
+                        },
+                      },
+                    ],
+                  },
+                },
+              }),
+        }),
+        { status: 200, headers: { "content-type": "application/json" } },
+      );
+    },
+  });
+  resources.push(control);
+  const address = await control.start();
+  const headers = {
+    "content-type": "application/json",
+    "X-Pi-Mesh-Ui": "dashboard-token",
+  };
+  const url = `http://127.0.0.1:${address.port}/api/agents/${agentId}/resume`;
+  const input = {
+    session_id: "saved-session",
+    acknowledge_concurrent_writers: true,
+  };
+  const success = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(input),
+  });
+  expect(success.status).toBe(200);
+  expect(await success.json()).toMatchObject({
+    ok: true,
+    result: { job_id: "resume-job", session_id: "saved-session", pid: 4321 },
+  });
+  expect(calls).toEqual([{ skill: "session.resume", input }]);
+  refusalMode = true;
+  const refused = await fetch(url, {
+    method: "POST",
+    headers,
+    body: JSON.stringify(input),
+  });
+  expect(refused.status).toBe(200);
+  expect(await refused.json()).toMatchObject({
+    ok: false,
+    code: -32102,
+    message: "Execution is not enabled",
+  });
+});
+
 it("returns unknown-agent and unauthorized responses", async () => {
   const { controlAddress, headers } = await setup();
   const unknown = await fetch(

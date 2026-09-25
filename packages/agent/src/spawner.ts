@@ -128,7 +128,9 @@ export function createPiSpawner(options: PiSpawnerOptions): JobSpawner {
     const environment = buildSpawnEnv(process.env);
     const rpc = new PiRpcClient({
       piBinary,
-      sessionDir: sessionDirectory(cwd, sessionsRoot),
+      ...(spec.sessionFile === undefined
+        ? { sessionDir: sessionDirectory(cwd, sessionsRoot) }
+        : { sessionFile: spec.sessionFile }),
       name: spec.name,
       cwd,
       env: environment,

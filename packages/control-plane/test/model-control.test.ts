@@ -153,6 +153,7 @@ it("advertises model controls only for their exact agent skills", () => {
     steer: false,
     stop: false,
     abort: false,
+    resume: false,
     models: true,
     setModel: true,
   });

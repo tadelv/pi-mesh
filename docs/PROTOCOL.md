@@ -49,6 +49,7 @@ Each skill also declares its **exposure**:
 | `session.set_model` | **gated on the spawn policy** | `{ job_id, provider, model_id }` | Pi `set_model` model data |
 | `process.list` | peer (ungated; job manager required) | `{}` | `{ jobs: [{ job_id, session_id (nullable), pid (nullable), project, cwd, state, started_at, exit? }] }` |
 | `session.steer` | **gated on the spawn policy** | `{ job_id (mesh id, not PID), message (≤4096 UTF-8 bytes) }` | Pi RPC response; refused with `-32102` when closed |
+| `session.resume` | **gated on the spawn policy** | `{ session_id, acknowledge_concurrent_writers: true }` | `{ job_id, pid, session_id }`; refused with `-32102` when closed |
 | `session.abort` | peer (ungated) | `{ job_id (mesh id, not PID) }` | Pi RPC response |
 | `process.spawn` | **gated on the spawn policy** | `{ project, cwd?, prompt }` | `{ job_id, pid, session_id }` |
 | `process.stop` | peer (ungated) | `{ job_id (mesh id, not PID) }` | `{ job_id, state, pid }` |
@@ -63,6 +64,7 @@ local grant with `--allow-execution` (or, for a service manager, the lower-
 precedence `PI_MESH_ALLOW_SPAWN` fallback). Some details of the shapes above
 are load-bearing:
 
+- `session.resume` accepts a session UUID, never a path, and requires `acknowledge_concurrent_writers: true` (omitted/false: `-32602`) so direct mesh callers explicitly acknowledge the corruption risk before any spawn. The agent resolves exactly one saved file, validates it under its configured sessions root and validates the header cwd inside its workspace, then starts a managed RPC process with Pi's `--session <file>` option. It sends no prompt. A known running/starting job and concurrent resume request for that session are refused. The acknowledgement cannot detect a separately launched Pi TUI or prove it exited; see ADR 0019's required operator warning.
 - `process.spawn` takes a required, non-blank `prompt` that starts the first
 turn. It takes **no `argv`**. The server constructs the command line; a remote
 caller chooses a project, not a program. Peer-chosen argv could change the

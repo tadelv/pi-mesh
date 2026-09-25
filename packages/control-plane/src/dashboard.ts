@@ -432,6 +432,7 @@ export const dashboard = `<!doctype html>
     list.className = 'transcript';
     if(data.events.length === 0) node('p', data.stale ? 'No cached transcript entries.' : 'No transcript entries yet; the session may still be starting.', list).className = 'dim';
     for(const event of data.events) renderEntry(event, list);
+    renderResumeAvailability(data, owner);
     renderPromptAvailability(data, owner);
     const actions = node('div', undefined, transcriptPanel);
     actions.className = 'transcript-actions';
@@ -478,6 +479,69 @@ export const dashboard = `<!doctype html>
     if(!promptStates.has(key)) promptStates.set(key, {draft:'', status:'', pending:false, jobId:'', confirmed:false, candidateIds:'', modelJobId:'', models:null, modelsLoading:false, modelsFailed:false, modelRequestOwner:null, modelStatus:'', modelNotice:'', modelPending:false, modelCandidate:null});
     return promptStates.get(key);
   }
+  const resumeStates = new Map();
+  function resumeState(owner) {
+    const key = owner.agentId+'\\0'+owner.sessionId;
+    if(!resumeStates.has(key)) resumeStates.set(key, {pending:false, status:'', expectedJobId:''});
+    return resumeStates.get(key);
+  }
+  function renderResumeAvailability(data, owner) {
+    const session = state.sessions.find(item => item.agent_id === owner.agentId && item.session_id === owner.sessionId);
+    const agent = state.agents.find(item => item.peer_id === owner.agentId);
+    const matched = state.jobs.filter(job => job.agent_id === owner.agentId && job.session_id === owner.sessionId);
+    const owned = matched.filter(job => job.state === 'running' || job.state === 'starting');
+    const current = resumeState(owner);
+    const eligible = data.stale === false && session && agent?.controls.resume && typeof agent.jobs_synced_at === 'number' && !owned.length && state.execution_transport !== 'refused';
+    if(!eligible && !current.status) return;
+    const section = node('section', undefined, transcriptPanel);
+    section.className = 'agent-section';
+    node('h3', 'Resume saved session', section);
+    const status = node('p', current.status, section);
+    status.className = 'notice'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
+    if(!eligible) return;
+    node('p', 'This writes to the existing Pi session file. pi-mesh cannot tell whether a separate Pi TUI is still using it. Resuming while that TUI is active may corrupt the session or lose conversation history. Close the other Pi session before continuing. If you cannot confirm it has exited, do not resume this file.', section).className = 'notice warning';
+    const label = node('label', undefined, section);
+    const confirmation = node('input', undefined, label);
+    confirmation.type = 'checkbox';
+    node('span', ' I have closed any other Pi process using this session file and understand the risk.', label);
+    const resume = node('button', 'Resume', section);
+    resume.type = 'button';
+    resume.disabled = current.pending;
+    resume.addEventListener('click', async () => {
+      if(current.pending || selected !== owner || !confirmation.checked) return;
+      const freshAgent = state.agents.find(item => item.peer_id === owner.agentId);
+      const freshSession = state.sessions.find(item => item.agent_id === owner.agentId && item.session_id === owner.sessionId);
+      const live = state.jobs.filter(job => job.agent_id === owner.agentId && job.session_id === owner.sessionId && (job.state === 'running' || job.state === 'starting'));
+      if(!freshSession || !freshAgent?.controls.resume || typeof freshAgent.jobs_synced_at !== 'number' || live.length || owner.transcript?.stale !== false) return;
+      confirmation.checked = false;
+      current.pending = true;
+      current.status = 'Requesting resume…';
+      resume.disabled = true;
+      status.textContent = current.status;
+      try {
+        const result = await api('/api/agents/'+encodeURIComponent(owner.agentId)+'/resume', 'POST', {session_id:owner.sessionId, acknowledge_concurrent_writers:true});
+        if(result.ok === false) current.status = 'Agent refusal ('+String(result.code)+'): '+String(result.message ?? '');
+        else {
+          current.expectedJobId = result.result.job_id;
+          current.status = 'Resume accepted; syncing agent jobs…';
+          status.textContent = current.status;
+          try {
+            await sync();
+            const latest = state.agents.find(item => item.peer_id === owner.agentId);
+            const confirmed = typeof latest?.jobs_synced_at === 'number' && state.jobs.some(job => job.agent_id === owner.agentId && job.session_id === owner.sessionId && job.job_id === current.expectedJobId && job.state === 'running');
+            current.status = confirmed ? 'Resume accepted; the agent confirmed the resumed job. Prompt is available below.' : 'Resume accepted, but Sync did not confirm the resumed job. Prompt is unavailable.';
+            if(confirmed) current.expectedJobId = '';
+          } catch(error) { current.status = 'Resume accepted, but syncing the agent jobs failed: '+(error.message || 'unknown error'); }
+        }
+      } catch(error) {
+        current.status = error.status === 403 ? 'Control-plane transport refusal: confidential_transport_required.' : error.status === 502 ? 'Agent call failed (502): '+error.message : error.message || 'Agent call failed.';
+      } finally {
+        current.pending = false;
+        if(selected === owner) renderTranscript(owner.transcript ?? data, owner);
+        else if(selected?.agentId === owner.agentId && selected?.sessionId === owner.sessionId) renderTranscript(selected.transcript ?? data, selected);
+      }
+    });
+  }
   function promptEligibility(data, owner) {
     const agent = state.agents.find(item => item.peer_id === owner.agentId);
     const matched = state.jobs.filter(job => job.agent_id === owner.agentId && job.session_id === owner.sessionId);
@@ -488,6 +552,8 @@ export const dashboard = `<!doctype html>
     if(agent?.skills === null) reasons.push('Steering capability is unknown because this agent has not been verified.');
     else if(agent && !agent.controls.steer) reasons.push('This agent has not enabled steering for this control plane.');
     if(state.execution_transport === 'refused') reasons.push('Prompting requires TLS or loopback on this connection.');
+    const expectedJobId = resumeState(owner).expectedJobId;
+    if(expectedJobId && !running.some(job => job.job_id === expectedJobId)) reasons.push('The resumed job has not been confirmed with this agent. Sync to check before prompting.');
     if(reasons.length === 0) {
       if(running.length === 0 && matched.length > 0) reasons.push('The job for this session is no longer running.');
       else if(running.length === 0) reasons.push('No job is running for this session.');

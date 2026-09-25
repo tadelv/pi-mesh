@@ -1,13 +1,15 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import type { PeerSummary, Skill } from "@pi-mesh/protocol";
-import { isAbsolute, join } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
+import { realpath, stat } from "node:fs/promises";
 import { ErrorCode, PiMeshError } from "@pi-mesh/shared";
 import { PeerRegistry } from "./registry.js";
 import { SessionStore, type SessionStoreOptions } from "./sessions.js";
 import { JobStartTimeoutError, type JobManager } from "./jobs.js";
 import { ModelCatalog, hasExactModel } from "./model-catalog.js";
 import { assertInsideWorkspace, resolveWorkspaceRoot } from "./spawner.js";
+import { defaultSessionsRoot, isPlainUuid } from "./sessions.js";
 
 export type SkillInput = Record<string, unknown>;
 export type SkillHandler = (input: SkillInput) => Promise<unknown>;
@@ -47,6 +49,7 @@ export const JOB_SKILLS: readonly Skill[] = [
 export const EXECUTION_SKILLS: readonly Skill[] = [
   "process.spawn",
   "session.steer",
+  "session.resume",
   "session.set_model",
   "mesh.handoff",
 ];
@@ -313,6 +316,102 @@ export function createSkillRegistry(
       pid: record.pid,
       session_id: record.sessionId,
     };
+  });
+
+  const resumingSessions = new Set<string>();
+  skills.registerExecution("session.resume", async (input) => {
+    const sessionId = requiredString(input, "session_id");
+    if (!isPlainUuid(sessionId)) {
+      throw new PiMeshError(-32602, "session.resume session_id must be a UUID");
+    }
+    const jobs = options.jobs;
+    if (jobs === undefined) {
+      throw new PiMeshError(-32004, "session.resume requires a job manager");
+    }
+    if (input.acknowledge_concurrent_writers !== true) {
+      throw new PiMeshError(
+        -32602,
+        "session.resume requires acknowledge_concurrent_writers: true; a running external Pi TUI can corrupt the session file",
+      );
+    }
+    const matches = await sessions.findSessionPaths(sessionId);
+    if (matches.length !== 1) {
+      throw new PiMeshError(
+        ErrorCode.UnknownSession,
+        matches.length === 0
+          ? `Unknown session id: ${sessionId}`
+          : `Ambiguous session id: ${sessionId}`,
+      );
+    }
+    const found = matches[0]!;
+    let root: string;
+    let sessionFile: string;
+    let cwd: string;
+    try {
+      root = resolveWorkspaceRoot(options.workspaceRoot);
+      const sessionsRoot = await realpath(
+        options.sessionsRoot ?? defaultSessionsRoot(),
+      );
+      sessionFile = await realpath(found.path);
+      const fileRelative = relative(sessionsRoot, sessionFile);
+      if (
+        fileRelative === "" ||
+        fileRelative === ".." ||
+        fileRelative.startsWith(`..${sep}`) ||
+        isAbsolute(fileRelative) ||
+        !(await stat(sessionFile)).isFile()
+      ) {
+        throw new Error("session file is outside the configured sessions root");
+      }
+      if (!isAbsolute(found.parsed.header?.cwd ?? "")) {
+        throw new Error("session cwd is not an absolute path");
+      }
+      cwd = assertInsideWorkspace(root, found.parsed.header!.cwd);
+    } catch (error) {
+      throw new PiMeshError(
+        ErrorCode.SpawnDenied,
+        `session.resume refused: session file or cwd failed validation (${error instanceof Error ? error.message : String(error)})`,
+      );
+    }
+    if (
+      resumingSessions.has(sessionId) ||
+      jobs
+        .list()
+        .some((job) => job.sessionId === sessionId && job.state !== "exited")
+    ) {
+      throw new PiMeshError(
+        ErrorCode.JobNotRunning,
+        `session.resume refused: a job already owns session ${sessionId}`,
+      );
+    }
+    resumingSessions.add(sessionId);
+    try {
+      const record = await jobs.startReady({
+        peerId:
+          typeof input._peerId === "string" ? input._peerId : "unknown-peer",
+        project: cwd,
+        cwd,
+        name: "resume",
+        sessionFile,
+      });
+      if (record.sessionId !== sessionId) {
+        await jobs.stop(record.id).catch(() => undefined);
+        throw new PiMeshError(
+          ErrorCode.SpawnFailed,
+          `session.resume failed: Pi opened a different session (${record.sessionId ?? "no session id"})`,
+        );
+      }
+      return { job_id: record.id, pid: record.pid, session_id: sessionId };
+    } catch (error) {
+      if (error instanceof PiMeshError) throw error;
+      throw new PiMeshError(
+        ErrorCode.SpawnFailed,
+        `session.resume failed: ${error instanceof Error ? error.message : String(error)}`,
+        { cause: error },
+      );
+    } finally {
+      resumingSessions.delete(sessionId);
+    }
   });
 
   skills.registerExecution("mesh.handoff", async (input) => {

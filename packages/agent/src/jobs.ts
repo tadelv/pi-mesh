@@ -64,6 +64,7 @@ export interface JobSpec {
   readonly project: string;
   readonly cwd: string;
   readonly name: string;
+  readonly sessionFile?: string;
 }
 
 export interface JobExit {

@@ -322,9 +322,10 @@ export class SessionStore {
    * after this return can see a different session (a replace between the two
    * reads), and re-parsing also double-reports every parse error.
    */
-  async findSessionPath(
+  async findSessionPaths(
     sessionId: string,
-  ): Promise<{ path: string; parsed: SessionParseResult } | undefined> {
+  ): Promise<{ path: string; parsed: SessionParseResult }[]> {
+    const matches: { path: string; parsed: SessionParseResult }[] = [];
     for (const path of await sessionFiles(this.sessionsRoot)) {
       let parsed: SessionParseResult;
       try {
@@ -340,9 +341,15 @@ export class SessionStore {
         this.onError?.(warning);
         continue;
       }
-      if (parsed.header?.id === sessionId) return { path, parsed };
+      if (parsed.header?.id === sessionId) matches.push({ path, parsed });
     }
-    return undefined;
+    return matches;
+  }
+
+  async findSessionPath(
+    sessionId: string,
+  ): Promise<{ path: string; parsed: SessionParseResult } | undefined> {
+    return (await this.findSessionPaths(sessionId))[0];
   }
 
   async read(request: SessionReadRequest): Promise<Event[]> {

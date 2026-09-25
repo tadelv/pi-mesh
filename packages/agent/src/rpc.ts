@@ -31,6 +31,7 @@ export interface PiRpcClientOptions {
   binary?: string;
   executable?: string;
   sessionDir?: string;
+  sessionFile?: string;
   name?: string;
   requestTimeoutMs?: number;
   shutdownTimeoutMs?: number;
@@ -286,8 +287,9 @@ export class PiRpcClient extends EventEmitter {
       ...(options.binaryArgs ?? []),
       "--mode",
       "rpc",
-      "--session-dir",
-      sessionDir,
+      ...(options.sessionFile === undefined
+        ? ["--session-dir", sessionDir]
+        : ["--session", options.sessionFile]),
       "--no-approve",
       "--name",
       name,

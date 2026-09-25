@@ -161,9 +161,15 @@ history, a referrer or a proxy log by default (ADR 0014).
 
 ### Dashboard control is execution
 
-The dashboard can start, steer, stop and abort sessions on a paired agent
-(ADR 0013). Prompting the session shown in the transcript is the **same gated
-`session.steer` call**, not a new session-addressed grant: the dashboard resolves
+The dashboard can start, steer, stop, abort and resume sessions on a paired agent
+(ADR 0013). Resuming a saved session calls the agent's gated `session.resume`
+skill for the selected, verified session; it never supplies a filesystem path or
+attaches to an external TUI. Before each attempt the dashboard requires an
+unchecked inline confirmation warning that another Pi TUI may concurrently
+write the file, corrupting it or losing conversation history. Direct peer calls
+must explicitly set `acknowledge_concurrent_writers: true` as well; this is an
+accident guard, not proof an external writer has exited. Prompting the session
+shown in the transcript is the **same gated `session.steer` call**, not a new session-addressed grant: the dashboard resolves
 the selected session to a confirmed running job, and the agent's local execution
 opt-in remains decisive (ADR 0016). A matching new user turn in the transcript
 is observation, not proof that this dashboard request caused it; neither the
@@ -171,7 +177,7 @@ session log nor the agent reply names the writer. An accepted steer without an
 observed turn remains unconfirmed, never silently labelled delivered. That does
 not weaken the boundary, but it moves it:
 
-- Starting and steering still require the **agent's** local opt-in. A machine
+- Starting, resuming and steering still require the **agent's** local opt-in. A machine
   started without `--allow-execution`, or with the control plane's id not in its
   list, refuses the dashboard with `-32102` and starts nothing. **Pairing alone
   never grants execution**: it authenticates the control plane (ADR 0011), and

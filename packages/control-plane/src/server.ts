@@ -194,7 +194,7 @@ export function createControlServer(
         return;
       }
       const executionMatch =
-        /^\/api\/agents\/([^/]+)\/(spawn|steer|stop|abort|setmodel)$/.exec(
+        /^\/api\/agents\/([^/]+)\/(spawn|resume|steer|stop|abort|setmodel)$/.exec(
           url.pathname,
         );
       if (request.method === "POST" && executionMatch !== null) {
@@ -236,6 +236,7 @@ export function createControlServer(
         const action = executionMatch[2]!;
         const skill = {
           spawn: "process.spawn",
+          resume: "session.resume",
           steer: "session.steer",
           stop: "process.stop",
           abort: "session.abort",
@@ -279,6 +280,18 @@ export function createControlServer(
             );
           }
           if (
+            action === "resume" &&
+            (typeof result.job_id !== "string" ||
+              typeof result.session_id !== "string" ||
+              result.session_id !==
+                (body as { session_id?: unknown }).session_id ||
+              (typeof result.pid !== "number" && result.pid !== null))
+          ) {
+            throw new AgentUnreachableError(
+              "Agent returned a malformed session.resume result",
+            );
+          }
+          if (
             action === "stop" &&
             (typeof result.state !== "string" ||
               typeof result.job_id !== "string" ||
@@ -302,6 +315,10 @@ export function createControlServer(
               state: "running",
             });
             wroteJobs = true;
+          } else if (action === "resume") {
+            // The agent started a job the mirror has not listed yet. Even without
+            // a local row write, the confirmed listing is now obsolete.
+            wroteJobs = true;
           } else if (action === "stop") {
             // A stop for a job this cache has never seen updates no row, so it is
             // not a write and must not withdraw the freshness claim.
@@ -311,10 +328,9 @@ export function createControlServer(
               result.state as string,
             );
           }
-          // Only a write to the jobs TABLE invalidates the mirror: steer and
-          // abort answer the agent without touching a row, so withdrawing the
-          // claim for them would report as cached a list that is still the
-          // agent's.
+          // Spawn and resume change the agent's job table; a local stop changes
+          // a cached row. None leaves the last confirmed listing authoritative.
+          // Steer and abort do not change the job list.
           if (wroteJobs) {
             jobsWrites.set(
               agent.peer_id,

@@ -1164,6 +1164,339 @@ test("prompt availability follows transcript and live-job evidence", async ({
   }
 });
 
+test("resume requires the inline corruption warning confirmation and syncs before prompting", async ({
+  browser,
+}) => {
+  const store = new ControlStore(":memory:");
+  store.controlName("Resume Safety Control");
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const page = await browser.newPage();
+  const token = store.dashboardToken();
+  const fixtureErrors: string[] = [];
+  const posts: string[] = [];
+  const timestamp = new Date(0).toISOString();
+  let resumed = false;
+  let confirmedResume = false;
+  let listedJobId = "other-job";
+  let releaseSync!: () => void;
+  const syncGate = new Promise<void>((resolve) => {
+    releaseSync = resolve;
+  });
+  let transcriptStale = false;
+  let resumeCapability = true;
+  let activeJob = false;
+  let jobsFresh = true;
+  let transport: "confidential" | "refused" = "confidential";
+  let resumeMode: "success" | "refusal" | "failure" | "transport" = "success";
+  const session = {
+    agent_id: "peer-a",
+    session_id: "saved-session",
+    project: "/work/a",
+    name: "Saved session",
+    started_at: timestamp,
+    updated_at: timestamp,
+    synced_at: timestamp,
+  };
+  try {
+    const { port } = await control.start();
+    const baseURL = `http://127.0.0.1:${port}`;
+    await page.addInitScript(
+      (dashboardToken) => localStorage.setItem("pi_mesh_token", dashboardToken),
+      token,
+    );
+    await page.addInitScript(
+      "window.confirm = () => { throw new Error('resume must not invoke window.confirm'); };",
+    );
+    await page.route("**/api/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const authenticated = request.headers()["x-pi-mesh-ui"] === token;
+      if (
+        url.pathname === "/api/state" &&
+        request.method() === "GET" &&
+        authenticated
+      ) {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            control: { id: "control-a", name: "Resume Safety Control" },
+            agents: [
+              {
+                peer_id: "peer-a",
+                name: "Agent A",
+                host: "127.0.0.1",
+                port: 7330,
+                paired_at: timestamp,
+                skills: resumeCapability
+                  ? ["session.resume", "session.steer"]
+                  : ["session.steer"],
+                controls: {
+                  spawn: false,
+                  steer: true,
+                  stop: false,
+                  abort: false,
+                  resume: resumeCapability,
+                },
+                jobs_synced_at: jobsFresh ? (confirmedResume ? 2 : 1) : null,
+              },
+            ],
+            sessions: [session],
+            jobs:
+              confirmedResume || activeJob
+                ? [
+                    {
+                      agent_id: "peer-a",
+                      job_id: listedJobId,
+                      session_id: "saved-session",
+                      pid: 123,
+                      project: "/work/a",
+                      created_at: timestamp,
+                      state: "running",
+                    },
+                  ]
+                : [],
+            execution_transport: transport,
+          }),
+        });
+        return;
+      }
+      if (
+        url.pathname === "/api/sessions/peer-a/saved-session" &&
+        request.method() === "GET" &&
+        authenticated
+      ) {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            events: [],
+            hasEarlier: false,
+            total: 0,
+            all: false,
+            stale: transcriptStale,
+          }),
+        });
+        return;
+      }
+      if (
+        url.pathname === "/api/agents/peer-a/resume" &&
+        request.method() === "POST" &&
+        authenticated
+      ) {
+        const body = request.postDataJSON() as Record<string, unknown>;
+        if (
+          Object.keys(body).sort().join(",") !==
+            "acknowledge_concurrent_writers,session_id" ||
+          body.session_id !== "saved-session" ||
+          body.acknowledge_concurrent_writers !== true
+        ) {
+          fixtureErrors.push(
+            "resume must contain only the selected session_id and explicit writer-risk acknowledgement",
+          );
+          await route.fulfill({ status: 400, body: "invalid resume input" });
+          return;
+        }
+        posts.push("resume");
+        if (resumeMode === "refusal") {
+          await route.fulfill({
+            contentType: "application/json",
+            body: JSON.stringify({
+              ok: false,
+              code: -32102,
+              message: "Execution is not enabled",
+            }),
+          });
+        } else if (resumeMode === "failure" || resumeMode === "transport") {
+          await route.fulfill({
+            status: resumeMode === "transport" ? 403 : 502,
+            contentType: "application/json",
+            body: JSON.stringify({
+              error:
+                resumeMode === "transport"
+                  ? "confidential_transport_required"
+                  : "agent_unreachable",
+            }),
+          });
+        } else {
+          resumed = true;
+          jobsFresh = false;
+          await route.fulfill({
+            contentType: "application/json",
+            body: JSON.stringify({
+              ok: true,
+              result: {
+                job_id: "resumed-job",
+                session_id: "saved-session",
+                pid: 123,
+              },
+            }),
+          });
+        }
+        return;
+      }
+      if (
+        url.pathname === "/api/sync" &&
+        request.method() === "POST" &&
+        authenticated
+      ) {
+        posts.push("sync");
+        if (resumed) {
+          await syncGate;
+          confirmedResume = true;
+          jobsFresh = true;
+        }
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({ results: [] }),
+        });
+        return;
+      }
+      fixtureErrors.push(
+        `unexpected request ${request.method()} ${url.pathname}${url.search}`,
+      );
+      await route.fulfill({
+        status: 400,
+        body: "unexpected dashboard request",
+      });
+    });
+    await page.goto(baseURL);
+    const panel = page.locator("#transcript-panel");
+    async function selectSession() {
+      await page.getByRole("button", { name: /Saved session/ }).click();
+      await expect(
+        panel.getByRole("heading", { name: "Prompt this session" }),
+      ).toBeVisible();
+    }
+    for (const setup of [
+      () => {
+        transcriptStale = true;
+      },
+      () => {
+        transcriptStale = false;
+        resumeCapability = false;
+      },
+      () => {
+        resumeCapability = true;
+        activeJob = true;
+      },
+      () => {
+        activeJob = false;
+        jobsFresh = false;
+      },
+      () => {
+        jobsFresh = true;
+        transport = "refused";
+      },
+    ]) {
+      setup();
+      await page.reload();
+      await selectSession();
+      await expect(
+        panel.getByRole("button", { name: "Resume" }),
+        "resume is unavailable without a verified session, advertised capability, fresh jobs, no active job, and permitted transport",
+      ).toHaveCount(0);
+    }
+    transcriptStale = false;
+    resumeCapability = true;
+    activeJob = false;
+    jobsFresh = true;
+    transport = "confidential";
+    await page.reload();
+    await selectSession();
+    const warning =
+      "This writes to the existing Pi session file. pi-mesh cannot tell whether a separate Pi TUI is still using it. Resuming while that TUI is active may corrupt the session or lose conversation history. Close the other Pi session before continuing. If you cannot confirm it has exited, do not resume this file.";
+    await expect(
+      panel,
+      "named warning clause presents ADR 0019's full concurrent-writer warning inline",
+    ).toContainText(warning);
+    const confirm = page.getByLabel(
+      "I have closed any other Pi process using this session file and understand the risk.",
+    );
+    await expect(confirm).not.toBeChecked();
+    await page.getByRole("button", { name: "Resume" }).click();
+    expect(
+      posts,
+      "named confirmation clause requires an initially unchecked assertion for each attempt",
+    ).toEqual([]);
+    for (const [mode, expected] of [
+      ["refusal", "Agent refusal (-32102): Execution is not enabled"],
+      ["failure", "Agent call failed (502): agent_unreachable"],
+      [
+        "transport",
+        "Control-plane transport refusal: confidential_transport_required.",
+      ],
+    ] as const) {
+      resumeMode = mode;
+      await confirm.check();
+      await page.getByRole("button", { name: "Resume" }).click();
+      await expect(panel).toContainText(expected);
+      await expect(
+        page.getByLabel(
+          "I have closed any other Pi process using this session file and understand the risk.",
+        ),
+      ).not.toBeChecked();
+    }
+    resumeMode = "success";
+    await page
+      .getByLabel(
+        "I have closed any other Pi process using this session file and understand the risk.",
+      )
+      .check();
+    await page
+      .locator("#transcript-panel .agent-section")
+      .filter({
+        has: page.getByRole("heading", { name: "Resume saved session" }),
+      })
+      .getByRole("button", { name: "Resume" })
+      .evaluate((button) => {
+        button.dispatchEvent(new Event("click", { bubbles: true }));
+        button.dispatchEvent(new Event("click", { bubbles: true }));
+      });
+    await expect
+      .poll(() => posts.filter((item) => item === "resume").length)
+      .toBe(4);
+    await expect
+      .poll(() => posts.filter((item) => item === "sync").length)
+      .toBe(1);
+    await expect(
+      panel.getByRole("textbox", { name: "Message to session" }),
+      "a pending post-resume sync cannot make Prompt available",
+    ).toHaveCount(0);
+    releaseSync();
+    await expect(
+      panel.getByRole("textbox", { name: "Message to session" }),
+      "a different running job cannot confirm the returned resume job",
+    ).toHaveCount(0);
+    await expect(
+      panel,
+      "a different running job cannot confirm the returned resume job",
+    ).toContainText(
+      "Resume accepted, but Sync did not confirm the resumed job",
+    );
+    await expect(
+      panel.getByRole("textbox", { name: "Message to session" }),
+      "named resumed-job identity clause: a different listed job cannot unlock Prompt",
+    ).toHaveCount(0);
+    listedJobId = "resumed-job";
+    await page.locator("#sync").click();
+    await expect(
+      panel.getByRole("textbox", { name: "Message to session" }),
+    ).toBeVisible();
+    expect(posts.lastIndexOf("resume")).toBeLessThan(posts.indexOf("sync"));
+    expect(
+      fixtureErrors,
+      "strict resume fixture rejects unexpected method, route, and body",
+    ).toEqual([]);
+  } finally {
+    releaseSync();
+    await page.close();
+    try {
+      await control.stop();
+    } finally {
+      store.close();
+    }
+  }
+});
+
 test("dashboard start suggests agent projects, confirms inline, and guards duplicate starts", async ({
   browser,
 }) => {

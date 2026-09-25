@@ -10,6 +10,7 @@ import {
   PairingService,
   createControlServer,
   dashboard,
+  dashboardHtml,
 } from "../src/index.js";
 
 const servers: Array<{ stop(): Promise<void> }> = [];
@@ -349,5 +350,27 @@ describe("control server", () => {
       headers: { "X-Pi-Mesh-Ui": token },
     });
     expect(unknownAgent.status).toBe(404);
+  });
+
+  it("re-reads the dashboard markup on every request", async () => {
+    // The dev server points dashboardHtml at src/dashboard.html so that editing
+    // the page is a browser refresh, no rebuild. A server that read the markup
+    // once at start would return the first body twice and fail this clause.
+    let revision = "first-revision";
+    const { base } = await setup({ dashboardHtml: () => revision });
+    expect(
+      await (await fetch(`${base}/`)).text(),
+      "per-request read clause: GET / returns the markup as of this request",
+    ).toBe("first-revision");
+    revision = "second-revision";
+    expect(await (await fetch(`${base}/`)).text()).toBe("second-revision");
+  });
+
+  it("serves the on-disk dashboard markup by default", async () => {
+    // The build copies src/dashboard.html to dist/, and the default read finds
+    // it beside the compiled module. This pins the copy step: delete the file
+    // and the page 500s instead of silently serving something else.
+    const { base } = await setup();
+    expect(await (await fetch(`${base}/`)).text()).toBe(dashboardHtml());
   });
 });

@@ -84,6 +84,11 @@ the pairing token. The dashboard token is deliberately not printed or put in the
 URL - read it with `node packages/control-plane/dist/cli.js token` and paste it
 into the page. No control-plane feature needs outbound internet.
 
+To work on the dashboard itself without a mesh, `pnpm dashboard:dev` serves it from an
+in-memory store seeded with fixtures - editing
+`packages/control-plane/src/dashboard.html` is a browser refresh with no rebuild. See
+[DESIGN.md](DESIGN.md#working-on-the-dashboard).
+
 ## Security model
 
 - Agents only advertise on the LAN when a **swarm key** is present.

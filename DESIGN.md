@@ -33,3 +33,22 @@ The dashboard borrows Pi's exported session transcript grammar; the stylesheet s
 - Controls use native buttons, labeled inputs, visible keyboard focus, and high-contrast light/dark tokens.
 - The selected transcript ends with its own compact prompt composer or a specific unavailability reason; statuses distinguish sending, agent acceptance, an observed turn with unverified origin, and unconfirmed delivery. Only short statuses are announced, not the whole log.
 - Agent management remains separate: Start offers agent-scoped cached project values through a native datalist and asks for inline confirmation before spawning; the pending state blocks duplicate starts, while the returned job/session/PID or refusal stays visible beside that agent.
+
+## Working on the dashboard
+
+The markup is `packages/control-plane/src/dashboard.html`, served as-is; `dashboard.ts` is
+only a loader. `pnpm -r build` copies the file beside the compiled module for the real
+server.
+
+To iterate without a mesh:
+
+    pnpm -r build        # once, for the store and server the script imports
+    pnpm dashboard:dev   # http://127.0.0.1:7331, dashboard token `dev`
+
+`scripts/dashboard-dev.mjs` runs the control plane against an in-memory store seeded from
+`scripts/dashboard-fixtures.mjs` - no mDNS, no pairing, no `pi-mesh-agent`. It reads
+`src/dashboard.html` on every request, so an edit is a browser refresh, no rebuild. Two
+limits are deliberate: no agent is present, so transcripts render through the normal
+"could not be verified" cache path and the execution controls stay disabled; this serves
+the reading surface, not the control path. A state that must be visible here belongs in
+the fixtures, not in a live agent.

@@ -681,6 +681,14 @@ test("session prompt sends only an explicit eligible job and keeps owner-scoped 
     await expect(page.locator("#transcript-panel")).toContainText(
       "Accepted; checking transcript.",
     );
+    // A single 16-second fake-clock jump can run the first timer at the
+    // deadline, skipping every fetch. Prove an early read before expiry.
+    await page.clock.runFor(1_100);
+    await expect
+      .poll(() => transcriptReads - readsBefore, {
+        message: "observation fetches at least once before the deadline",
+      })
+      .toBeGreaterThan(0);
     await page.clock.runFor(16_000);
     await expect(
       page.locator("#transcript-panel"),

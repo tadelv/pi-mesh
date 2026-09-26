@@ -47,7 +47,7 @@ Each skill also declares its **exposure**:
 | `session.stream` | peer | `{ id }` | SSE stream of `Event` |
 | `session.models` | peer (ungated; read) | `{ job_id? }` | `{ models: Model[] }` |
 | `session.set_model` | **gated on the spawn policy** | `{ job_id, provider, model_id }` | Pi `set_model` model data |
-| `session.commands` | peer (ungated; read, job manager required) | `{ job_id }` | `{ commands: [{ name, description?, source, sourceInfo? }] }` from `get_commands` |
+| `session.commands` | peer (ungated; read, job manager required) | `{ job_id }` | `{ commands: [{ name, description?, source }] }` from `get_commands` (absolute resource paths are dropped) |
 | `session.status` | peer (ungated; read, job manager required) | `{ job_id }` | `{ model?, thinkingLevel?, tokens?, cost?, contextUsage? }` from `get_state` + `get_session_stats` |
 | `process.list` | peer (ungated; job manager required) | `{}` | `{ jobs: [{ job_id, session_id (nullable), pid (nullable), project, cwd, state, started_at, exit? }] }` |
 | `session.steer` | **gated on the spawn policy** | `{ job_id (mesh id, not PID), message (≤4096 UTF-8 bytes) }` | Pi RPC response; refused with `-32102` when closed |

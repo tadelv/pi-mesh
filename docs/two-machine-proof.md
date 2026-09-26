@@ -518,3 +518,73 @@ peers: `artemis` `192.168.12.100` and `devpi` `192.168.12.108`. No source in
 `a85666a` and `799310b`, so this run moved the dashboard markup and not agent
 behaviour. The stack still uses the documented `PI_MESH_ALLOW_INSECURE_EXECUTION=1`
 exception; this run did not re-exercise execution.
+
+## M6 — model choice, the command surface, and the status readout (`f1ff9bb`, 2026-09-26)
+
+Deployed revision **`f1ff9bb`** on the Mac (`artemis`) and `devpi`. The
+control-plane image was built through the Portainer Docker API from `git archive`
+of that commit and is
+`sha256:0bc38254678a6074c45c8eb9595be784d4db9481fd26c1e1d107b54adc509795`
+(`pi-mesh/control-plane:dev`); stack **43**, endpoint **2** on `apollo.local` was
+redeployed from its **unchanged** stack file, the existing
+`pi-mesh-control-plane-data` volume reused in place. The dashboard answered
+HTTP 200 and an unauthenticated API request HTTP 401. After `POST /api/sync`,
+`GET /api/state` listed both peers advertising `models`, `commands`, `status`
+and `setModel`, with a fresh jobs listing.
+
+Everything below is the control plane's real API against those agents; the
+prompts are real model turns on `devpi`.
+
+**A model chosen before the spawn is the model that answers (M6-4).** The
+pre-spawn catalog (`GET /api/agents/<devpi>/models`, no `job_id`) listed four
+DeepSeek models. A spawn naming `deepseek/deepseek-v4-flash` returned job
+`cb6e5743-0f2d-457c-9d3e-f519d5b2b788`, session
+`01a0dee5-858c-75f3-901b-4cafb1d5e025`, pid 34184, and the session's durable
+`model_change` entry names it:
+
+    {"type":"model_change","provider":"deepseek","modelId":"deepseek-v4-flash"}
+
+The first assistant turn was `MODEL-CHOICE-OK` - the model itself answered, not
+merely a recorded argv.
+
+**The status readout is Pi's own numbers (M6-6).**
+`GET /api/agents/<devpi>/status?job_id=…` on that job returned the model,
+`thinkingLevel`, token usage and the context window:
+
+    {"model":{"id":"deepseek-v4-flash","provider":"deepseek", …},
+     "thinkingLevel":"high",
+     "tokens":{"input":171,"output":8,"cacheRead":1408,"total":1587},
+     "cost":0.0000301224,
+     "contextUsage":{"tokens":1587,"contextWindow":1000000,"percent":0.1587}}
+
+**The command list is what that Pi reports (M6-5).**
+`GET /api/agents/<devpi>/commands?job_id=…` returned the one command that Pi had
+loaded: `[{"name":"llama","source":"extension"}]`.
+
+**Changing the model of a running session records it (M6-3).**
+`POST /api/agents/<devpi>/setmodel {job_id, provider:"deepseek", model_id:"deepseek-v4-pro"}`
+returned the new model, and the session then carried **two** `model_change`
+entries in order - `deepseek-v4-flash`, then `deepseek-v4-pro`.
+
+**An unlisted model is refused before any process (M6-4).** A spawn naming
+`deepseek/not-a-real-model` answered
+`{"ok":false,"code":-32602,"message":"process.spawn refused: deepseek/not-a-real-model is not in this agent's Pi model catalog"}`
+- no job, no argv.
+
+**A command entered in the box acts (M6-5).** A temporary skill was added to
+`devpi` and a new session started, so `get_commands` reported
+`["llama:extension","skill:m67-proof:skill"]`. Sending `/skill:m67-proof` through
+`session.steer` produced a turn whose assistant text was `SKILL-EXPANDED-OK` -
+Pi expanded the skill **before** the turn rather than passing the text as prose
+(that session's initial prompt had answered `IDLE-OK`). The skill was removed
+afterwards.
+
+Both jobs were stopped (`state:"exited"`) and no Pi process was left on
+`devpi`.
+
+**Limitations.** Execution still uses the stack's documented
+`PI_MESH_ALLOW_INSECURE_EXECUTION=1` (plaintext LAN HTTP, the ADR 0014
+exception), not TLS. The `llama` **extension** command produced no session turn
+when sent from the box - extension commands act in the interactive UI - so this
+transcript proves a **skill** command acting, not an extension command. This run
+did not test a closed execution gate; its refusal is the unlisted-model path.

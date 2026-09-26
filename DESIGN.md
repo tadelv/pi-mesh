@@ -33,6 +33,7 @@ The dashboard borrows Pi's exported session transcript grammar; the stylesheet s
 - Session info and model changes are compact labeled entries; cache state remains explicit.
 - Controls use native buttons, labeled inputs, visible keyboard focus, and high-contrast light/dark tokens.
 - The selected transcript ends in a composer docked to the bottom of its column, above it the model control, or a specific unavailability reason; statuses distinguish sending, agent acceptance, an observed turn with unverified origin, and unconfirmed delivery. Only short statuses are announced, not the whole log.
+- Beside the composer, a session status line shows Pi's reported model, thinking level and context usage as a snapshot, or `context: unknown` when Pi reports none - never 0% or a full bar. Command hints list the reported names with their descriptions and an insert-as-completion control; a hint is labelled advisory and never reported as executed.
 - Agent management remains separate: each agent is a card whose header carries its name, address, a status chip (execution enabled / not advertised / capability unknown) and a job count. Start offers agent-scoped cached project values through a native datalist and asks for inline confirmation before spawning; the pending state blocks duplicate starts, while the returned job/session/PID or refusal stays visible beside that agent.
 
 ## Working on the dashboard

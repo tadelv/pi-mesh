@@ -202,6 +202,29 @@ not weaken the boundary, but it moves it:
   restores execution over plaintext for a LAN you have decided to trust. It is
   off by default and warns on startup.
 
+### The model, command and status surface
+
+Choosing a model, reading a session's status and listing its commands ride the
+same grant and add no new opt-in:
+
+- **Choosing a model is a provider and a bill.** `session.set_model` and
+  `process.spawn {model}` are gated exactly as `session.steer` (`-32102` when the
+  machine has not opted in). A caller names an exact `(provider, model_id)` that
+  the **agent** compares for equality against a fresh catalog from that machine's
+  own Pi - never a free string or a fuzzy pattern - so a peer cannot redirect work
+  to a provider the machine did not configure. The choice spends the operator's
+  money with a provider the machine already trusts and grants nothing beyond
+  execution (ADR 0017).
+- **The status readout reveals Pi's own numbers** - current model, token usage,
+  cost and context usage - for a job the caller names. It is an ungated read, and
+  the status path never sends `set_model`.
+- **The command list reveals resource names only.** `session.commands` returns
+  the `name`, `description` and `source` from `get_commands` for one running job,
+  with Pi's absolute `sourceInfo` paths stripped. It is an ungated read and a list
+  of names, not a grant: a listed name is not a promise it will act. The dashboard
+  sends the box's text as ordinary input, Pi decides whether a command expands, and
+  the UI never reports a command as executed.
+
 ## What the swarm key protects against
 
 - Rogue peers joining the mesh.

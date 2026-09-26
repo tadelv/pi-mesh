@@ -8,10 +8,21 @@ const models = [
   { id: "exact-model-v1", provider: "fixture-provider", name: "Fixture Exact" },
 ];
 // What a running Pi reports for get_commands. A stub that answered `[]` would
-// let a fetch removed entirely still pass, so the fixture returns a real list.
+// let a fetch removed entirely still pass, so the fixture returns a real list,
+// including `sourceInfo` absolute paths that the agent must strip.
 const commands = [
-  { name: "fix-tests", description: "Fix failing tests", source: "prompt" },
-  { name: "skill:deploy", description: "Deploy the service", source: "skill" },
+  {
+    name: "fix-tests",
+    description: "Fix failing tests",
+    source: "prompt",
+    sourceInfo: { path: "/home/user/.pi/agent/prompts/fix-tests.md" },
+  },
+  {
+    name: "skill:deploy",
+    description: "Deploy the service",
+    source: "skill",
+    sourceInfo: { path: "/home/user/.pi/agent/skills/deploy/SKILL.md" },
+  },
 ];
 // Lets a test observe that the child really terminated (teardown, shutdown).
 if (globalThis.process.env.MODEL_STUB_PID) {

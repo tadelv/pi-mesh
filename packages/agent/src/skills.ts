@@ -666,7 +666,21 @@ export function createSkillRegistry(
       ?.commands;
     if (!Array.isArray(commands))
       throw new Error("Pi returned an invalid command list");
-    return { commands };
+    // Name, description and the source kind only. Pi also returns absolute
+    // resource paths under `sourceInfo`, and a peer has no business learning this
+    // host's filesystem layout (ADR 0017: the list reveals resource names).
+    return {
+      commands: commands.map((command) => {
+        const record = (command ?? {}) as Record<string, unknown>;
+        return {
+          name: record.name,
+          ...(record.description === undefined
+            ? {}
+            : { description: record.description }),
+          ...(record.source === undefined ? {} : { source: record.source }),
+        };
+      }),
+    };
   });
   skills.register("session.status", async (input) => {
     const jobId = requiredString(input, "job_id");

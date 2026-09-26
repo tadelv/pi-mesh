@@ -1,4 +1,5 @@
 <!doctype html>
+<!-- SPDX-License-Identifier: GPL-3.0-or-later -->
 <html lang="en">
 <head>
   <meta charset="utf-8">
@@ -192,8 +193,18 @@
     .composer-dock .agent-form > span { grid-column: 1; font-size: 11px; color: var(--muted); }
     .composer-dock .agent-form > button { grid-column: 2; }
     .composer-dock .agent-section select { max-width: 100%; }
-    .composer-dock .command-list { list-style: none; margin: 4px 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
-    .composer-dock .command-list code { color: var(--text); }
+    .composer-dock .session-meta { margin: 6px 0; font-size: 12px; color: var(--dim); }
+    .composer-dock .session-meta details { display: inline-block; max-width: 100%; margin-right: 12px; vertical-align: middle; }
+    .composer-dock .session-meta details[open] { display: block; margin-bottom: 8px; }
+    .composer-dock .session-meta summary, .composer-dock .command-tools summary { cursor: pointer; color: var(--dim); }
+    .composer-dock .session-meta summary:hover, .composer-dock .command-tools summary:hover { color: var(--accent); }
+    .composer-dock .model-picker { max-width: 360px; padding: 10px; margin-top: 6px; border: 1px solid var(--border); border-radius: 6px; background: var(--container-bg); }
+    .composer-dock .model-picker label { display: block; margin: 6px 0; }
+    .composer-dock .model-picker button { margin: 4px 6px 0 0; }
+    .composer-dock .command-tools { margin-top: 8px; font-size: 12px; }
+    .composer-dock .command-tools label { display: block; margin-top: 6px; }
+    .composer-dock .command-tools select { max-width: 100%; }
+    .composer-dock .command-tools .hint { margin-top: 6px; }
     .composer-dock .agent-section > label:has(select) { display: inline-flex; align-items: center; gap: 6px; margin: 0 8px 0 0; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--dim); }
     .composer-dock .agent-section > label:has(input[type="checkbox"]) { display: flex; align-items: flex-start; gap: 8px; margin: 10px 0; font-size: 12px; color: var(--text); }
     .composer-dock .agent-section > label:has(input[type="checkbox"]) input { margin: 3px 0 0; }
@@ -1009,15 +1020,14 @@
         apply();
       });
   }
-  function renderModelAvailability(data, owner, current) {
-    const section = node('section', undefined, transcriptPanel);
-    section.className = 'agent-section';
-    node('h3', 'Change model', section);
+  function renderModelAvailability(data, owner, current, details) {
+    const section = node('div', undefined, details);
+    section.className = 'model-picker';
     const ownerState = current;
     // Rendered BEFORE the reasons early-return below: the notice explains an
     // action the operator just took, and the same window can also have removed
     // or made ambiguous the running job, which returns early.
-    const notice = ownerState.modelNotice ? node('p', ownerState.modelNotice, section) : null;
+    const notice = ownerState.modelNotice ? node('p', ownerState.modelNotice, details.parentElement) : null;
     if(notice) notice.className = 'notice warning';
     const agent = state.agents.find(item => item.peer_id === owner.agentId);
     const matched = state.jobs.filter(job => job.agent_id === owner.agentId && job.session_id === owner.sessionId);
@@ -1030,7 +1040,7 @@
     if(state.execution_transport === 'refused') reasons.push('Changing the model requires TLS or loopback on this connection.');
     if(running.length === 0) reasons.push(matched.length ? 'The job for this session is no longer running.' : 'No running job is known for this session.');
     if(running.length > 1) reasons.push('More than one running job claims this session; model control needs one unambiguous job.');
-    for(const reason of reasons) node('p', reason, section).className = 'notice warning';
+    for(const reason of reasons) node('p', reason, details.parentElement).className = 'notice warning';
     if(reasons.length) return;
     const job = running[0];
     // A replacement running job for the same session must not inherit the old
@@ -1145,36 +1155,55 @@
     const candidateIds = running.map(job => job.job_id).sort().join('\0');
     if(current.candidateIds !== candidateIds) { current.candidateIds = candidateIds; current.jobId = ''; current.confirmed = false; }
     for(const reason of reasons) node('p', reason, section).className = 'notice warning';
-    // The model strip is part of this card but a separate action from sending, so
-    // it renders before the early return and explains itself either way.
-    renderModelAvailability(data, owner, current);
     // Session status: an ungated read (ADR 0017 decision 7), so it renders
     // whenever the agent advertises it and a running job can be named - NOT
     // behind the steering grant or the execution-transport reasons below.
     // Read-only: this path never sends set_model.
-    const statusLine = node('p', '', section); statusLine.className = 'dim hint';
+    const statusLine = node('div', undefined, section); statusLine.className = 'session-meta';
+    const modelDetails = node('details', undefined, statusLine);
+    modelDetails.open = !!current.modelOpen;
+    modelDetails.addEventListener('toggle', () => { current.modelOpen = modelDetails.open; });
+    const modelSummary = node('summary', 'Model: unknown · Change', modelDetails);
+    // The picker and model readout share one disclosure; thinking and context
+    // remain read-only alongside it, even when changing model is gated.
+    renderModelAvailability(data, owner, current, modelDetails);
+    const statusText = node('span', '', statusLine);
     const sessionStatusAvailable = !!(agent && agent.controls && agent.controls.status);
     function paintSessionStatus() {
       const snapshot = current.sessionStatus;
-      if(snapshot === null) { statusLine.textContent = current.sessionStatusMessage || ''; return; }
+      if(snapshot === null) { statusText.textContent = current.sessionStatusMessage || ''; return; }
       const parts = [];
       const model = snapshot.model;
-      if(model && typeof model === 'object') parts.push('Model: '+String(model.name || model.id || 'unknown')+(model.provider ? ' ('+String(model.provider)+')' : ''));
+      modelSummary.textContent = 'Model: '+(model && typeof model === 'object' ? String(model.name || model.id || 'unknown')+(model.provider ? ' ('+String(model.provider)+')' : '') : 'unknown')+' · Change';
       if(typeof snapshot.thinkingLevel === 'string' && snapshot.thinkingLevel) parts.push('thinking: '+snapshot.thinkingLevel);
       const usage = snapshot.contextUsage;
       const known = !!usage && typeof usage === 'object' && usage.tokens !== null && usage.tokens !== undefined && usage.percent !== null && usage.percent !== undefined;
       parts.push(known ? 'context: '+usage.tokens+' / '+usage.contextWindow+' ('+usage.percent+'%)' : 'context: unknown');
-      statusLine.textContent = parts.join(' \u00b7 ');
+      statusText.textContent = parts.join(' \u00b7 ');
     }
     async function loadSessionStatus(job) {
       const request = (current.sessionStatusRequest ?? 0) + 1;
       current.sessionStatusRequest = request;
-      if(!sessionStatusAvailable) { statusLine.textContent = ''; return; }
-      if(!job) { current.sessionStatus = null; current.sessionStatusJobId = ''; current.sessionStatusFailed = false; current.sessionStatusMessage = ''; statusLine.textContent = ''; return; }
+      // Three different reasons, not one: an unverified agent has an UNKNOWN
+      // capability, which is not the same claim as a verified agent that omits
+      // the skill (the same distinction promptEligibility makes).
+      if(!sessionStatusAvailable) {
+        statusText.textContent = !agent || agent.skills === null
+          ? 'Session status unavailable: capability unknown because this agent has not been verified.'
+          : 'Session status unavailable: this agent does not advertise session.status.';
+        return;
+      }
+      if(!job) {
+        current.sessionStatus = null; current.sessionStatusJobId = ''; current.sessionStatusFailed = false; current.sessionStatusMessage = '';
+        statusText.textContent = running.length > 1
+          ? 'Session status unavailable: choose a job to see its status.'
+          : 'Session status unavailable: no running job claims this session.';
+        return;
+      }
       if(current.sessionStatusJobId === job && current.sessionStatus !== null) { paintSessionStatus(); return; }
-      if(current.sessionStatusJobId === job && current.sessionStatusFailed) { statusLine.textContent = current.sessionStatusMessage; return; }
+      if(current.sessionStatusJobId === job && current.sessionStatusFailed) { statusText.textContent = current.sessionStatusMessage; return; }
       current.sessionStatusJobId = job; current.sessionStatus = null; current.sessionStatusFailed = false;
-      statusLine.textContent = 'Loading session status\u2026';
+      statusText.textContent = 'Loading session status\u2026';
       try {
         const result = await api('/api/agents/'+encodeURIComponent(agent.peer_id)+'/status?job_id='+encodeURIComponent(job));
         if(current.sessionStatusRequest !== request) return;
@@ -1185,11 +1214,11 @@
         current.sessionStatusFailed = true;
         current.sessionStatusMessage = 'Session status unavailable: '+(error.status === 502 ? 'the agent is unreachable.' : (error.message || 'could not load status.'));
       }
-      if(current.sessionStatusFailed) statusLine.textContent = current.sessionStatusMessage;
+      if(current.sessionStatusFailed) statusText.textContent = current.sessionStatusMessage;
       else paintSessionStatus();
     }
     loadStatusFor = loadSessionStatus;
-    if(sessionStatusAvailable) void loadSessionStatus(running.length === 1 ? running[0].job_id : (current.jobId || ''));
+    void loadSessionStatus(running.length === 1 ? running[0].job_id : (current.jobId || ''));
     if(reasons.length || running.length === 0) return;
     let jobId = running[0].job_id;
     if(running.length > 1) {
@@ -1223,16 +1252,17 @@
     send.disabled = current.pending || new TextEncoder().encode(current.draft).length > 4096 || !current.draft.trim() || (running.length > 1 && (!jobId || !current.confirmed));
     const status = node('p', current.status, section);
     status.className = 'notice'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
-    // Command hints. ADVISORY ONLY (ADR 0017): the names are what this job's Pi
-    // reports from get_commands, offered as completion; the box still sends plain
-    // text through session.steer and never claims a command ran.
+    // Command hints are ADVISORY ONLY (ADR 0017): the box sends plain text
+    // through session.steer and never claims a command ran. A textarea cannot
+    // use a datalist, so the single menu inserts reported names into the draft.
     const commandNames = new Map();
     const commandHint = node('p', '', section); commandHint.className = 'dim hint';
-    // A <textarea> does not honor the `list` attribute, so completion is an
-    // explicit insert: choose a reported command and it is inserted into the
-    // draft. The reported names and descriptions are also listed inline.
-    const commandList = node('ul', undefined, section); commandList.className = 'command-list';
-    const insertLabel = node('label', 'Insert a command ', section);
+    const commandTools = node('details', undefined, section); commandTools.className = 'command-tools';
+    commandTools.open = !!current.commandsOpen;
+    commandTools.addEventListener('toggle', () => { current.commandsOpen = commandTools.open; });
+    node('summary', 'Insert a command', commandTools);
+    const insertLabel = node('label', 'Reported commands ', commandTools);
+    node('p', 'Reported commands are advisory: the box sends your text to Pi unchanged.', commandTools).className = 'dim hint';
     const insertSelect = node('select', undefined, insertLabel);
     const insertPlaceholder = node('option', 'Choose a reported command…', insertSelect); insertPlaceholder.value = '';
     const BUILTIN_TUI = new Set(['model','settings','hotkeys','new','compact','resume','quit','clear','help','login','logout','status','theme']);
@@ -1244,7 +1274,7 @@
     }
     function describeCommandDraft(value) {
       const match = /^\/([^\s]+)/.exec(value);
-      if(!match) { commandHint.textContent = commandNames.size ? 'The commands above are advisory: the box sends your text to Pi unchanged.' : ''; return; }
+      if(!match) { commandHint.textContent = !commandsAvailable ? 'Command hints unavailable: this agent does not advertise session.commands.' : current.commandsFailed ? current.commandsStatus : ''; return; }
       const name = match[1];
       // Checked before availability: the TUI-only explanation is true regardless
       // of whether this agent can report its command list.
@@ -1259,21 +1289,15 @@
         if(!command || typeof command.name !== 'string') continue;
         const description = typeof command.description === 'string' && command.description ? command.description : 'no description';
         commandNames.set(command.name, description);
-        const item = node('li', undefined, commandList);
-        node('code', '/'+command.name, item);
-        node('span', ' \u2014 '+description, item);
-        const option = node('option', command.name+' \u2014 '+description, insertSelect);
+        const option = node('option', '/'+command.name+' \u2014 '+description, insertSelect);
         option.value = '/'+command.name;
       }
-      if(commands.length === 0) node('li', 'This Pi reported no commands.', commandList).className = 'dim';
+      if(commands.length === 0) node('option', 'This Pi reported no commands.', insertSelect).disabled = true;
       describeCommandDraft(current.draft);
     }
-    // Repaint the visible list. `paintCommands` renders a real list; the empty
-    // case is used while a newly selected job's hints are loading, so the
-    // previous job's names are never offered against the new one.
+    // A newly selected job cannot insert the previous job's names.
     function clearCommandList() {
       commandNames.clear();
-      commandList.replaceChildren();
       insertSelect.replaceChildren(insertPlaceholder); insertPlaceholder.value = '';
     }
     async function loadCommands(job) {
@@ -1282,11 +1306,11 @@
       // the operator has cleared the selection.
       const request = (current.commandsRequest ?? 0) + 1;
       current.commandsRequest = request;
-      if(!commandsAvailable) return;
+      if(!commandsAvailable) { describeCommandDraft(current.draft); return; }
       if(!job) {
         current.commandsJobId = ''; current.commands = null; current.commandsFailed = false;
         clearCommandList();
-        commandHint.textContent = '';
+        commandHint.textContent = 'Command hints unavailable: no running job has been selected.';
         return;
       }
       if(current.commandsJobId === job && current.commands !== null) { paintCommands(current.commands); return; }
@@ -1326,7 +1350,7 @@
       textarea.focus();
       insertSelect.value = '';
     });
-    if(commandsAvailable && jobId) void loadCommands(jobId);
+    if(commandsAvailable) void loadCommands(jobId);
     else describeCommandDraft(current.draft);
     textarea.addEventListener('input', () => {
       current.draft = textarea.value;

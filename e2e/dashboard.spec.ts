@@ -1324,18 +1324,27 @@ test("prompt command hints come from the running job's Pi and never promise exec
       page.getByRole("heading", { name: "Prompt this session" }),
     ).toBeVisible();
     const card = page.locator("#transcript-panel");
+    const commands = card.locator("details.command-tools");
     await expect(
-      card,
-      "the reported names are listed WITH their descriptions",
-    ).toContainText("/fix-tests");
-    await expect(card).toContainText("Fix failing tests");
-    await expect(card).toContainText("/skill:deploy");
-    await expect(card).toContainText("Deploy the service");
+      commands,
+      "command completion starts tucked away",
+    ).not.toHaveAttribute("open", "");
+    await expect(
+      card.locator(".command-list"),
+      "no duplicate inline command list",
+    ).toHaveCount(0);
+    await commands.locator("summary").click();
+    const menu = commands.getByLabel("Reported commands");
+    await expect(
+      menu,
+      "the reported names are available WITH their descriptions in the one menu",
+    ).toContainText("/fix-tests — Fix failing tests");
+    await expect(menu).toContainText("/skill:deploy — Deploy the service");
     const composer = page.getByRole("textbox", { name: "Message to session" });
     // Functional completion: a textarea does not honor `list`, so choosing a
     // reported command must insert it into the draft.
     await composer.fill("");
-    await page.getByLabel("Insert a command").selectOption("/skill:deploy");
+    await menu.selectOption("/skill:deploy");
     await expect(
       composer,
       "a chosen command is inserted into the draft",
@@ -1996,6 +2005,14 @@ test("session status shows the model and context Pi reports, and says unknown wh
     await page.getByRole("button", { name: /Session A/ }).click();
     const card = page.locator("#transcript-panel");
     await expect(card).toContainText("Model: Model A (provider-a)");
+    await expect(
+      card.locator(".session-meta summary"),
+      "the current model and its picker share one collapsed control",
+    ).toHaveText("Model: Model A (provider-a) · Change");
+    await expect(card.locator(".session-meta details")).not.toHaveAttribute(
+      "open",
+      "",
+    );
     await expect(card).toContainText("thinking: high");
     await expect(card, "Pi's own context numbers are shown").toContainText(
       "context: 60000 / 200000 (30%)",
@@ -3669,6 +3686,16 @@ test("selected-session model control is capability-, job-, and owner-bound", asy
     await page.goto(`http://127.0.0.1:${port}`);
     await page.getByRole("button", { name: /Session A/ }).click();
     const panel = page.locator("#transcript-panel");
+    const modelControl = panel.locator(".session-meta details");
+    const openModel = async () => {
+      if ((await modelControl.getAttribute("open")) === null)
+        await modelControl.locator("summary").click();
+    };
+    await expect(
+      modelControl,
+      "model picker starts collapsed",
+    ).not.toHaveAttribute("open", "");
+    await openModel();
     const selector = panel.getByLabel("Available model");
     await expect(
       selector,
@@ -3727,6 +3754,7 @@ test("selected-session model control is capability-, job-, and owner-bound", asy
     scenario = "ready";
     await page.reload();
     await page.getByRole("button", { name: /Session A/ }).click();
+    await openModel();
     await selector.selectOption({ label: "Model A (provider-a)" });
     await panel.getByRole("button", { name: "Review model change" }).click();
     await expect(panel).toContainText("Change to Model A (provider-a)?");
@@ -3756,6 +3784,7 @@ test("selected-session model control is capability-, job-, and owner-bound", asy
     scenario = "ready";
     await page.reload();
     await page.getByRole("button", { name: /Session A/ }).click();
+    await openModel();
     await selector.selectOption({ label: "Model A (provider-a)" });
     await panel.getByRole("button", { name: "Review model change" }).click();
     await expect(panel).toContainText("Change to Model A (provider-a)?");
@@ -4379,6 +4408,124 @@ test("a live frame for session A never renders over session B", async ({
     ).not.toContainText("LEAKED");
   } finally {
     releaseA();
+    await page.close();
+    try {
+      await control.stop();
+    } finally {
+      store.close();
+    }
+  }
+});
+
+test("an unverified agent's status says the capability is unknown, not absent", async ({
+  browser,
+}) => {
+  const store = new ControlStore(":memory:");
+  store.controlName("Status Honesty Control");
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const { port } = await control.start();
+  const token = store.dashboardToken();
+  const timestamp = new Date(0).toISOString();
+  const page = await browser.newPage();
+  // null is "not verified", which is a different claim from a verified agent
+  // whose advertised skill list simply omits session.status.
+  let skills: string[] | null = null;
+  try {
+    await page.addInitScript(
+      (value) => localStorage.setItem("pi_mesh_token", value),
+      token,
+    );
+    await page.route("**/api/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (url.pathname === "/api/state") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            control: { id: "control-a", name: "Status Honesty Control" },
+            agents: [
+              {
+                peer_id: "peer-a",
+                name: "Agent A",
+                host: "127.0.0.1",
+                port: 7330,
+                paired_at: timestamp,
+                skills,
+                controls: {
+                  spawn: false,
+                  steer: false,
+                  stop: false,
+                  abort: false,
+                  models: false,
+                  setModel: false,
+                  resume: false,
+                  commands: false,
+                  status: false,
+                  stream: false,
+                },
+                jobs_synced_at: null,
+              },
+            ],
+            sessions: [
+              {
+                agent_id: "peer-a",
+                session_id: "session-a",
+                project: "/work/a",
+                name: "Session A",
+                started_at: timestamp,
+                updated_at: timestamp,
+                synced_at: timestamp,
+              },
+            ],
+            jobs: [],
+            execution_transport: "confidential",
+          }),
+        });
+        return;
+      }
+      if (url.pathname === "/api/sync" && request.method() === "POST") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({ results: [] }),
+        });
+        return;
+      }
+      if (url.pathname === "/api/sessions/peer-a/session-a") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            events: [],
+            hasEarlier: false,
+            total: 0,
+            all: false,
+            stale: false,
+          }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: "{}",
+      });
+    });
+    await page.goto(`http://127.0.0.1:${port}`);
+    await page.locator(".session-link").first().click();
+    const card = page.locator("#transcript-panel");
+    await expect(
+      card,
+      "an unverified agent's capability is unknown, not absent",
+    ).toContainText(
+      "capability unknown because this agent has not been verified",
+    );
+    // Once verified, the same missing skill is stated as a missing skill.
+    skills = ["session.read", "session.list"];
+    await page.getByRole("button", { name: "Sync", exact: true }).click();
+    await expect(
+      card,
+      "a verified agent that lacks the skill says so",
+    ).toContainText("does not advertise session.status");
+  } finally {
     await page.close();
     try {
       await control.stop();

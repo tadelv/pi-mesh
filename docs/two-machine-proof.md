@@ -588,3 +588,13 @@ exception), not TLS. The `llama` **extension** command produced no session turn
 when sent from the box - extension commands act in the interactive UI - so this
 transcript proves a **skill** command acting, not an extension command. This run
 did not test a closed execution gate; its refusal is the unlisted-model path.
+
+**Post-transcript hardening.** The transcript above is from `f1ff9bb`, which
+still returned Pi's `sourceInfo` paths in `session.commands`. Those absolute
+resource paths are now stripped at the agent (`feff23f`), leaving `name`,
+`description` and `source` only. The Mac, `devpi` and the control plane were
+redeployed to `feff23f` (image
+`sha256:6f4ce26e738482da3b08dc1ea873a6b7e755c60458fd2d9547dd44b009d1d069`) and
+both agents re-synced advertising `models`, `commands`, `status` and `setModel`;
+the strip itself is pinned by the agent test, whose fixture carries `sourceInfo`
+and whose expectation does not.

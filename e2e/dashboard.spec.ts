@@ -3868,17 +3868,48 @@ test("a running session's transcript updates live and announces only boundaries"
   const token = store.dashboardToken();
   const timestamp = new Date(0).toISOString();
   const page = await browser.newPage();
-  const streamHeaders: Array<string | undefined> = [];
-  const streamUrls: string[] = [];
   let sessionReads = 0;
   try {
     await page.addInitScript(
       (value) => localStorage.setItem("pi_mesh_token", value),
       token,
     );
+    // Serve the stream from a ReadableStream the test controls, so the live
+    // view stays open while the assertions run. A fulfilled body would end at
+    // once and the fallback re-read would wipe the live entry before it could
+    // be observed - which is exactly how this test was flaky once.
+    await page.addInitScript(`
+      (() => {
+        const original = window.fetch.bind(window);
+        const state = { push: null, close: null, headers: null, url: null };
+        window.__m7live = state;
+        window.fetch = (input, init) => {
+          const url = typeof input === "string" ? input : input.url;
+          if (url.includes("/stream")) {
+            state.headers = init && init.headers ? init.headers : null;
+            state.url = url;
+            const encoder = new TextEncoder();
+            let sink = null;
+            const body = new ReadableStream({
+              start(controller) {
+                sink = controller;
+              },
+            });
+            state.push = (text) => sink.enqueue(encoder.encode(text));
+            state.close = () => sink.close();
+            return Promise.resolve(
+              new Response(body, {
+                status: 200,
+                headers: { "content-type": "text/event-stream" },
+              }),
+            );
+          }
+          return original(input, init);
+        };
+      })();
+    `);
     await page.route("**/api/**", async (route) => {
-      const request = route.request();
-      const url = new URL(request.url());
+      const url = new URL(route.request().url());
       if (url.pathname === "/api/state") {
         await route.fulfill({
           contentType: "application/json",
@@ -3934,27 +3965,6 @@ test("a running session's transcript updates live and announces only boundaries"
         });
         return;
       }
-      if (url.pathname === "/api/sessions/peer-a/session-a/stream") {
-        streamHeaders.push(request.headers()["x-pi-mesh-ui"]);
-        streamUrls.push(request.url());
-        await route.fulfill({
-          contentType: "text/event-stream",
-          body:
-            "event: live\ndata: " +
-            JSON.stringify({
-              type: "message_update",
-              source: "live",
-              assistantMessageEvent: {
-                type: "text_delta",
-                delta: "Live hello",
-              },
-            }) +
-            "\n\nevent: end\ndata: " +
-            JSON.stringify({ reason: "the agent stopped streaming" }) +
-            "\n\n",
-        });
-        return;
-      }
       if (url.pathname === "/api/sessions/peer-a/session-a") {
         sessionReads += 1;
         await route.fulfill({
@@ -3994,17 +4004,43 @@ test("a running session's transcript updates live and announces only boundaries"
       .click();
     const panel = page.locator("#transcript-panel");
     await expect(panel).toContainText("Durable turn");
+    await expect
+      .poll(() => page.evaluate("typeof window.__m7live.push"), {
+        message: "the live stream request was opened",
+      })
+      .toBe("function");
+    const delta = (text: string) =>
+      "event: live\ndata: " +
+      JSON.stringify({
+        type: "message_update",
+        source: "live",
+        assistantMessageEvent: { type: "text_delta", delta: text },
+      }) +
+      "\n\n";
+    await page.evaluate(
+      `window.__m7live.push(${JSON.stringify(delta("Live hello"))})`,
+    );
     await expect(
       panel,
       "the streamed frame appears without a reload",
     ).toContainText("Live hello");
-    await expect(page.locator("#live-status")).toContainText("live view ended");
+    // A second frame grows the same live entry, still with no reload.
+    await page.evaluate(
+      `window.__m7live.push(${JSON.stringify(delta(" world"))})`,
+    );
+    await expect(panel).toContainText("Live hello world");
     // The live region announces entry boundaries, never the tokens themselves.
     await expect(page.locator("#live-status")).not.toContainText("Live hello");
-    expect(streamHeaders, "the stream carried the dashboard token").toEqual([
-      token,
-    ]);
-    expect(streamUrls[0], "no token in the stream URL").not.toContain("token");
+    const request = (await page.evaluate(
+      "({ headers: window.__m7live.headers, url: window.__m7live.url })",
+    )) as { headers?: Record<string, string> | null; url?: string | null };
+    expect(
+      (request.headers as Record<string, string>)["X-Pi-Mesh-Ui"],
+      "the stream carried the dashboard token",
+    ).toBe(token);
+    expect(request.url, "no token in the stream URL").not.toContain("token");
+    await page.evaluate("window.__m7live.close()");
+    await expect(page.locator("#live-status")).toContainText("live view ended");
     await expect
       .poll(() => sessionReads, {
         message: "the durable page is re-read after the stream ends",

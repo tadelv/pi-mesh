@@ -24,6 +24,11 @@ losing visibility into what each instance is doing. pi-mesh gives you:
   are sent as text where Pi refuses them. A hint never promises a command will
   run, and the box never reports one as run.
 - **Process control** — start and stop Pi sessions on remote devices.
+- **Watching a session work** — a session that belongs to exactly one confirmed
+  running job streams its live frames into the dashboard, so its transcript
+  updates without a reload. The stream is a view, not the record: frames are
+  ephemeral and non-resumable, a disconnect falls back to the durable page and
+  states the reason, and the deltas it missed are never claimed.
 
 ## Install
 

@@ -371,6 +371,51 @@ retains the existing `entryId` cursor semantics, so `session.read` can resume
 after that cursor. Live and file frames are intentionally not interchangeable:
 only file frames promise replay or resumption.
 
+## Control-plane live view
+
+The control plane exposes one read for a browser that wants to watch a session
+work: `GET /api/sessions/:agentId/:sessionId/stream`. It is authenticated like
+every other `/api/` route, with `X-Pi-Mesh-Ui` (a header, never a query string -
+ADR 0018), and answered as `text/event-stream`. It is a **view over the durable
+record**, not the record: watching is a read, so the route needs no execution
+grant and is not subject to ADR 0014's transport requirement.
+
+The session must resolve to exactly **one** running job by ADR 0016's rule -
+matching `session_id`, `state === "running"`, against the agent's confirmed jobs
+listing. The route refuses, with a JSON body and no stream, when:
+
+| Status | `error` | When |
+|---|---|---|
+| `404` | `unknown_agent` | No paired agent has that id |
+| `409` | `jobs_unconfirmed` | The jobs listing has not been confirmed with that agent |
+| `409` | `no_running_job` | No running job claims the session |
+| `409` | `ambiguous_session` | More than one running job claims the session |
+| `502` | `stream_unavailable` | The agent refused the stream or was unreachable |
+
+Once the agent accepts, the response is `200` with `text/event-stream`. The
+**source discriminator arrives in-band**, because a confirmed running job can
+stop between the freshness check and the attach, and the agent then serves the
+durable file:
+
+| `event:` | `data` | Meaning |
+|---|---|---|
+| `live` | The agent's frame, unchanged | One live RPC event |
+| `not-live` | `{ "reason": "…" }` | The agent served the durable file; fall back to `session.read`. The stream then closes |
+| `error` | `{ "reason": "…" }` | The view failed; fall back. The stream then closes |
+| `end` | `{ "reason": "…" }` | The view ended; fall back. The stream then closes |
+
+`not-live` is load-bearing: replayed file entries are never presented as a live
+overlay and are not merged into a page already rendered. `live` frames carry no
+resumption promise; after any close the browser re-reads the durable session and
+makes no claim about the deltas it missed. A quiet stream is not evidence the
+turn ended and a closed stream is not evidence the agent is gone.
+
+At most one upstream A2A `message/stream` per `(agentId, sessionId)` per control
+plane process is opened, shared by every open browser tab. It closes when the
+last subscriber leaves, when the agent is unpaired, and on control-plane
+shutdown; a subscriber that stops reading is disconnected rather than buffered
+without bound.
+
 ## Task lifecycle
 
 Skills that answer immediately return an A2A `Message`. A `Task` is used only

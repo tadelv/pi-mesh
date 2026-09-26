@@ -375,10 +375,11 @@ only file frames promise replay or resumption.
 
 The control plane exposes one read for a browser that wants to watch a session
 work: `GET /api/sessions/:agentId/:sessionId/stream`. It is authenticated like
-every other `/api/` route, with `X-Pi-Mesh-Ui` (a header, never a query string -
-ADR 0018), and answered as `text/event-stream`. It is a **view over the durable
-record**, not the record: watching is a read, so the route needs no execution
-grant and is not subject to ADR 0014's transport requirement.
+every other `/api/` route, with `X-Pi-Mesh-Ui`; the dashboard sends the token as
+a header and never places it in a URL (ADR 0018). It is answered as
+`text/event-stream`. It is a **view over the durable record**, not the record:
+watching is a read, so the route needs no execution grant and is not subject to
+ADR 0014's transport requirement.
 
 The session must resolve to exactly **one** running job by ADR 0016's rule -
 matching `session_id`, `state === "running"`, against the agent's confirmed jobs

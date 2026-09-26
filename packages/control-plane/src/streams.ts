@@ -57,6 +57,7 @@ function messageOf(error: unknown): string {
 class Subscriber implements AsyncIterableIterator<SubscriberFrame> {
   readonly ready: Promise<UpstreamReady>;
   private resolveReady!: (value: UpstreamReady) => void;
+  private settled = false;
   private readonly queue: Array<{ frame: SubscriberFrame; seeded: boolean }> =
     [];
   private liveCount = 0;
@@ -71,6 +72,8 @@ class Subscriber implements AsyncIterableIterator<SubscriberFrame> {
   }
 
   settle(ready: UpstreamReady): void {
+    if (this.settled) return;
+    this.settled = true;
     this.resolveReady(ready);
   }
 
@@ -105,6 +108,8 @@ class Subscriber implements AsyncIterableIterator<SubscriberFrame> {
         },
         seeded: false,
       });
+      // A consumer still awaiting classification must not be left waiting.
+      this.settle({ kind: "error", reason: "the reader fell behind" });
     }
     this.wake();
   }
@@ -112,6 +117,9 @@ class Subscriber implements AsyncIterableIterator<SubscriberFrame> {
   end(reason: string): void {
     if (this.ended) return;
     this.ended = true;
+    // Closing before the source is classified must resolve `ready`, or a route
+    // awaiting it would sit on an open response for the life of the process.
+    this.settle({ kind: "ended", reason });
     this.queue.push({ frame: { kind: "end", reason }, seeded: false });
     this.wake();
   }

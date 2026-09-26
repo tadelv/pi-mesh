@@ -3869,6 +3869,7 @@ test("a running session's transcript updates live and announces only boundaries"
   const timestamp = new Date(0).toISOString();
   const page = await browser.newPage();
   let sessionReads = 0;
+  let failRead = false;
   try {
     await page.addInitScript(
       (value) => localStorage.setItem("pi_mesh_token", value),
@@ -3967,6 +3968,17 @@ test("a running session's transcript updates live and announces only boundaries"
       }
       if (url.pathname === "/api/sessions/peer-a/session-a") {
         sessionReads += 1;
+        if (failRead) {
+          await route.fulfill({
+            status: 502,
+            contentType: "application/json",
+            body: JSON.stringify({
+              error: "agent_unreachable",
+              message: "agent is gone",
+            }),
+          });
+          return;
+        }
         await route.fulfill({
           contentType: "application/json",
           body: JSON.stringify({
@@ -4039,8 +4051,18 @@ test("a running session's transcript updates live and announces only boundaries"
       "the stream carried the dashboard token",
     ).toBe(token);
     expect(request.url, "no token in the stream URL").not.toContain("token");
+    // Close the stream while the durable re-read will fail: the overlay must
+    // still come down, and the failed read must be stated rather than silent.
+    failRead = true;
     await page.evaluate("window.__m7live.close()");
     await expect(page.locator("#live-status")).toContainText("live view ended");
+    await expect(
+      panel.locator(".live-tail"),
+      "the overlay is removed even when the durable page cannot be re-read",
+    ).toHaveCount(0);
+    await expect(page.locator("#transcript-status")).toContainText(
+      "could not be re-read",
+    );
     await expect
       .poll(() => sessionReads, {
         message: "the durable page is re-read after the stream ends",

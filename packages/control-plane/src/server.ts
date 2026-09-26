@@ -96,6 +96,8 @@ export function createControlServer(
   const jobsListingSettled = new Map<string, number>();
   let jobsListingSeq = 0;
   const streams = new UpstreamRegistry();
+  // Unpairing removes the agent row; the live views must not outlive it.
+  store.onAgentRemoved = (peerId) => streams.closeAgent(peerId);
   const confidential = options.confidential ?? isConfidential;
   const allowInsecure = options.allowInsecureExecution === true;
   const serveDashboard = options.dashboardHtml ?? dashboardHtml;

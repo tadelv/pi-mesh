@@ -66,6 +66,12 @@ export interface CachedJob {
 export class ControlStore {
   private readonly db: DatabaseSyncType;
   private readonly now: () => number;
+  /**
+   * Called after an agent row is removed. The control server installs this to
+   * close that agent's live streams, so unpairing cannot leave an upstream
+   * running (ADR 0018 §5).
+   */
+  onAgentRemoved: ((peerId: string) => void) | undefined;
 
   constructor(path: string, options: { now?: () => number } = {}) {
     if (path !== ":memory:") {
@@ -170,6 +176,7 @@ export class ControlStore {
 
   removeAgent(peerId: string): void {
     this.db.prepare("DELETE FROM agents WHERE peer_id = ?").run(peerId);
+    this.onAgentRemoved?.(peerId);
   }
 
   listSessions(agentId?: string): CachedSession[] {

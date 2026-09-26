@@ -38,6 +38,20 @@ function liveDelta(delta: string): string {
   });
 }
 
+/** Bound a wait so an incremental-delivery regression fails by its own clause. */
+function within<T>(
+  promise: Promise<T>,
+  ms: number,
+  message: string,
+): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) =>
+      setTimeout(() => reject(new Error(message)), ms),
+    ),
+  ]);
+}
+
 async function withServer(
   handler: (
     request: import("node:http").IncomingMessage,
@@ -135,7 +149,11 @@ describe("control-plane streaming client", () => {
           // The first live frame must arrive BEFORE the server is released to
           // write the second: a client that buffered the whole response would
           // never resolve this, which is the incremental-delivery clause.
-          const first = await iterator.next();
+          const first = await within(
+            iterator.next(),
+            2_000,
+            "missing observation: a live frame must arrive before the upstream closes, not be buffered whole",
+          );
           expect(
             frameValue(first.value)["assistantMessageEvent"],
             "missing observation: a live delta before the upstream closed",
@@ -304,6 +322,29 @@ describe("control-plane streaming client", () => {
           failure,
           "missing observation: a dropped connection is not a finished turn",
         ).toBeInstanceOf(AgentUnreachableError);
+      },
+    );
+  });
+
+  it("fails a stream record that never reaches a boundary", async () => {
+    await withServer(
+      (_request, _body, response) => {
+        response.writeHead(200, {
+          "content-type": "text/event-stream; charset=utf-8",
+        });
+        // One oversized record with no boundary: the decoder must not keep
+        // growing its buffer waiting for a delimiter that never comes.
+        response.write("data: " + "x".repeat(1024 * 1024 + 64));
+      },
+      async (target) => {
+        await expect(
+          streamAgent(
+            target,
+            "session.stream",
+            { id: "s" },
+            { controlId },
+          ).next(),
+        ).rejects.toBeInstanceOf(AgentUnreachableError);
       },
     );
   });

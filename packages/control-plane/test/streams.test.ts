@@ -260,6 +260,26 @@ describe("upstream registry", () => {
     registry.closeAll();
   });
 
+  it("resolves a subscriber that is closed before the source is classified", async () => {
+    // A route awaits `ready` after writing its headers. Closing in the window
+    // between the task frame and the first message frame must settle it, or the
+    // HTTP response is left open for the life of the process.
+    const source = new Source();
+    const registry = new UpstreamRegistry();
+    const subscriber = registry.get("agent\0session", source.open);
+    source.push({ kind: "task", task: { id: "task-1" } });
+    await settle();
+    registry.closeAll();
+    const ready = await Promise.race([
+      subscriber.ready,
+      new Promise((resolve) => setTimeout(() => resolve("pending"), 1_000)),
+    ]);
+    expect(
+      ready,
+      "closing must resolve a subscriber awaiting classification",
+    ).toMatchObject({ kind: "ended" });
+  });
+
   it("closes only the named agent's upstreams when an agent is unpaired", async () => {
     const a = new Source();
     const b = new Source();

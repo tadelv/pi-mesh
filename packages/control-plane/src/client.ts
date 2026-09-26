@@ -10,6 +10,12 @@ import {
 } from "@pi-mesh/protocol";
 import type { SessionSummary } from "@pi-mesh/protocol";
 
+/**
+ * An SSE record this large means the peer is not sending boundaries. Bounded so
+ * a broken or hostile stream cannot grow the decoder buffer without limit.
+ */
+const MAX_STREAM_RECORD_BYTES = 1024 * 1024;
+
 export class AgentSkillError extends Error {
   constructor(
     readonly code: number,
@@ -300,6 +306,10 @@ export async function* streamAgent(
       });
       if (read.done) break;
       buffer += decoder.decode(read.value, { stream: true });
+      if (buffer.length > MAX_STREAM_RECORD_BYTES)
+        throw new AgentUnreachableError(
+          "Agent sent a stream record with no boundary",
+        );
       let boundary = buffer.indexOf("\n\n");
       while (boundary !== -1) {
         const record = buffer.slice(0, boundary);

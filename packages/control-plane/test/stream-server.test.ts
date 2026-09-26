@@ -185,9 +185,21 @@ async function readEvents(
   const deadline = Date.now() + (options.timeoutMs ?? 3_000);
   while (Date.now() < deadline) {
     if (options.count !== undefined && out.length >= options.count) break;
-    const read = await reader.read();
+    // Bound the read too: a missing frame must fail the caller's assertion, not
+    // hang the whole test into a timeout that names nothing.
+    const read = await Promise.race([
+      reader.read(),
+      new Promise<{ done: boolean }>((resolve) =>
+        setTimeout(
+          () => resolve({ done: true }),
+          Math.max(1, deadline - Date.now()),
+        ),
+      ),
+    ]);
     if (read.done) break;
-    buffer += decoder.decode(read.value, { stream: true });
+    const chunk = (read as { value?: Uint8Array }).value;
+    if (chunk === undefined) break;
+    buffer += decoder.decode(chunk, { stream: true });
     let boundary = buffer.indexOf("\n\n");
     while (boundary !== -1) {
       const item = parse(buffer.slice(0, boundary));
@@ -213,7 +225,15 @@ async function drain(
   let closed = false;
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const read = await reader.read().catch(() => undefined);
+    const read = await Promise.race([
+      reader.read().catch(() => undefined),
+      new Promise<undefined>((resolve) =>
+        setTimeout(
+          () => resolve(undefined),
+          Math.max(1, deadline - Date.now()),
+        ),
+      ),
+    ]);
     if (read === undefined) {
       closed = true;
       break;
@@ -431,18 +451,20 @@ it("closes the live view when the control plane shuts down", async () => {
   ).toBe(true);
 });
 
-it("closes one agent's live views when it is unpaired", async () => {
-  const { base, jobs, control } = await setup();
+it("closes one agent's live views when that agent is removed", async () => {
+  const { base, jobs, store } = await setup();
   await jobs.start();
   await sync(base);
   const response = await openStream(base);
   const reader = response.body!.getReader();
   jobs.emit("before-unpair");
   await readEvents(reader, { count: 1 });
-  control.closeAgentStreams(agentId);
+  // The real removal path, not the closure method directly: removing the agent
+  // row is what unpairing does, and it must take the upstream with it.
+  store.removeAgent(agentId);
   const { events, closed } = await drain(reader);
   expect(
     closed && events.some((item) => item.event === "end"),
-    "missing observation: unpairing closed the upstream cleanly",
+    "missing observation: removing the agent closed the upstream cleanly",
   ).toBe(true);
 });

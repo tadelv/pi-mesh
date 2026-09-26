@@ -1521,6 +1521,7 @@ test("dashboard start suggests agent projects, confirms inline, and guards dupli
   let mode: "success" | "refusal" | "failure" | "transport" | "delayed" =
     "success";
   let spawned = false;
+  let modelsFail = false;
   let releaseDelayed!: () => void;
   const delayed = new Promise<void>((resolve) => {
     releaseDelayed = resolve;
@@ -1649,15 +1650,63 @@ test("dashboard start suggests agent projects, confirms inline, and guards dupli
         return;
       }
       if (
+        request.method() === "GET" &&
+        /^\/api\/agents\/peer-[abc]\/models$/.test(url.pathname) &&
+        authenticated &&
+        request.postData() === null
+      ) {
+        // The pre-spawn catalog the Start form loads. peer-c models the
+        // unavailable helper so the selector's degrade path is exercised by a
+        // real request rather than assumed; peer-a can be made to fail after a
+        // successful load to model a snapshot that can no longer be refreshed.
+        if (
+          url.pathname === "/api/agents/peer-c/models" ||
+          (url.pathname === "/api/agents/peer-a/models" && modelsFail)
+        ) {
+          await route.fulfill({
+            contentType: "application/json",
+            body: JSON.stringify({
+              ok: false,
+              code: -32106,
+              message: "helper timed out",
+            }),
+          });
+          return;
+        }
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            models: [
+              {
+                id: "test-model",
+                provider: "test-provider",
+                name: "Test Model",
+              },
+            ],
+          }),
+        });
+        return;
+      }
+      if (
         url.pathname === "/api/agents/peer-a/spawn" &&
         request.method() === "POST" &&
         authenticated &&
         request.headers()["content-type"] === "application/json"
       ) {
         const body = request.postDataJSON() as Record<string, unknown>;
+        const keys = Object.keys(body).sort().join(",");
+        const model = body.model as
+          { provider?: unknown; model_id?: unknown } | undefined;
         if (
-          Object.keys(body).sort().join(",") !== "cwd,project,prompt" &&
-          Object.keys(body).sort().join(",") !== "project,prompt"
+          ![
+            "project,prompt",
+            "cwd,project,prompt",
+            "model,project,prompt",
+            "cwd,model,project,prompt",
+          ].includes(keys) ||
+          (keys.includes("model") &&
+            (model?.provider !== "test-provider" ||
+              model?.model_id !== "test-model"))
         ) {
           fixtureErrors.push(`invalid spawn fields ${JSON.stringify(body)}`);
           await route.fulfill({ status: 400, body: "invalid spawn fields" });
@@ -1773,6 +1822,17 @@ test("dashboard start suggests agent projects, confirms inline, and guards dupli
       "No cached projects for this agent yet. Enter a project name.",
     );
     await expect(formC.getByLabel("Project")).toBeEditable();
+    await expect(
+      formC.getByLabel("Model"),
+      "a catalog-unavailable agent disables the selector rather than offering a stale list",
+    ).toBeDisabled();
+    await expect(
+      formC,
+      "the degrade states the reason and keeps the machine default",
+    ).toContainText("Model catalog unavailable: helper timed out");
+    await expect(formC.getByLabel("Model")).toContainText(
+      "Use this machine's default",
+    );
     const reviewStart = formA.getByRole("button", { name: "Review start" });
     await expect(reviewStart).toBeDisabled();
     await expect(
@@ -1815,13 +1875,42 @@ test("dashboard start suggests agent projects, confirms inline, and guards dupli
       "changing the reviewed project requires a new review",
     ).toHaveCount(0);
     await projectA.fill("/work/manual");
+    await formA
+      .getByLabel("Model")
+      .selectOption(
+        JSON.stringify({ provider: "test-provider", model_id: "test-model" }),
+      );
     await reviewStart.click();
+    await expect(
+      formA.locator(".start-review"),
+      "the review names the chosen model before submission",
+    ).toContainText("using test-provider/test-model");
     await formA.getByRole("button", { name: "Start", exact: true }).click();
     await expect.poll(() => posts.length).toBe(1);
     expect(
       posts[0]?.body,
-      "the start request uses the confirmed full project and prompt",
-    ).toEqual({ project: "/work/manual", prompt: "first prompt" });
+      "the start request carries the chosen model, not a free string",
+    ).toEqual({
+      project: "/work/manual",
+      prompt: "first prompt",
+      model: { provider: "test-provider", model_id: "test-model" },
+    });
+    // A reload drops the snapshot and re-fetches: with the catalog now
+    // unavailable, the selector must degrade to the machine default with the
+    // reason, not keep offering the list it loaded before (ADR 0017).
+    modelsFail = true;
+    await page.getByRole("button", { name: "Sync", exact: true }).click();
+    await expect(
+      formA.getByLabel("Model"),
+      "a failed refresh disables the selector rather than showing a stale list",
+    ).toBeDisabled();
+    await expect(formA).toContainText(
+      "Model catalog unavailable: helper timed out",
+    );
+    await expect(formA.getByLabel("Model")).toContainText(
+      "Use this machine's default",
+    );
+    modelsFail = false;
     await expect(
       page.getByText("Started job job-new, session session-new, PID 4242."),
     ).toBeVisible();
@@ -1837,6 +1926,17 @@ test("dashboard start suggests agent projects, confirms inline, and guards dupli
       "No transcript entries yet; the session may still be starting.",
     );
 
+    // Restore the catalog, then carry a chosen model through a REFUSED start:
+    // the refusal must keep project, prompt, cwd, model and the inline review so
+    // the operator can retry, per M5-4, even though the reload re-fetched.
+    modelsFail = false;
+    await page.getByRole("button", { name: "Sync", exact: true }).click();
+    await expect(formA.getByLabel("Model")).toBeEnabled();
+    await formA
+      .getByLabel("Model")
+      .selectOption(
+        JSON.stringify({ provider: "test-provider", model_id: "test-model" }),
+      );
     mode = "refusal";
     await formA.getByLabel("Project").fill("/work/refused");
     await formA.getByLabel("Prompt").fill("refused prompt");
@@ -1846,9 +1946,9 @@ test("dashboard start suggests agent projects, confirms inline, and guards dupli
     await reviewStart.click();
     await expect(
       formA.locator(".start-review"),
-      "optional cwd appears in the review before submission",
+      "optional cwd and the chosen model appear in the review before submission",
     ).toContainText(
-      "Start one session on Agent A for /work/refused in /work/refused-dir?",
+      "Start one session on Agent A for /work/refused in /work/refused-dir using test-provider/test-model?",
     );
     await formA.getByRole("button", { name: "Start", exact: true }).click();
     await expect(
@@ -1861,15 +1961,27 @@ test("dashboard start suggests agent projects, confirms inline, and guards dupli
     );
     expect(
       posts.at(-1)?.body,
-      "refused start sends exact project, prompt and optional cwd",
+      "refused start sends exact project, prompt, optional cwd and the chosen model",
     ).toEqual({
       project: "/work/refused",
       prompt: "refused prompt",
       cwd: "/work/refused-dir",
+      model: { provider: "test-provider", model_id: "test-model" },
     });
+    await expect(
+      formA.getByLabel("Model"),
+      "a refusal keeps the reviewed model across the reload",
+    ).toHaveValue(
+      JSON.stringify({ provider: "test-provider", model_id: "test-model" }),
+    );
+    await expect(formA.locator(".start-review")).toContainText(
+      "using test-provider/test-model",
+    );
     await expect(
       formA.getByRole("button", { name: "Start", exact: true }),
     ).toBeEnabled();
+    // Drop the model so the later flows assert their own clauses without it.
+    await formA.getByLabel("Model").selectOption("");
 
     mode = "failure";
     await formA.getByLabel("Project").fill("/work/failed");
@@ -1977,6 +2089,146 @@ test("dashboard start suggests agent projects, confirms inline, and guards dupli
     } finally {
       store.close();
     }
+  }
+});
+
+test("a superseded pre-spawn catalog response does not repopulate the Start form", async ({
+  browser,
+}) => {
+  const store = new ControlStore(":memory:");
+  store.controlName("Catalog Race Control");
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const page = await browser.newPage();
+  const token = store.dashboardToken();
+  let releaseFirst!: () => void;
+  const firstHeld = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  let firstStarted!: () => void;
+  const firstStartedGate = new Promise<void>((resolve) => {
+    firstStarted = resolve;
+  });
+  let modelsRequests = 0;
+  const timestamp = new Date(0).toISOString();
+  try {
+    const { port } = await control.start();
+    const baseURL = `http://127.0.0.1:${port}`;
+    await page.addInitScript(
+      (t) => localStorage.setItem("pi_mesh_token", t),
+      token,
+    );
+    await page.route("**/api/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const authenticated = request.headers()["x-pi-mesh-ui"] === token;
+      if (
+        url.pathname === "/api/state" &&
+        request.method() === "GET" &&
+        authenticated
+      ) {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            control: { id: "control-race", name: "Catalog Race Control" },
+            agents: [
+              {
+                peer_id: "peer-a",
+                name: "Agent A",
+                host: "127.0.0.1",
+                port: 7330,
+                paired_at: timestamp,
+                skills: ["process.spawn"],
+                controls: {
+                  spawn: true,
+                  steer: false,
+                  stop: false,
+                  abort: false,
+                },
+                jobs_synced_at: null,
+              },
+            ],
+            sessions: [],
+            jobs: [],
+            execution_transport: "confidential",
+          }),
+        });
+        return;
+      }
+      if (url.pathname === "/api/sync" && request.method() === "POST") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true }),
+        });
+        return;
+      }
+      if (
+        url.pathname === "/api/agents/peer-a/models" &&
+        request.method() === "GET" &&
+        authenticated
+      ) {
+        modelsRequests += 1;
+        if (modelsRequests === 1) {
+          firstStarted();
+          await firstHeld;
+          await route.fulfill({
+            contentType: "application/json",
+            headers: { "x-fixture": "stale" },
+            body: JSON.stringify({
+              models: [
+                {
+                  id: "old-model",
+                  provider: "old-provider",
+                  name: "Old Model",
+                },
+              ],
+            }),
+          });
+          return;
+        }
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            models: [
+              { id: "new-model", provider: "new-provider", name: "New Model" },
+            ],
+          }),
+        });
+        return;
+      }
+      await route.fulfill({ status: 400, body: "unexpected request" });
+    });
+    await page.goto(baseURL);
+    const form = page
+      .locator("#agents .agent-section")
+      .filter({ has: page.getByRole("heading", { name: "Agent A" }) })
+      .locator("form");
+    await firstStartedGate;
+    // Reload while the first response is still in flight: it answers a snapshot
+    // the reload already discarded.
+    await page.getByRole("button", { name: "Sync", exact: true }).click();
+    await expect(
+      form.getByLabel("Model"),
+      "the reload's own response populates the selector",
+    ).toContainText("New Model");
+    // Synchronise on the superseded response being RECEIVED, then let the page
+    // process it, so the negative assertion cannot pass before the guarded
+    // response arrives (a passing `+= 0` mutant must fail THIS clause).
+    const staleReceived = page.waitForResponse(
+      (response) => response.headers()["x-fixture"] === "stale",
+    );
+    releaseFirst();
+    await staleReceived;
+    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    await expect(
+      form.getByLabel("Model"),
+      "the superseded response must not repopulate the selector",
+    ).not.toContainText("Old Model");
+    await expect(form.getByLabel("Model")).toContainText("New Model");
+  } finally {
+    releaseFirst();
+    await page.close();
+    await control.stop();
+    store.close();
   }
 });
 

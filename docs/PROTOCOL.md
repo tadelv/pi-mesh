@@ -51,7 +51,7 @@ Each skill also declares its **exposure**:
 | `session.steer` | **gated on the spawn policy** | `{ job_id (mesh id, not PID), message (≤4096 UTF-8 bytes) }` | Pi RPC response; refused with `-32102` when closed |
 | `session.resume` | **gated on the spawn policy** | `{ session_id, acknowledge_concurrent_writers: true }` | `{ job_id, pid, session_id }`; refused with `-32102` when closed |
 | `session.abort` | peer (ungated) | `{ job_id (mesh id, not PID) }` | Pi RPC response |
-| `process.spawn` | **gated on the spawn policy** | `{ project, cwd?, prompt }` | `{ job_id, pid, session_id }` |
+| `process.spawn` | **gated on the spawn policy** | `{ project, cwd?, prompt, model? }` | `{ job_id, pid, session_id }` |
 | `process.stop` | peer (ungated) | `{ job_id (mesh id, not PID) }` | `{ job_id, state, pid }` |
 | `mesh.handoff` | **gated on the spawn policy** | `HandoffPayload` | `{ task_id, session_id, job_id }` on acceptance; `{ task: Task }` when rejected; refused with `-32102` when closed |
 
@@ -69,9 +69,10 @@ are load-bearing:
 turn. It takes **no `argv`**. The server constructs the command line; a remote
 caller chooses a project, not a program. Peer-chosen argv could change the
 session directory or which extensions load. Model selection is the bounded
-exception: `session.set_model` names an exact provider and model id from the
-agent's fresh Pi catalog; the agent compares both fields for equality before
-forwarding, so remote callers cannot use Pi's fuzzy matching.
+exception: `process.spawn`'s optional `model: { provider, model_id }` and
+`session.set_model` name an exact provider and model id from the agent's fresh
+Pi catalog; the agent compares both fields for equality before placing any argv
+or forwarding, so remote callers cannot use Pi's fuzzy matching.
 - `process.spawn`'s `cwd`, when given, must resolve inside the workspace root
   (which defaults to the user's home directory), because the realpath check is
   an accident guard and project selector. It is not a sandbox: the spawned

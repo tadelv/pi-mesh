@@ -216,6 +216,12 @@ already builds (`packages/agent/src/spawner.ts`, the `args` array).
   flags must fail this, and so must an unrelated `session_info` entry - that entry
   carries `name`/`cwd` only (`packages/control-plane/src/dashboard.ts:358-372`) and
   cannot establish a first-turn model.
+  The shipped unit test (`packages/agent/test/spawner.test.ts`, real Pi, skipped
+  in CI) launches a non-default model and asserts the live process reports it via
+  `get_state`. The durable **first-turn** record - a `model_change` entry in the
+  session file - is produced only after a turn (Pi creates the session file
+  lazily), so it is carried by M6-7's two-machine transcript, which spends a real
+  turn on a chosen model.
 - Mutation: remove the effective model selection (drop the flag from the argv the
   spawner actually launches with) and the test fails on the model clause.
 - With no confirmed list, or a `catalog_unavailable` from `session.models`, the

@@ -65,6 +65,12 @@ export interface JobSpec {
   readonly cwd: string;
   readonly name: string;
   readonly sessionFile?: string;
+  /**
+   * A model the agent already validated against its own Pi catalog (ADR 0017).
+   * Carried to the spawner, which places it in the argv it constructs - the
+   * caller never supplies flags, only this bounded pair.
+   */
+  readonly model?: { readonly provider: string; readonly modelId: string };
 }
 
 export interface JobExit {

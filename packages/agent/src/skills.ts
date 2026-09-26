@@ -252,6 +252,47 @@ export function createSkillRegistry(
         `process.spawn refused: cwd is outside the workspace accident guard (${error instanceof Error ? error.message : String(error)})`,
       );
     }
+    // ADR 0017: a model choice is the one bounded exception to "no argv". The
+    // caller names an exact (provider, model_id); the agent compares it for
+    // equality against its own Pi catalog BEFORE any process starts, never
+    // passing a free string or a fuzzy pattern to Pi's CLI.
+    let model: { provider: string; modelId: string } | undefined;
+    if (input.model !== undefined) {
+      const requested = input.model;
+      if (
+        typeof requested !== "object" ||
+        requested === null ||
+        Array.isArray(requested) ||
+        typeof (requested as { provider?: unknown }).provider !== "string" ||
+        (requested as { provider: string }).provider.trim().length === 0 ||
+        typeof (requested as { model_id?: unknown }).model_id !== "string" ||
+        (requested as { model_id: string }).model_id.trim().length === 0
+      ) {
+        throw new PiMeshError(
+          -32602,
+          "process.spawn model must be { provider, model_id } with non-blank strings",
+        );
+      }
+      const provider = (requested as { provider: string }).provider;
+      const modelId = (requested as { model_id: string }).model_id;
+      let models: unknown[];
+      try {
+        models = await catalog.get();
+      } catch (error) {
+        throw new PiMeshError(
+          ErrorCode.CatalogUnavailable,
+          `process.spawn refused: the model catalog is unavailable (${error instanceof Error ? error.message : String(error)})`,
+          { cause: error },
+        );
+      }
+      if (!hasExactModel(models, provider, modelId)) {
+        throw new PiMeshError(
+          -32602,
+          `process.spawn refused: ${provider}/${modelId} is not in this agent's Pi model catalog`,
+        );
+      }
+      model = { provider, modelId };
+    }
     const deadlineMs = input._acceptanceDeadlineMs;
     const deadlineAt =
       typeof deadlineMs === "number" ? Date.now() + deadlineMs : undefined;
@@ -268,6 +309,7 @@ export function createSkillRegistry(
           project,
           cwd,
           name: project,
+          ...(model === undefined ? {} : { model }),
         },
         remaining,
       );

@@ -39,7 +39,11 @@ export interface PiRpcClientOptions {
   maxStderrBytes?: number;
   uiTimeoutMs?: number;
   logger?: Logger;
-  /** Arguments used only by tests or a wrapper executable, before Pi's flags. */
+  /**
+   * Arguments placed before Pi's own flags. Used by tests and wrapper
+   * executables, and by the real spawner for the validated model selection
+   * (`--provider`/`--model`) from ADR 0017.
+   */
   binaryArgs?: readonly string[];
   /** Optional environment override, primarily for deterministic fixture tests. */
   env?: NodeJS.ProcessEnv;

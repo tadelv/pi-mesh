@@ -28,6 +28,27 @@ import {
 const fixture = fileURLToPath(
   new URL("./fixtures/rpc-stub.mjs", import.meta.url),
 );
+const modelFixture = fileURLToPath(
+  new URL("./fixtures/model-rpc-stub.mjs", import.meta.url),
+);
+
+/**
+ * The model-catalog helper fixture, as the `pi` the catalog would ask. Kept
+ * separate from the session binary: the session stub answers `get_state` and
+ * `prompt`, the model stub answers `get_available_models`.
+ */
+async function modelCatalogBinary(
+  parent: string,
+  mode = "catalog",
+): Promise<string> {
+  const path = join(parent, `pi-model-${mode}.mjs`);
+  await writeFile(
+    path,
+    `#!/usr/bin/env node\nprocess.env.MODEL_STUB_MODE = ${JSON.stringify(mode)};\nawait import(${JSON.stringify(pathToFileURL(modelFixture).href)});\n`,
+  );
+  await chmod(path, 0o755);
+  return path;
+}
 
 const logger = {
   debug: () => undefined,
@@ -95,6 +116,7 @@ function registryFor(options: {
   root: string;
   binary: string;
   sessionsRoot: string;
+  catalogBinary?: string;
 }): { skills: ReturnType<typeof createSkillRegistry>; jobs: JobManager } {
   const spawner = createPiSpawner({
     workspaceRoot: options.root,
@@ -110,6 +132,12 @@ function registryFor(options: {
   const skills = createSkillRegistry({
     jobs,
     workspaceRoot: options.root,
+    // Injected only by the model tests: the catalog asks this binary, while
+    // the session itself runs on `binary`. Without it the helper would try the
+    // real `pi`, which CI does not have.
+    ...(options.catalogBinary === undefined
+      ? {}
+      : { piBinary: options.catalogBinary }),
   });
   return { skills, jobs };
 }
@@ -466,6 +494,99 @@ describe("spawn policy primitives", () => {
     }
   });
 
+  it("M6-4 places a validated model in the spawned argv and refuses unlisted or malformed models before starting", async () => {
+    const w = await workspace();
+    const { skills, jobs } = registryFor({
+      root: w.root,
+      binary: await wrapperFor(w.parent, "state"),
+      sessionsRoot: w.sessionsRoot,
+      catalogBinary: await modelCatalogBinary(w.parent),
+    });
+    try {
+      // Each of these is refused by the equality check, not by Pi, and each
+      // must leave the job table empty - a refusal that still spawned would be
+      // the argv hole this bound exists to close.
+      for (const model of [
+        { provider: "fixture-provider", model_id: "exact-model" }, // a prefix, not equal
+        { provider: "other-provider", model_id: "exact-model-v1" },
+        { provider: "fixture-provider" }, // missing model_id
+        { provider: "", model_id: "exact-model-v1" },
+      ]) {
+        await expect(
+          skills.invoke("process.spawn", {
+            project: "p",
+            cwd: "project",
+            prompt: "refused model",
+            model,
+            _peerId: "peer",
+          }),
+        ).rejects.toMatchObject({ code: -32602 });
+      }
+      expect(jobs.list()).toEqual([]);
+
+      // The listed pair reaches the argv the spawner. Removing the flags from
+      // the spawner makes this fail on the argv clause, not on a timeout.
+      const listed = (await skills.invoke("process.spawn", {
+        project: "p",
+        cwd: "project",
+        prompt: "listed model",
+        model: { provider: "fixture-provider", model_id: "exact-model-v1" },
+        _peerId: "peer",
+      })) as { job_id: string };
+      const argv = jobs.get(listed.job_id)?.argv ?? [];
+      const providerAt = argv.indexOf("--provider");
+      expect(
+        providerAt,
+        "the spawner placed --provider in the launched argv",
+      ).toBeGreaterThanOrEqual(0);
+      // Adjacent pairs, not scattered flags: arrayContaining would accept the
+      // right values in a wrong order, which real Pi would not read as a model.
+      expect(argv.slice(providerAt, providerAt + 4)).toEqual([
+        "--provider",
+        "fixture-provider",
+        "--model",
+        "exact-model-v1",
+      ]);
+
+      // Positive control: omitting the model still spawns, and adds neither flag.
+      const plain = (await skills.invoke("process.spawn", {
+        project: "p",
+        cwd: "project",
+        prompt: "no model",
+        _peerId: "peer",
+      })) as { job_id: string };
+      const plainArgv = jobs.get(plain.job_id)?.argv ?? [];
+      expect(plainArgv).not.toContain("--model");
+      expect(plainArgv).not.toContain("--provider");
+    } finally {
+      await jobs.shutdown();
+    }
+  });
+
+  it("M6-4 refuses a chosen model when the catalog is unavailable, before starting any process", async () => {
+    const w = await workspace();
+    const { skills, jobs } = registryFor({
+      root: w.root,
+      binary: await wrapperFor(w.parent, "state"),
+      sessionsRoot: w.sessionsRoot,
+      catalogBinary: await modelCatalogBinary(w.parent, "fail"),
+    });
+    try {
+      await expect(
+        skills.invoke("process.spawn", {
+          project: "p",
+          cwd: "project",
+          prompt: "unavailable catalog",
+          model: { provider: "fixture-provider", model_id: "exact-model-v1" },
+          _peerId: "peer",
+        }),
+      ).rejects.toMatchObject({ code: ErrorCode.CatalogUnavailable });
+      expect(jobs.list()).toEqual([]);
+    } finally {
+      await jobs.shutdown();
+    }
+  });
+
   // A real `pi`, when one is installed. CI has no binary and no model provider,
   // so this skips there; M2-9 runs it for real on two machines. It is here
   // because the fixture is written by the same hand as the code it tests, and a
@@ -578,4 +699,75 @@ describe("spawn policy primitives", () => {
     });
     await handle.close();
   });
+
+  it.skipIf(realPi === undefined)(
+    "launches real Pi on the requested model, and the running process reports it",
+    async () => {
+      // The effective-model clause M6-4 requires: not that a flag was recorded,
+      // but that the process Pi started is on the chosen model. Real Pi's own
+      // config is read (not overridden) because this needs the machine's real
+      // catalog; the test skips in CI, where no `pi` exists.
+      const w = await workspace();
+      const spawner = createPiSpawner({
+        workspaceRoot: w.root,
+        piBinary: realPi!,
+        sessionsRoot: w.sessionsRoot,
+        readinessTimeoutMs: 30_000,
+        logger,
+      });
+      const report = {
+        output: () => undefined,
+        session: () => undefined,
+        exited: () => undefined,
+      };
+      const catalogSkills = createSkillRegistry({ piBinary: realPi! });
+      const catalog = (await catalogSkills.invoke("session.models", {})) as {
+        models: Array<{ id: string; provider: string }>;
+      };
+      await catalogSkills.close();
+      expect(
+        catalog.models.length,
+        "real Pi reported at least one model",
+      ).toBeGreaterThan(0);
+
+      const defaultHandle = spawner(
+        { peerId: "peer", project: "project", cwd: w.cwd, name: "default" },
+        report,
+      );
+      await defaultHandle.ready;
+      const defaultState = (await defaultHandle.command({
+        type: "get_state",
+      })) as { data?: { model?: { id?: string } } };
+      await defaultHandle.close();
+
+      // A model other than the machine's own choice, so the assertion cannot
+      // pass by inheritance: without the flag the default would be reported.
+      const chosen = catalog.models.find(
+        (model) => model.id !== defaultState.data?.model?.id,
+      );
+      expect(
+        chosen,
+        "the machine offers a model other than its default, so the override is observable",
+      ).toBeDefined();
+      const handle = spawner(
+        {
+          peerId: "peer",
+          project: "project",
+          cwd: w.cwd,
+          name: "chosen",
+          model: { provider: chosen!.provider, modelId: chosen!.id },
+        },
+        report,
+      );
+      await handle.ready;
+      const state = (await handle.command({ type: "get_state" })) as {
+        data?: { model?: { id?: string; provider?: string } };
+      };
+      expect(state.data?.model).toMatchObject({
+        id: chosen!.id,
+        provider: chosen!.provider,
+      });
+      await handle.close();
+    },
+  );
 });

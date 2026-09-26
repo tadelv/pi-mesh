@@ -731,6 +731,52 @@
       }
     }
   }
+  function unconfirmedSpawnModel(current, status) {
+    // The list could not be confirmed, so a choice made against an older
+    // snapshot is dropped rather than submitted against a catalog we cannot see.
+    current.modelsFailed = true;
+    current.modelStatus = status;
+    current.model = null;
+    current.review = null;
+  }
+  function loadSpawnModels(agent, current) {
+    // The pre-spawn catalog: no job_id, so the agent answers from its bounded
+    // helper, not a running process. Re-fetched whenever state reloads and
+    // stamped so the form can show its age: the list is a snapshot, never
+    // presented as live. A failure degrades the selector to "use this machine's
+    // default" with the reason stated (M5-4's honesty rule).
+    if(current.modelsLoading || current.models !== null || current.modelsFailed) return;
+    const generation = current.modelsGeneration;
+    current.modelsLoading = true;
+    current.modelStatus = 'Loading models reported by this agent…';
+    api('/api/agents/'+encodeURIComponent(agent.peer_id)+'/models')
+      .then(result => {
+        // A response from a superseded generation belongs to a snapshot this
+        // reload already discarded; applying it would present an old list as
+        // confirmed (the request the reloads were supposed to replace).
+        if(generation !== current.modelsGeneration) return;
+        if(result.ok === false) {
+          unconfirmedSpawnModel(current, result.code === -32106 ? 'Model catalog unavailable: '+String(result.message ?? 'Pi could not report models.') : 'Agent refusal ('+String(result.code)+'): '+String(result.message ?? ''));
+        } else if(!Array.isArray(result.models)) {
+          unconfirmedSpawnModel(current, 'The agent returned an invalid model catalog.');
+        } else if(result.models.length > 0 && result.models.filter(usableModel).length === 0) {
+          unconfirmedSpawnModel(current, 'The agent reported models, but none with a usable id, provider and name.');
+        } else {
+          current.models = result.models;
+          current.modelsAt = Date.now();
+          current.modelStatus = result.models.length ? '' : 'The agent reported no available models.';
+        }
+      })
+      .catch(error => {
+        if(generation !== current.modelsGeneration) return;
+        unconfirmedSpawnModel(current, error.status === 502 ? 'Could not reach the agent for its model catalog.' : (error.message || 'Could not load models.'));
+      })
+      .finally(() => {
+        if(generation !== current.modelsGeneration) return;
+        current.modelsLoading = false;
+        render();
+      });
+  }
   function renderModelAvailability(data, owner, current) {
     const section = node('section', undefined, transcriptPanel);
     section.className = 'agent-section';
@@ -953,8 +999,28 @@
   }
   const spawnStates = new Map();
   function spawnState(peerId) {
-    if(!spawnStates.has(peerId)) spawnStates.set(peerId, {project:'', prompt:'', cwd:'', review:null, pending:false, outcome:null});
+    if(!spawnStates.has(peerId)) spawnStates.set(peerId, {project:'', prompt:'', cwd:'', model:null, models:null, modelsAt:0, modelsGeneration:0, modelsLoading:false, modelsFailed:false, modelStatus:'', review:null, pending:false, outcome:null});
     return spawnStates.get(peerId);
+  }
+  function ageLabel(ms) {
+    const bounded = Math.max(0, ms);
+    return bounded < 60_000 ? Math.floor(bounded/1000)+'s ago' : Math.floor(bounded/60_000)+'m ago';
+  }
+  // The pre-spawn catalog is a snapshot. Each state reload drops it so the form
+  // re-fetches rather than presenting an old list as confirmed. The operator's
+  // current choice and inline review are kept and re-checked against the fresh
+  // list (ADR 0017); only a refresh that cannot confirm them clears them.
+  function invalidateSpawnModels() {
+    for(const current of spawnStates.values()) {
+      current.models = null;
+      current.modelsAt = 0;
+      current.modelsFailed = false;
+      // Retire any in-flight request: its response answers a superseded
+      // snapshot and must not repopulate the form after this reload. Loading is
+      // cleared so the next render issues a request for the new generation.
+      current.modelsGeneration += 1;
+      current.modelsLoading = false;
+    }
   }
   function renderAgent(agent) {
     const jobs = state.jobs.filter(job => job.agent_id === agent.peer_id);
@@ -993,28 +1059,60 @@
       else node('p', 'No cached projects for this agent yet. Enter a project name.', form).className = 'dim';
       const promptLabel = node('label', 'Prompt ', form); const prompt = node('textarea', undefined, promptLabel); prompt.required = true; prompt.value = current.prompt;
       const cwdLabel = node('label', 'Working directory (optional) ', form); const cwd = node('input', undefined, cwdLabel); cwd.value = current.cwd;
+      const modelModels = Array.isArray(current.models) ? current.models.filter(usableModel) : [];
+      // A choice is cleared only when a CONFIRMED list no longer contains it. A
+      // reload that has not yet re-fetched (models === null) keeps the reviewed
+      // choice visible as re-checking and blocks submission until the fresh list
+      // confirms it, so a refusal keeps the operator's review for a retry.
+      const modelUnconfirmed = current.model !== null && current.models === null;
+      const modelLabel = node('label', 'Model ', form); const modelSelect = node('select', undefined, modelLabel);
+      const defaultOption = node('option', "Use this machine's default", modelSelect); defaultOption.value = '';
+      for(const choice of modelModels) { const option = node('option', choice.name+' — '+choice.provider+'/'+choice.id, modelSelect); option.value = JSON.stringify({provider:choice.provider, model_id:choice.id}); }
+      if(current.model) {
+        const match = modelModels.find(choice => choice.provider === current.model.provider && choice.id === current.model.model_id);
+        if(match) modelSelect.value = JSON.stringify({provider:match.provider, model_id:match.id});
+        else if(modelUnconfirmed) { const option = node('option', current.model.provider+'/'+current.model.model_id+' (re-checking)', modelSelect); option.value = JSON.stringify({provider:current.model.provider, model_id:current.model.model_id}); modelSelect.value = option.value; }
+        else { current.model = null; current.review = null; }
+      }
+      if(current.modelsFailed || (current.models !== null && modelModels.length === 0)) modelSelect.disabled = true;
+      const modelHint = current.models && current.models.length
+        ? 'Model list from this agent ('+ageLabel(Date.now() - current.modelsAt)+'); a snapshot, re-checked on each reload.'
+        : current.modelStatus;
+      if(modelHint) node('p', modelHint, form).className = 'dim hint';
+      loadSpawnModels(agent, current);
       project.disabled = prompt.disabled = cwd.disabled = current.pending;
+      if(current.pending || modelUnconfirmed) modelSelect.disabled = true;
       const reviewButton = node('button', 'Review start', form); reviewButton.type = 'button'; reviewButton.hidden = !!current.review;
-      reviewButton.disabled = current.pending || !project.value.trim() || !prompt.value.trim();
+      reviewButton.disabled = current.pending || modelUnconfirmed || !project.value.trim() || !prompt.value.trim();
       const review = node('div', undefined, form); review.className = 'start-review notice'; review.hidden = !current.review;
       const reviewText = node('p', '', review);
-      const submit = node('button', 'Start', review); submit.type = 'submit'; submit.disabled = current.pending;
+      const submit = node('button', 'Start', review); submit.type = 'submit'; submit.disabled = current.pending || modelUnconfirmed;
       const cancel = node('button', 'Cancel', review); cancel.type = 'button'; cancel.disabled = current.pending;
       function showReview() {
         review.hidden = !current.review;
         reviewButton.hidden = !!current.review;
-        reviewText.textContent = current.review ? 'Start one session on '+agent.name+' for '+current.review.project+(current.review.cwd ? ' in '+current.review.cwd : '')+'?' : '';
+        reviewText.textContent = current.review ? 'Start one session on '+agent.name+' for '+current.review.project+(current.review.cwd ? ' in '+current.review.cwd : '')+(current.review.model ? ' using '+current.review.model.provider+'/'+current.review.model.model_id : '')+'?' : '';
       }
       showReview();
+      modelSelect.addEventListener('change', () => {
+        try { const parsed = JSON.parse(modelSelect.value); current.model = {provider:parsed.provider, model_id:parsed.model_id}; }
+        catch { current.model = null; }
+        current.review = null;
+        showReview();
+        reviewButton.disabled = current.pending || modelUnconfirmed || !project.value.trim() || !prompt.value.trim();
+      });
       for(const [input, key] of [[project, 'project'], [prompt, 'prompt'], [cwd, 'cwd']]) input.addEventListener('input', () => {
         current[key] = input.value;
         current.review = null;
         showReview();
-        reviewButton.disabled = current.pending || !project.value.trim() || !prompt.value.trim();
+        reviewButton.disabled = current.pending || modelUnconfirmed || !project.value.trim() || !prompt.value.trim();
       });
       reviewButton.addEventListener('click', () => {
-        if(current.pending || !project.value.trim() || !prompt.value.trim()) return;
-        current.review = {project:project.value, prompt:prompt.value, cwd:cwd.value};
+        if(current.pending || modelUnconfirmed || !current.project.trim() || !current.prompt.trim()) return;
+        // Built from state, not the DOM: an async catalog reload can rebuild the
+        // inputs underneath the click, and the reviewed values must be the ones
+        // the operator entered.
+        current.review = {project:current.project, prompt:current.prompt, cwd:current.cwd, model:current.model};
         showReview(); submit.focus();
       });
       cancel.addEventListener('click', () => { current.review = null; showReview(); reviewButton.focus(); });
@@ -1022,13 +1120,17 @@
       form.addEventListener('submit', async event => {
         event.preventDefault();
         const approved = current.review;
-        if(current.pending || !approved || approved.project !== project.value || approved.prompt !== prompt.value || approved.cwd !== cwd.value) return;
+        // A chosen model must not be submitted against a catalog that a reload
+        // has invalidated: the previous form can still be on screen while
+        // /api/state is in flight, so the live state is checked here, not the
+        // captured render.
+        if(current.pending || !approved || (approved.model && current.models === null) || approved.project !== current.project || approved.prompt !== current.prompt || approved.cwd !== current.cwd || JSON.stringify(approved.model ?? null) !== JSON.stringify(current.model ?? null)) return;
         current.pending = true;
         current.outcome = {kind:'pending', text:'Starting session…'};
-        submit.disabled = cancel.disabled = project.disabled = prompt.disabled = cwd.disabled = true;
+        submit.disabled = cancel.disabled = project.disabled = prompt.disabled = cwd.disabled = modelSelect.disabled = true;
         pendingStatus.textContent = 'Starting session…';
         try {
-          const response = await api('/api/agents/'+encodeURIComponent(agent.peer_id)+'/spawn', 'POST', {project:approved.project, prompt:approved.prompt, ...(approved.cwd ? {cwd:approved.cwd} : {})});
+          const response = await api('/api/agents/'+encodeURIComponent(agent.peer_id)+'/spawn', 'POST', {project:approved.project, prompt:approved.prompt, ...(approved.cwd ? {cwd:approved.cwd} : {}), ...(approved.model ? {model:{provider:approved.model.provider, model_id:approved.model.model_id}} : {})});
           if(response.ok === false) current.outcome = {kind:'refusal', text:'Agent refusal ('+String(response.code)+'): '+String(response.message ?? '')};
           else { current.outcome = {kind:'success', ...response.result}; current.review = null; }
         } catch(error) {
@@ -1084,7 +1186,7 @@
       if(selected === current) renderTranscript(data, current);
     } catch {} finally { refreshPending = false; }
   }
-  async function load(){ state=await api('/api/state'); render(); }
+  async function load(){ invalidateSpawnModels(); state=await api('/api/state'); render(); }
   async function sync(){ await api('/api/sync','POST'); await load(); }
   document.querySelector('#search').addEventListener('input', renderSessions);
   document.querySelector('#sync').addEventListener('click', async()=>{ try { await sync(); document.querySelector('#status').textContent=''; document.querySelector('#status').removeAttribute('data-error'); } catch(e){ const status=document.querySelector('#status'); status.textContent=e.message; status.dataset.error='true'; } });

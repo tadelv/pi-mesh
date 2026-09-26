@@ -134,6 +134,19 @@ export function createPiSpawner(options: PiSpawnerOptions): JobSpawner {
       name: spec.name,
       cwd,
       env: environment,
+      // ADR 0017: the caller named an exact (provider, model id) the agent has
+      // already compared for equality against its own Pi catalog; the flags are
+      // still built here, on the server, never taken from the caller.
+      ...(spec.model === undefined
+        ? {}
+        : {
+            binaryArgs: [
+              "--provider",
+              spec.model.provider,
+              "--model",
+              spec.model.modelId,
+            ],
+          }),
       ...(options.logger === undefined ? {} : { logger: options.logger }),
     });
     rpc.on("exit", report.exited);

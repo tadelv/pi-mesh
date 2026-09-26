@@ -1511,7 +1511,13 @@
           current.outcome = {kind:'transport', text:error.status === 403 ? 'Control-plane transport refusal: confidential_transport_required.' : error.status === 502 ? 'Agent call failed (502): '+error.message : error.message || 'Agent call failed.'};
         } finally {
           current.pending = false;
-          try { await load(); } catch { render(); }
+          try {
+            // A spawn changes the agent's job table, so the cached listing is
+            // no longer confirmed (ADR 0015). Sync so the new job is the
+            // agent's own and the live view may attach, instead of stranding it
+            // behind an unconfirmed listing.
+            if(current.outcome?.kind === 'success') await sync(); else await load();
+          } catch { render(); }
         }
       });
       if(current.outcome?.kind === 'success') {

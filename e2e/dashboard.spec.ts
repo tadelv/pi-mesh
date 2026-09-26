@@ -2707,6 +2707,7 @@ test("dashboard start suggests agent projects, confirms inline, and guards dupli
   let mode: "success" | "refusal" | "failure" | "transport" | "delayed" =
     "success";
   let spawned = false;
+  let syncPosts = 0;
   let modelsFail = false;
   let releaseDelayed!: () => void;
   const delayed = new Promise<void>((resolve) => {
@@ -2829,6 +2830,7 @@ test("dashboard start suggests agent projects, confirms inline, and guards dupli
         authenticated &&
         request.postData() === null
       ) {
+        syncPosts += 1;
         await route.fulfill({
           contentType: "application/json",
           body: JSON.stringify({ results: [] }),
@@ -3081,6 +3083,12 @@ test("dashboard start suggests agent projects, confirms inline, and guards dupli
       prompt: "first prompt",
       model: { provider: "test-provider", model_id: "test-model" },
     });
+    await expect
+      .poll(() => syncPosts, {
+        message:
+          "a successful start syncs, so the new job's live view is not stranded behind an unconfirmed listing",
+      })
+      .toBeGreaterThanOrEqual(1);
     // A reload drops the snapshot and re-fetches: with the catalog now
     // unavailable, the selector must degrade to the machine default with the
     // reason, not keep offering the list it loaded before (ADR 0017).

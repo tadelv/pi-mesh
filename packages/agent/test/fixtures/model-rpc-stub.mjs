@@ -7,6 +7,12 @@ const mode = globalThis.process.env.MODEL_STUB_MODE ?? "catalog";
 const models = [
   { id: "exact-model-v1", provider: "fixture-provider", name: "Fixture Exact" },
 ];
+// What a running Pi reports for get_commands. A stub that answered `[]` would
+// let a fetch removed entirely still pass, so the fixture returns a real list.
+const commands = [
+  { name: "fix-tests", description: "Fix failing tests", source: "prompt" },
+  { name: "skill:deploy", description: "Deploy the service", source: "skill" },
+];
 // Lets a test observe that the child really terminated (teardown, shutdown).
 if (globalThis.process.env.MODEL_STUB_PID) {
   writeFileSync(
@@ -37,6 +43,10 @@ function handle(line) {
       return;
     }
     respond(command, { models: mode === "empty" ? [] : models });
+    return;
+  }
+  if (command.type === "get_commands") {
+    respond(command, { commands });
     return;
   }
   if (command.type === "set_model") {

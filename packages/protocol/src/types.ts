@@ -10,6 +10,7 @@ export type Skill =
   | "session.resume"
   | "session.models"
   | "session.set_model"
+  | "session.commands"
   | "session.abort"
   | "process.spawn"
   | "process.list"

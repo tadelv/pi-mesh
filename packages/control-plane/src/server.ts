@@ -146,12 +146,25 @@ export function createControlServer(
         });
         return;
       }
-      const modelsMatch = /^\/api\/agents\/([^/]+)\/models$/.exec(url.pathname);
-      if (request.method === "GET" && modelsMatch !== null) {
+      const readMatch = /^\/api\/agents\/([^/]+)\/(models|commands)$/.exec(
+        url.pathname,
+      );
+      if (request.method === "GET" && readMatch !== null) {
         let peerId: string;
         try {
-          peerId = decodeURIComponent(modelsMatch[1]!);
+          peerId = decodeURIComponent(readMatch[1]!);
         } catch {
+          json(response, 400, { error: "invalid_input" });
+          return;
+        }
+        const kind = readMatch[2] === "commands" ? "commands" : "models";
+        const skill =
+          kind === "commands" ? "session.commands" : "session.models";
+        // Commands belong to one Pi process, so the caller must name it (ADR
+        // 0017/0016). The agent enforces the same rule; a missing parameter is
+        // refused here rather than spent as a round trip.
+        const jobId = url.searchParams.get("job_id");
+        if (kind === "commands" && (jobId === null || jobId === "")) {
           json(response, 400, { error: "invalid_input" });
           return;
         }
@@ -161,27 +174,26 @@ export function createControlServer(
           return;
         }
         try {
-          const result = await callAgent<{ models: unknown[] }>(
+          const result = await callAgent<Record<string, unknown>>(
             {
               peerId: agent.peer_id,
               host: agent.host,
               port: agent.port,
               credential: agent.credential,
             },
-            "session.models",
-            url.searchParams.has("job_id")
-              ? { job_id: url.searchParams.get("job_id") }
-              : {},
+            skill,
+            jobId === null ? {} : { job_id: jobId },
             {
               controlId: store.controlId(),
               ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
             },
           );
-          if (!Array.isArray(result?.models))
+          const list = result?.[kind];
+          if (!Array.isArray(list))
             throw new AgentUnreachableError(
-              "Agent returned a malformed session.models result",
+              `Agent returned a malformed ${skill} result`,
             );
-          json(response, 200, { models: result.models });
+          json(response, 200, { [kind]: list });
         } catch (error) {
           if (error instanceof AgentSkillError) {
             json(response, 200, {

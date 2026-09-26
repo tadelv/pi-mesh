@@ -11,6 +11,9 @@ const models = [
   { id: "model-a", provider: "provider-a", name: "Model A" },
   { id: "model-b", provider: "provider-b", name: "Model B", reasoning: true },
 ];
+const commands = [
+  { name: "fix-tests", description: "Fix failing tests", source: "prompt" },
+];
 const resources: Array<{ stop(): Promise<void>; close(): void }> = [];
 
 afterEach(async () => {
@@ -156,6 +159,11 @@ it("advertises model controls only for their exact agent skills", () => {
     resume: false,
     models: true,
     setModel: true,
+    commands: false,
+  });
+  expect(agentControls(["session.commands"])).toMatchObject({
+    commands: true,
+    models: false,
   });
   expect(agentControls([])).toMatchObject({ models: false, setModel: false });
   expect(agentControls(null)).toMatchObject({ models: false, setModel: false });
@@ -192,6 +200,49 @@ it("models without a job sends an empty input", async () => {
   });
   const result = await fixture.get(`/api/agents/${agentId}/models`);
   expect(result).toMatchObject({ status: 200, body: { models } });
+});
+
+it("commands read forwards the required job_id and returns the exact list", async () => {
+  const fixture = await setup({
+    response: (skill, input) => {
+      expect(skill, "commands route calls session.commands").toBe(
+        "session.commands",
+      );
+      expect(input, "commands route forwards job_id").toEqual({
+        job_id: "job-7",
+      });
+      return { commands };
+    },
+  });
+  const result = await fixture.get(
+    `/api/agents/${agentId}/commands?job_id=job-7`,
+  );
+  expect(
+    fixture.requests,
+    "commands dispatch preserves skill and job_id",
+  ).toEqual([{ skill: "session.commands", input: { job_id: "job-7" } }]);
+  expect(result.status).toBe(200);
+  expect(result.body).toEqual({ commands });
+});
+
+it("commands read refuses a missing job_id without contacting the agent", async () => {
+  const fixture = await setup({ response: () => ({ commands }) });
+  const result = await fixture.get(`/api/agents/${agentId}/commands`);
+  expect(result.status).toBe(400);
+  expect(fixture.requests, "no agent call for a missing job_id").toEqual([]);
+});
+
+it("commands read surfaces the agent refusal", async () => {
+  const fixture = await setup({
+    response: () => ({
+      rpcError: { code: -32107, message: "Job is not running: job-7" },
+    }),
+  });
+  const result = await fixture.get(
+    `/api/agents/${agentId}/commands?job_id=job-7`,
+  );
+  expect(result.status).toBe(200);
+  expect(result.body).toMatchObject({ ok: false, code: -32107 });
 });
 
 it("setmodel forwards the exact request body and returns the agent result", async () => {

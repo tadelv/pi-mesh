@@ -35,6 +35,10 @@ const MODEL = {
   provider: "fixture-provider",
   name: "Fixture Exact",
 };
+const COMMANDS = [
+  { name: "fix-tests", description: "Fix failing tests", source: "prompt" },
+  { name: "skill:deploy", description: "Deploy the service", source: "skill" },
+];
 
 async function setup(mode = "catalog", timeoutMs = 1_000, ttlMs = 30_000) {
   const parent = await realpath(
@@ -293,6 +297,32 @@ describe("model skills", () => {
     }
   });
 
+  it("returns the exact command list for a running job, and refuses unnamed, unknown, or stopping jobs", async () => {
+    const env = await startJob();
+    try {
+      await expect(
+        env.skills.invoke("session.commands", { job_id: env.job.id }),
+      ).resolves.toEqual({ commands: COMMANDS });
+      // Required job_id: commands belong to a specific Pi process, so there is
+      // no implicit selection (ADR 0017).
+      await expect(
+        env.skills.invoke("session.commands", {}),
+      ).rejects.toMatchObject({ code: -32602 });
+      await expect(
+        env.skills.invoke("session.commands", { job_id: "   " }),
+      ).rejects.toMatchObject({ code: -32602 });
+      await expect(
+        env.skills.invoke("session.commands", { job_id: "missing" }),
+      ).rejects.toMatchObject({ code: ErrorCode.UnknownJob });
+      env.job.state = "stopping";
+      await expect(
+        env.skills.invoke("session.commands", { job_id: env.job.id }),
+      ).rejects.toMatchObject({ code: ErrorCode.JobNotRunning });
+    } finally {
+      await env.close();
+    }
+  });
+
   it("refuses unlisted and fuzzy-prefix models without dispatch, while listed pair dispatches exact wire shape", async () => {
     const env = await startJob();
     try {
@@ -338,9 +368,16 @@ describe("model skills", () => {
     expect(servedSkills(true, false)).not.toContain("session.set_model");
     expect(servedSkills(true, false)).toContain("session.models");
     expect(servedSkills(true, true)).toContain("session.set_model");
+    // session.commands is a job-scoped read: advertised only with a job manager,
+    // never gated, so a gate-closed agent still offers its command list.
+    expect(servedSkills(true, false)).toContain("session.commands");
+    expect(servedSkills(false, false)).not.toContain("session.commands");
     expect(() =>
       assertExecutionAllowed(parseSpawnPolicy(), "peer", "session.set_model"),
     ).toThrowError(expect.objectContaining({ code: -32102 }));
+    expect(() =>
+      assertExecutionAllowed(parseSpawnPolicy(), "peer", "session.commands"),
+    ).not.toThrow();
     expect(() =>
       assertExecutionAllowed(parseSpawnPolicy(), "peer", "session.models"),
     ).not.toThrow();

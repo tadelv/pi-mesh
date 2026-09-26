@@ -47,6 +47,7 @@ Each skill also declares its **exposure**:
 | `session.stream` | peer | `{ id }` | SSE stream of `Event` |
 | `session.models` | peer (ungated; read) | `{ job_id? }` | `{ models: Model[] }` |
 | `session.set_model` | **gated on the spawn policy** | `{ job_id, provider, model_id }` | Pi `set_model` model data |
+| `session.commands` | peer (ungated; read, job manager required) | `{ job_id }` | `{ commands: [{ name, description?, source, sourceInfo? }] }` from `get_commands` |
 | `process.list` | peer (ungated; job manager required) | `{}` | `{ jobs: [{ job_id, session_id (nullable), pid (nullable), project, cwd, state, started_at, exit? }] }` |
 | `session.steer` | **gated on the spawn policy** | `{ job_id (mesh id, not PID), message (≤4096 UTF-8 bytes) }` | Pi RPC response; refused with `-32102` when closed |
 | `session.resume` | **gated on the spawn policy** | `{ session_id, acknowledge_concurrent_writers: true }` | `{ job_id, pid, session_id }`; refused with `-32102` when closed |
@@ -73,6 +74,20 @@ exception: `process.spawn`'s optional `model: { provider, model_id }` and
 `session.set_model` name an exact provider and model id from the agent's fresh
 Pi catalog; the agent compares both fields for equality before placing any argv
 or forwarding, so remote callers cannot use Pi's fuzzy matching.
+- `session.commands` names a running job (required `job_id`: a `stopping` or
+`exited` job is `-32107`, an unknown one `-32103`) and wraps Pi's `get_commands`.
+It is an **advisory read** - the names are what that Pi process reports, not a
+promise that a name will act. The dashboard offers them as completion and still
+sends the box's text unchanged through `session.steer`. Built-in TUI commands
+are absent from `get_commands` by Pi's design:
+
+  | Entered as | Reaches Pi as | Supported |
+  |---|---|---|
+  | plain prose | a user turn | yes |
+  | `/skill:<name>` (an enabled skill) | expanded by Pi before the turn | yes |
+  | `/<template>` prompt template | expanded by Pi | yes |
+  | an extension command | executed immediately, even while streaming | yes |
+  | `/model`, `/settings`, `/compact`, `/hotkeys` and other TUI built-ins | nothing - Pi rejects them outside interactive mode | **no** |
 - `process.spawn`'s `cwd`, when given, must resolve inside the workspace root
   (which defaults to the user's home directory), because the realpath check is
   an accident guard and project selector. It is not a sandbox: the spawned

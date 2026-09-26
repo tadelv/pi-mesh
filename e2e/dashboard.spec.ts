@@ -1172,6 +1172,661 @@ test("prompt availability follows transcript and live-job evidence", async ({
   }
 });
 
+test("prompt command hints come from the running job's Pi and never promise execution", async ({
+  browser,
+}) => {
+  const store = new ControlStore(":memory:");
+  store.controlName("Command Hints Control");
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const page = await browser.newPage();
+  const token = store.dashboardToken();
+  const timestamp = new Date(0).toISOString();
+  const steers: Array<Record<string, unknown>> = [];
+  try {
+    const { port } = await control.start();
+    const baseURL = `http://127.0.0.1:${port}`;
+    await page.addInitScript(
+      (t) => localStorage.setItem("pi_mesh_token", t),
+      token,
+    );
+    await page.route("**/api/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const ok = request.headers()["x-pi-mesh-ui"] === token;
+      if (url.pathname === "/api/state" && request.method() === "GET" && ok) {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            control: { id: "control-hints", name: "Command Hints Control" },
+            agents: [
+              {
+                peer_id: "peer-a",
+                name: "Agent A",
+                host: "127.0.0.1",
+                port: 7330,
+                paired_at: timestamp,
+                skills: ["session.steer", "session.commands"],
+                controls: {
+                  spawn: false,
+                  steer: true,
+                  stop: false,
+                  abort: false,
+                  commands: true,
+                },
+                jobs_synced_at: 1,
+              },
+            ],
+            sessions: [
+              {
+                agent_id: "peer-a",
+                session_id: "session-a",
+                project: "/work/a",
+                name: "Session A",
+                started_at: timestamp,
+                updated_at: timestamp,
+                synced_at: timestamp,
+              },
+            ],
+            jobs: [
+              {
+                agent_id: "peer-a",
+                job_id: "job-a",
+                session_id: "session-a",
+                pid: 11,
+                project: "/work/a",
+                created_at: timestamp,
+                state: "running",
+              },
+            ],
+            execution_transport: "confidential",
+          }),
+        });
+        return;
+      }
+      if (
+        url.pathname === "/api/sessions/peer-a/session-a" &&
+        request.method() === "GET" &&
+        url.search === "" &&
+        ok
+      ) {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            events: [
+              {
+                entry_id: "e1",
+                timestamp,
+                data: JSON.stringify({
+                  type: "message",
+                  message: {
+                    role: "user",
+                    content: [{ type: "text", text: "hello" }],
+                  },
+                }),
+              },
+            ],
+            hasEarlier: false,
+            total: 1,
+            all: false,
+            stale: false,
+          }),
+        });
+        return;
+      }
+      if (
+        url.pathname === "/api/agents/peer-a/commands" &&
+        request.method() === "GET" &&
+        ok
+      ) {
+        expect(
+          url.searchParams.get("job_id"),
+          "the commands read names the running job",
+        ).toBe("job-a");
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            commands: [
+              {
+                name: "fix-tests",
+                description: "Fix failing tests",
+                source: "prompt",
+              },
+              {
+                name: "skill:deploy",
+                description: "Deploy the service",
+                source: "skill",
+              },
+            ],
+          }),
+        });
+        return;
+      }
+      if (
+        url.pathname === "/api/agents/peer-a/steer" &&
+        request.method() === "POST" &&
+        ok
+      ) {
+        steers.push(request.postDataJSON() as Record<string, unknown>);
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true }),
+        });
+        return;
+      }
+      await route.fulfill({ status: 400, body: "unexpected request" });
+    });
+    await page.goto(baseURL);
+    await expect(
+      page.getByRole("heading", { name: "Command Hints Control" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: /Session A/ }).click();
+    await expect(
+      page.getByRole("heading", { name: "Prompt this session" }),
+    ).toBeVisible();
+    const card = page.locator("#transcript-panel");
+    await expect(
+      card,
+      "the reported names are listed WITH their descriptions",
+    ).toContainText("/fix-tests");
+    await expect(card).toContainText("Fix failing tests");
+    await expect(card).toContainText("/skill:deploy");
+    await expect(card).toContainText("Deploy the service");
+    const composer = page.getByRole("textbox", { name: "Message to session" });
+    // Functional completion: a textarea does not honor `list`, so choosing a
+    // reported command must insert it into the draft.
+    await composer.fill("");
+    await page.getByLabel("Insert a command").selectOption("/skill:deploy");
+    await expect(
+      composer,
+      "a chosen command is inserted into the draft",
+    ).toHaveValue(/\/skill:deploy/);
+    await composer.fill("/skill:deploy now");
+    await expect(card).toContainText(
+      "Deploy the service (advisory; sent to Pi as text)",
+    );
+    await composer.fill("/model sonnet");
+    await expect(card).toContainText("TUI-only built-in");
+    await composer.fill("/nope");
+    await expect(card).toContainText("not in this Pi's reported commands");
+    // An unknown name is neither blocked nor rewritten: it is sent verbatim.
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect.poll(() => steers.length).toBe(1);
+    expect(
+      steers[0],
+      "an unknown command name is sent verbatim through session.steer, not blocked",
+    ).toEqual({ job_id: "job-a", message: "/nope" });
+  } finally {
+    await page.close();
+    await control.stop();
+    store.close();
+  }
+});
+
+test("a TUI-only command is explained even when the agent does not advertise session.commands", async ({
+  browser,
+}) => {
+  const store = new ControlStore(":memory:");
+  store.controlName("No Command Hints Control");
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const page = await browser.newPage();
+  const token = store.dashboardToken();
+  const timestamp = new Date(0).toISOString();
+  let commandRequests = 0;
+  try {
+    const { port } = await control.start();
+    const baseURL = `http://127.0.0.1:${port}`;
+    await page.addInitScript(
+      (t) => localStorage.setItem("pi_mesh_token", t),
+      token,
+    );
+    await page.route("**/api/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const ok = request.headers()["x-pi-mesh-ui"] === token;
+      if (url.pathname.endsWith("/commands")) commandRequests += 1;
+      if (url.pathname === "/api/state" && request.method() === "GET" && ok) {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            control: { id: "control-nocmd", name: "No Command Hints Control" },
+            agents: [
+              {
+                peer_id: "peer-a",
+                name: "Agent A",
+                host: "127.0.0.1",
+                port: 7330,
+                paired_at: timestamp,
+                skills: ["session.steer"],
+                controls: {
+                  spawn: false,
+                  steer: true,
+                  stop: false,
+                  abort: false,
+                  commands: false,
+                },
+                jobs_synced_at: 1,
+              },
+            ],
+            sessions: [
+              {
+                agent_id: "peer-a",
+                session_id: "session-a",
+                project: "/work/a",
+                name: "Session A",
+                started_at: timestamp,
+                updated_at: timestamp,
+                synced_at: timestamp,
+              },
+            ],
+            jobs: [
+              {
+                agent_id: "peer-a",
+                job_id: "job-a",
+                session_id: "session-a",
+                pid: 11,
+                project: "/work/a",
+                created_at: timestamp,
+                state: "running",
+              },
+            ],
+            execution_transport: "confidential",
+          }),
+        });
+        return;
+      }
+      if (
+        url.pathname === "/api/sessions/peer-a/session-a" &&
+        request.method() === "GET" &&
+        url.search === "" &&
+        ok
+      ) {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            events: [
+              {
+                entry_id: "e1",
+                timestamp,
+                data: JSON.stringify({
+                  type: "message",
+                  message: {
+                    role: "user",
+                    content: [{ type: "text", text: "hello" }],
+                  },
+                }),
+              },
+            ],
+            hasEarlier: false,
+            total: 1,
+            all: false,
+            stale: false,
+          }),
+        });
+        return;
+      }
+      // No /commands route: this agent does not advertise the skill, so the card
+      // must not ask for it. A request here would 400 and fail the test.
+      await route.fulfill({ status: 400, body: "unexpected request" });
+    });
+    await page.goto(baseURL);
+    await page.getByRole("button", { name: /Session A/ }).click();
+    await expect(
+      page.getByRole("heading", { name: "Prompt this session" }),
+    ).toBeVisible();
+    const card = page.locator("#transcript-panel");
+    const composer = page.getByRole("textbox", { name: "Message to session" });
+    await composer.fill("/model sonnet");
+    await expect(
+      card,
+      "a TUI-only built-in is explained even without command hints",
+    ).toContainText("TUI-only built-in");
+    await composer.fill("/nope");
+    await expect(card).toContainText("command hints are unavailable");
+    expect(
+      commandRequests,
+      "an agent that does not advertise session.commands must never be asked for its commands",
+    ).toBe(0);
+  } finally {
+    await page.close();
+    await control.stop();
+    store.close();
+  }
+});
+
+test("command hints follow the selected job when several claim the session", async ({
+  browser,
+}) => {
+  const store = new ControlStore(":memory:");
+  store.controlName("Multi-job Command Control");
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const page = await browser.newPage();
+  const token = store.dashboardToken();
+  const timestamp = new Date(0).toISOString();
+  let releaseAlpha!: () => void;
+  const alphaHeld = new Promise<void>((resolve) => {
+    releaseAlpha = resolve;
+  });
+  try {
+    const { port } = await control.start();
+    const baseURL = `http://127.0.0.1:${port}`;
+    await page.addInitScript(
+      (t) => localStorage.setItem("pi_mesh_token", t),
+      token,
+    );
+    await page.route("**/api/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const ok = request.headers()["x-pi-mesh-ui"] === token;
+      if (url.pathname === "/api/state" && request.method() === "GET" && ok) {
+        const job = (job_id: string) => ({
+          agent_id: "peer-a",
+          job_id,
+          session_id: "session-a",
+          pid: 11,
+          project: "/work/a",
+          created_at: timestamp,
+          state: "running",
+        });
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            control: { id: "control-multi", name: "Multi-job Command Control" },
+            agents: [
+              {
+                peer_id: "peer-a",
+                name: "Agent A",
+                host: "127.0.0.1",
+                port: 7330,
+                paired_at: timestamp,
+                skills: ["session.steer", "session.commands"],
+                controls: {
+                  spawn: false,
+                  steer: true,
+                  stop: false,
+                  abort: false,
+                  commands: true,
+                },
+                jobs_synced_at: 1,
+              },
+            ],
+            sessions: [
+              {
+                agent_id: "peer-a",
+                session_id: "session-a",
+                project: "/work/a",
+                name: "Session A",
+                started_at: timestamp,
+                updated_at: timestamp,
+                synced_at: timestamp,
+              },
+            ],
+            jobs: [job("job-a"), job("job-b")],
+            execution_transport: "confidential",
+          }),
+        });
+        return;
+      }
+      if (
+        url.pathname === "/api/sessions/peer-a/session-a" &&
+        request.method() === "GET" &&
+        url.search === "" &&
+        ok
+      ) {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            events: [
+              {
+                entry_id: "e1",
+                timestamp,
+                data: JSON.stringify({
+                  type: "message",
+                  message: {
+                    role: "user",
+                    content: [{ type: "text", text: "hello" }],
+                  },
+                }),
+              },
+            ],
+            hasEarlier: false,
+            total: 1,
+            all: false,
+            stale: false,
+          }),
+        });
+        return;
+      }
+      if (
+        url.pathname === "/api/agents/peer-a/commands" &&
+        request.method() === "GET" &&
+        ok
+      ) {
+        const commandJob = url.searchParams.get("job_id");
+        if (commandJob === "job-a") {
+          await alphaHeld;
+          await route.fulfill({
+            contentType: "application/json",
+            headers: { "x-fixture": "alpha" },
+            body: JSON.stringify({
+              commands: [{ name: "alpha-cmd", description: "Alpha" }],
+            }),
+          });
+          return;
+        }
+        if (commandJob !== "job-b") {
+          await route.fulfill({ status: 400, body: "unexpected job_id" });
+          return;
+        }
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            commands: [{ name: "beta-cmd", description: "Beta" }],
+          }),
+        });
+        return;
+      }
+      await route.fulfill({ status: 400, body: "unexpected request" });
+    });
+    await page.goto(baseURL);
+    await page.getByRole("button", { name: /Session A/ }).click();
+    await expect(
+      page.getByRole("heading", { name: "Prompt this session" }),
+    ).toBeVisible();
+    const card = page.locator("#transcript-panel");
+    const choose = page.getByLabel("Choose a job");
+    // Select job-a (its response is held), then job-b: the list must follow the
+    // job the operator actually chose, and job-a's later response must not
+    // overwrite it.
+    await choose.selectOption("job-a");
+    const alphaReceived = page.waitForResponse(
+      (response) => response.headers()["x-fixture"] === "alpha",
+    );
+    await choose.selectOption("job-b");
+    await expect(card).toContainText("beta-cmd");
+    releaseAlpha();
+    await alphaReceived;
+    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    await expect(
+      card,
+      "an earlier job's response must not overwrite the newly selected job's hints",
+    ).not.toContainText("alpha-cmd");
+    await expect(card).toContainText("beta-cmd");
+  } finally {
+    releaseAlpha();
+    await page.close();
+    await control.stop();
+    store.close();
+  }
+});
+
+test("selecting another job clears the previous hints, and clearing the selection retires an in-flight read", async ({
+  browser,
+}) => {
+  const store = new ControlStore(":memory:");
+  store.controlName("Hint Clearing Control");
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const page = await browser.newPage();
+  const token = store.dashboardToken();
+  const timestamp = new Date(0).toISOString();
+  let releaseAlpha!: () => void;
+  const alphaHeld = new Promise<void>((resolve) => {
+    releaseAlpha = resolve;
+  });
+  try {
+    const { port } = await control.start();
+    const baseURL = `http://127.0.0.1:${port}`;
+    await page.addInitScript(
+      (t) => localStorage.setItem("pi_mesh_token", t),
+      token,
+    );
+    await page.route("**/api/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const ok = request.headers()["x-pi-mesh-ui"] === token;
+      if (url.pathname === "/api/state" && request.method() === "GET" && ok) {
+        const job = (job_id: string) => ({
+          agent_id: "peer-a",
+          job_id,
+          session_id: "session-a",
+          pid: 11,
+          project: "/work/a",
+          created_at: timestamp,
+          state: "running",
+        });
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            control: { id: "control-clear", name: "Hint Clearing Control" },
+            agents: [
+              {
+                peer_id: "peer-a",
+                name: "Agent A",
+                host: "127.0.0.1",
+                port: 7330,
+                paired_at: timestamp,
+                skills: ["session.steer", "session.commands"],
+                controls: {
+                  spawn: false,
+                  steer: true,
+                  stop: false,
+                  abort: false,
+                  commands: true,
+                },
+                jobs_synced_at: 1,
+              },
+            ],
+            sessions: [
+              {
+                agent_id: "peer-a",
+                session_id: "session-a",
+                project: "/work/a",
+                name: "Session A",
+                started_at: timestamp,
+                updated_at: timestamp,
+                synced_at: timestamp,
+              },
+            ],
+            jobs: [job("job-a"), job("job-b")],
+            execution_transport: "confidential",
+          }),
+        });
+        return;
+      }
+      if (
+        url.pathname === "/api/sessions/peer-a/session-a" &&
+        request.method() === "GET" &&
+        url.search === "" &&
+        ok
+      ) {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            events: [
+              {
+                entry_id: "e1",
+                timestamp,
+                data: JSON.stringify({
+                  type: "message",
+                  message: {
+                    role: "user",
+                    content: [{ type: "text", text: "hello" }],
+                  },
+                }),
+              },
+            ],
+            hasEarlier: false,
+            total: 1,
+            all: false,
+            stale: false,
+          }),
+        });
+        return;
+      }
+      if (
+        url.pathname === "/api/agents/peer-a/commands" &&
+        request.method() === "GET" &&
+        ok
+      ) {
+        const commandJob = url.searchParams.get("job_id");
+        if (commandJob === "job-a") {
+          await alphaHeld;
+          await route.fulfill({
+            contentType: "application/json",
+            headers: { "x-fixture": "alpha" },
+            body: JSON.stringify({
+              commands: [{ name: "alpha-cmd", description: "Alpha" }],
+            }),
+          });
+          return;
+        }
+        if (commandJob !== "job-b") {
+          await route.fulfill({ status: 400, body: "unexpected job_id" });
+          return;
+        }
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            commands: [{ name: "beta-cmd", description: "Beta" }],
+          }),
+        });
+        return;
+      }
+      await route.fulfill({ status: 400, body: "unexpected request" });
+    });
+    await page.goto(baseURL);
+    await page.getByRole("button", { name: /Session A/ }).click();
+    const card = page.locator("#transcript-panel");
+    const choose = page.getByLabel("Choose a job");
+    await choose.selectOption("job-b");
+    await expect(card).toContainText("beta-cmd");
+    // Selecting job-a (held) must clear job-b's hints immediately, not leave them
+    // offered while the new read is in flight.
+    await choose.selectOption("job-a");
+    const alphaReceived = page.waitForResponse(
+      (response) => response.headers()["x-fixture"] === "alpha",
+    );
+    await expect(
+      card,
+      "the previous job's hints are cleared while the new job loads",
+    ).not.toContainText("beta-cmd");
+    // Clearing the selection retires the in-flight read: its late response must
+    // not repopulate the list.
+    await choose.selectOption("");
+    releaseAlpha();
+    await alphaReceived;
+    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    await expect(
+      card,
+      "a read retired by clearing the selection must not repopulate the hints",
+    ).not.toContainText("alpha-cmd");
+  } finally {
+    releaseAlpha();
+    await page.close();
+    await control.stop();
+    store.close();
+  }
+});
+
 test("resume requires the inline corruption warning confirmation and syncs before prompting", async ({
   browser,
 }) => {

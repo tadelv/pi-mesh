@@ -262,6 +262,9 @@ The ADR fixes an explicit **support matrix** rather than leaving it implied:
   box, produces its effect in the session - asserted from the resulting turn, not
   from the text appearing or a `200`. A test that only checks the hint rendered is
   not sufficient, and this clause fails when expansion is left as prose.
+  The shipped tests assert the advisory/refusal behaviour and that the box sends
+  the drafted text verbatim through `session.steer`; the live turn a real command
+  produces is carried by M6-7's two-machine transcript, which spends a real turn.
 - A name that is stale, gated or unknown is still submitted as text and rendered
   as the agent's refusal if Pi refuses it - the box never blocks on a name it does
   not recognise, and never reports a command as executed.

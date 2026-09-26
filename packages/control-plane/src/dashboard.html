@@ -192,6 +192,8 @@
     .composer-dock .agent-form > span { grid-column: 1; font-size: 11px; color: var(--muted); }
     .composer-dock .agent-form > button { grid-column: 2; }
     .composer-dock .agent-section select { max-width: 100%; }
+    .composer-dock .command-list { list-style: none; margin: 4px 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 12px; color: var(--muted); }
+    .composer-dock .command-list code { color: var(--text); }
     .composer-dock .agent-section > label:has(select) { display: inline-flex; align-items: center; gap: 6px; margin: 0 8px 0 0; font-size: 11px; letter-spacing: .04em; text-transform: uppercase; color: var(--dim); }
     .composer-dock .agent-section > label:has(input[type="checkbox"]) { display: flex; align-items: flex-start; gap: 8px; margin: 10px 0; font-size: 12px; color: var(--text); }
     .composer-dock .agent-section > label:has(input[type="checkbox"]) input { margin: 3px 0 0; }
@@ -595,7 +597,7 @@
   const promptStates = new Map();
   function promptState(owner) {
     const key = owner.agentId+'\0'+owner.sessionId;
-    if(!promptStates.has(key)) promptStates.set(key, {draft:'', status:'', pending:false, jobId:'', confirmed:false, candidateIds:'', modelJobId:'', models:null, modelsLoading:false, modelsFailed:false, modelRequestOwner:null, modelStatus:'', modelNotice:'', modelPending:false, modelCandidate:null});
+    if(!promptStates.has(key)) promptStates.set(key, {draft:'', status:'', pending:false, jobId:'', confirmed:false, candidateIds:'', modelJobId:'', models:null, modelsLoading:false, modelsFailed:false, modelRequestOwner:null, modelStatus:'', modelNotice:'', modelPending:false, modelCandidate:null, commands:null, commandsJobId:'', commandsStatus:'', commandsFailed:false, commandsRequest:0});
     return promptStates.get(key);
   }
   const resumeStates = new Map();
@@ -898,6 +900,9 @@
     section.className = 'agent-section';
     const {agent, running, reasons} = promptEligibility(data, owner);
     const current = promptState(owner);
+    // Filled in once loadCommands exists below, so the multi-job selector (built
+    // above the composer) can load hints for the job the operator picks.
+    let loadCommandsFor = null;
     const head = node('header', undefined, section);
     head.className = 'card-head';
     node('h3', 'Prompt this session', head);
@@ -929,7 +934,7 @@
       confirm.type = 'checkbox';
       confirm.checked = current.confirmed && !!select.value;
       node('span', 'I chose this job intentionally', confirmLabel);
-      select.addEventListener('change', () => { current.jobId = select.value; current.confirmed = false; confirm.checked = false; send.disabled = true; });
+      select.addEventListener('change', () => { current.jobId = select.value; current.confirmed = false; confirm.checked = false; send.disabled = true; if(loadCommandsFor) void loadCommandsFor(select.value); });
       confirm.addEventListener('change', () => { current.confirmed = confirm.checked; send.disabled = !select.value || !confirm.checked || current.pending || !current.draft.trim() || new TextEncoder().encode(current.draft).length > 4096; });
       jobId = select.value;
     }
@@ -945,11 +950,115 @@
     send.disabled = current.pending || new TextEncoder().encode(current.draft).length > 4096 || !current.draft.trim() || (running.length > 1 && (!jobId || !current.confirmed));
     const status = node('p', current.status, section);
     status.className = 'notice'; status.setAttribute('role', 'status'); status.setAttribute('aria-live', 'polite');
-    textarea.addEventListener('input', () => {
-      current.draft = textarea.value;
+    // Command hints. ADVISORY ONLY (ADR 0017): the names are what this job's Pi
+    // reports from get_commands, offered as completion; the box still sends plain
+    // text through session.steer and never claims a command ran.
+    const commandNames = new Map();
+    const commandHint = node('p', '', section); commandHint.className = 'dim hint';
+    // A <textarea> does not honor the `list` attribute, so completion is an
+    // explicit insert: choose a reported command and it is inserted into the
+    // draft. The reported names and descriptions are also listed inline.
+    const commandList = node('ul', undefined, section); commandList.className = 'command-list';
+    const insertLabel = node('label', 'Insert a command ', section);
+    const insertSelect = node('select', undefined, insertLabel);
+    const insertPlaceholder = node('option', 'Choose a reported command…', insertSelect); insertPlaceholder.value = '';
+    const BUILTIN_TUI = new Set(['model','settings','hotkeys','new','compact','resume','quit','clear','help','login','logout','status','theme']);
+    const commandsAvailable = !!(agent && agent.controls && agent.controls.commands);
+    function syncDraft() {
       const size = new TextEncoder().encode(current.draft).length;
       bytes.textContent = size+' / 4096 bytes';
       send.disabled = current.pending || size > 4096 || !current.draft.trim() || (running.length > 1 && (!current.jobId || !current.confirmed));
+    }
+    function describeCommandDraft(value) {
+      const match = /^\/([^\s]+)/.exec(value);
+      if(!match) { commandHint.textContent = commandNames.size ? 'The commands above are advisory: the box sends your text to Pi unchanged.' : ''; return; }
+      const name = match[1];
+      // Checked before availability: the TUI-only explanation is true regardless
+      // of whether this agent can report its command list.
+      if(BUILTIN_TUI.has(name)) { commandHint.textContent = '/'+name+' is a TUI-only built-in: it will not run from this box. It is sent as text, where Pi may refuse it.'; return; }
+      if(!commandsAvailable) { commandHint.textContent = '/'+name+' \u2014 command hints are unavailable because this agent does not advertise session.commands. The text is still sent to Pi as-is.'; return; }
+      if(commandNames.has(name)) { commandHint.textContent = '/'+name+' \u2014 '+commandNames.get(name)+' (advisory; sent to Pi as text).'; return; }
+      commandHint.textContent = '/'+name+' is not in this Pi\'s reported commands. It is sent as text, and Pi may refuse it; the box never reports a command as executed.';
+    }
+    function paintCommands(commands) {
+      clearCommandList();
+      for(const command of commands) {
+        if(!command || typeof command.name !== 'string') continue;
+        const description = typeof command.description === 'string' && command.description ? command.description : 'no description';
+        commandNames.set(command.name, description);
+        const item = node('li', undefined, commandList);
+        node('code', '/'+command.name, item);
+        node('span', ' \u2014 '+description, item);
+        const option = node('option', command.name+' \u2014 '+description, insertSelect);
+        option.value = '/'+command.name;
+      }
+      if(commands.length === 0) node('li', 'This Pi reported no commands.', commandList).className = 'dim';
+      describeCommandDraft(current.draft);
+    }
+    // Repaint the visible list. `paintCommands` renders a real list; the empty
+    // case is used while a newly selected job's hints are loading, so the
+    // previous job's names are never offered against the new one.
+    function clearCommandList() {
+      commandNames.clear();
+      commandList.replaceChildren();
+      insertSelect.replaceChildren(insertPlaceholder); insertPlaceholder.value = '';
+    }
+    async function loadCommands(job) {
+      // Retire any in-flight read FIRST, including when no job is selected: a
+      // late response for the previous job must not repopulate the list after
+      // the operator has cleared the selection.
+      const request = (current.commandsRequest ?? 0) + 1;
+      current.commandsRequest = request;
+      if(!commandsAvailable) return;
+      if(!job) {
+        current.commandsJobId = ''; current.commands = null; current.commandsFailed = false;
+        clearCommandList();
+        commandHint.textContent = '';
+        return;
+      }
+      if(current.commandsJobId === job && current.commands !== null) { paintCommands(current.commands); return; }
+      if(current.commandsJobId === job && current.commandsFailed) { commandHint.textContent = current.commandsStatus; return; }
+      current.commandsJobId = job; current.commands = null; current.commandsFailed = false;
+      // Clear immediately: the previous job's hints must not stay selectable
+      // while this job's read is in flight (or if it fails).
+      clearCommandList();
+      commandHint.textContent = 'Loading commands for the selected job\u2026';
+      try {
+        const result = await api('/api/agents/'+encodeURIComponent(agent.peer_id)+'/commands?job_id='+encodeURIComponent(job));
+        if(current.commandsRequest !== request) return;
+        if(result.ok === false) { current.commandsFailed = true; current.commandsStatus = 'Command hints unavailable: agent refusal ('+String(result.code)+'): '+String(result.message ?? ''); }
+        else if(!Array.isArray(result.commands)) { current.commandsFailed = true; current.commandsStatus = 'Command hints unavailable: the agent returned an invalid command list.'; }
+        else { current.commands = result.commands; }
+      } catch(error) {
+        if(current.commandsRequest !== request) return;
+        current.commandsFailed = true;
+        current.commandsStatus = 'Command hints unavailable: '+(error.status === 502 ? 'the agent is unreachable.' : (error.message || 'could not load commands.'));
+      }
+      if(current.commandsFailed) commandHint.textContent = current.commandsStatus;
+      else paintCommands(current.commands);
+    }
+    loadCommandsFor = loadCommands;
+    insertSelect.addEventListener('change', () => {
+      const value = insertSelect.value;
+      if(!value) return;
+      const start = typeof textarea.selectionStart === 'number' ? textarea.selectionStart : textarea.value.length;
+      const before = textarea.value.slice(0, start);
+      const after = textarea.value.slice(start);
+      const spacer = before.length > 0 && !/\s$/.test(before) ? ' ' : '';
+      const next = before + spacer + value + ' ' + after;
+      textarea.value = next;
+      current.draft = next;
+      syncDraft();
+      describeCommandDraft(next);
+      textarea.focus();
+      insertSelect.value = '';
+    });
+    if(commandsAvailable && jobId) void loadCommands(jobId);
+    else describeCommandDraft(current.draft);
+    textarea.addEventListener('input', () => {
+      current.draft = textarea.value;
+      syncDraft();
+      describeCommandDraft(current.draft);
     });
     form.addEventListener('submit', async event => {
       event.preventDefault();
@@ -1020,6 +1129,16 @@
       // cleared so the next render issues a request for the new generation.
       current.modelsGeneration += 1;
       current.modelsLoading = false;
+    }
+  }
+  // Command hints are a per-job snapshot too: a reload drops them so the card
+  // re-reads rather than showing a list from before the reload (ADR 0017).
+  function invalidateCommandHints() {
+    for(const current of promptStates.values()) {
+      current.commands = null;
+      current.commandsJobId = '';
+      current.commandsFailed = false;
+      current.commandsStatus = '';
     }
   }
   function renderAgent(agent) {
@@ -1186,7 +1305,7 @@
       if(selected === current) renderTranscript(data, current);
     } catch {} finally { refreshPending = false; }
   }
-  async function load(){ invalidateSpawnModels(); state=await api('/api/state'); render(); }
+  async function load(){ invalidateSpawnModels(); invalidateCommandHints(); state=await api('/api/state'); render(); }
   async function sync(){ await api('/api/sync','POST'); await load(); }
   document.querySelector('#search').addEventListener('input', renderSessions);
   document.querySelector('#sync').addEventListener('click', async()=>{ try { await sync(); document.querySelector('#status').textContent=''; document.querySelector('#status').removeAttribute('data-error'); } catch(e){ const status=document.querySelector('#status'); status.textContent=e.message; status.dataset.error='true'; } });

@@ -571,7 +571,7 @@ describe("process and session control skills", () => {
     // mesh.handoff delegates to the local process.spawn, so it needs the manager
     // too - the indirection that made this wrong twice.
     expect(servedSkills(false, true)).toEqual([...ALWAYS_SERVED_SKILLS]);
-    expect(servedSkills(true, true)).toHaveLength(13);
+    expect(servedSkills(true, true)).toHaveLength(14);
     expect(servedSkills(true, true)).toContain("session.steer");
   });
 

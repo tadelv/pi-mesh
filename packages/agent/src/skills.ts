@@ -35,6 +35,7 @@ export const JOB_SKILLS: readonly Skill[] = [
   "process.list",
   "process.stop",
   "session.abort",
+  "session.commands",
 ];
 
 /**
@@ -637,6 +638,34 @@ export function createSkillRegistry(
         { cause: error },
       );
     }
+  });
+  skills.register("session.commands", async (input) => {
+    const jobId = requiredString(input, "job_id");
+    if (jobId.trim().length === 0) {
+      throw new PiMeshError(
+        -32602,
+        "session.commands job_id must be non-blank",
+      );
+    }
+    if (options.jobs === undefined) {
+      throw new PiMeshError(-32004, "session.commands requires a job manager");
+    }
+    const job = options.jobs.get(jobId);
+    if (job === undefined) {
+      throw new PiMeshError(ErrorCode.UnknownJob, `Unknown job: ${jobId}`);
+    }
+    if (job.state !== "running") {
+      throw new PiMeshError(
+        ErrorCode.JobNotRunning,
+        `Job is not running: ${jobId}`,
+      );
+    }
+    const response = await options.jobs.send(jobId, { type: "get_commands" });
+    const commands = (response.data as { commands?: unknown } | undefined)
+      ?.commands;
+    if (!Array.isArray(commands))
+      throw new Error("Pi returned an invalid command list");
+    return { commands };
   });
   skills.registerExecution("session.set_model", async (input) => {
     const jobId = requiredString(input, "job_id");

@@ -65,6 +65,7 @@ to offer. Equality is therefore enforced before any argv is built, for both
 | `session.models` | peer (ungated; read) | `{ job_id? }` | `{ models: Model[] }` |
 | `session.set_model` | **gated on the spawn policy** | `{ job_id, provider, model_id }` | Pi's `set_model` data (the model object) |
 | `session.commands` | peer (ungated; read) | `{ job_id }` | `{ commands: Command[] }` from `get_commands` |
+| `session.status` | peer (ungated; read) | `{ job_id }` | `{ model, thinkingLevel, tokens, cost, contextUsage }` from `get_state` + `get_session_stats` |
 
 `process.spawn` gains one optional field: `model?: { provider, model_id }`.
 
@@ -150,6 +151,26 @@ Pi's design, and so they cannot be run from the box; RPC equivalents
 (`compact`, `new_session`) are out of scope and are execution-shaped work for a
 future issue under ADRs 0008/0013.
 
+### 7. The status readout reports Pi's numbers and does not compute its own
+
+`session.status` takes a required `{ job_id }` - a status belongs to a Pi process,
+so ADR 0016's rule applies as it does to `session.commands` - requires that job to
+be running, and answers by forwarding two documented reads: `get_state` for the
+current `model` and `thinkingLevel`, and `get_session_stats` for `tokens`, `cost`
+and `contextUsage` (`docs/rpc-commands.md:149-180, 520-561`). It is an ungated read
+like `session.read` (ADR 0009 §5): it shows the operator what the machine already
+reports and mutates nothing.
+
+The agent does not estimate a context window, does not sum usage itself, and never
+presents a stale known value as current. Pi omits `contextUsage` when no model or
+window is known and returns `null` fields immediately after compaction; the
+dashboard renders that absence as unknown, not as 0% or a full bar. This is a
+readout, not authority: choosing the model stays with `session.set_model`
+(decision 5) and `process.spawn` (decision 3), and a status read never changes what
+is running. Because it needs a live process's own numbers, it has no pre-spawn
+helper form; the only ungated read that starts a process remains decision 4's
+`session.models`.
+
 ## Consequences
 
 - The "can I pick a model?" gap closes without a new grant, and the `PROTOCOL.md`
@@ -169,5 +190,6 @@ future issue under ADRs 0008/0013.
 
 Replace the first bullet under the skill table with a version that adds the
 `model` field and states the equality bound, keeping the existing sentences about
-`cwd` and the child environment. `session.models`, `session.set_model` and
-`session.commands` are added to the skill table with their exposures.
+`cwd` and the child environment. `session.models`, `session.set_model`,
+`session.commands` and `session.status` are added to the skill table with their
+exposures.

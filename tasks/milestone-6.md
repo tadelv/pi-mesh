@@ -49,7 +49,9 @@ these commands exist*, not *this command will act*.
 3. `session.set_model` - change the model of a running job (M6-3).
 4. A model choice in the Start form, resolved into `process.spawn` (M6-4).
 5. Command and skill hints in the prompt box, from `get_commands` (M6-5).
-6. Docs and a hardware transcript (M6-6).
+6. A read-only session status - the current model and the context window - from
+   `get_state` and `get_session_stats` (M6-6).
+7. Docs and a hardware transcript (M6-7).
 
 ## Out
 
@@ -265,7 +267,46 @@ The ADR fixes an explicit **support matrix** rather than leaving it implied:
   execution-shaped and need their own issue under the ADR 0008/0013 gate and the
   ADR 0016 refusal model.
 
-### M6-6 - docs and proof
+### M6-6 - session status: the current model and the context window
+
+A read-only `session.status` skill takes a required `{ job_id }` - a status belongs
+to a Pi process, so the caller names it (ADR 0016's rule) - requires that job to be
+running, and answers from two Pi reads: `get_state` for the current `model` and
+`thinkingLevel`, and `get_session_stats` for `tokens`, `cost` and `contextUsage`
+(`docs/rpc-commands.md:149-180, 520-561`). The dashboard renders it beside the
+composer, the way Pi's own status bar shows the model and how full the context
+window is, so an operator steering work on another machine can see which model is
+answering and how much room it has left.
+
+This is the same exposure shape as `session.commands` (M6-5): an ungated read
+(ADR 0009 §5) that passes Pi's own numbers through unmodified. It does not choose a
+model (M6-3/M6-4), does not compact, and does not compute a context estimate of its
+own. `contextUsage` is omitted by Pi until a fresh post-compaction response exists,
+and its fields are `null` in that window; the UI shows that as unknown, never as 0%
+or a full bar.
+
+Before code, ADR 0017 is extended with this read's wire shape, its ungated
+exposure, and the honesty rule for absent context numbers (decision 7 and a row in
+the wire-surface table); this issue implements that decision and does not invent
+one.
+
+**DoD:**
+
+- The status is assembled from a real `get_state` **and** `get_session_stats` on
+  the job named by the **required** `job_id`, which must be running (a
+  `stopping`/`exited` job is refused; the test fails by name when either check is
+  removed; unlike `session.models` there is no pre-spawn helper form). A fixture
+  returns an exact `{ model, contextUsage }` object and the test asserts that
+  object, so an always-null stub fails it.
+- The model reported is the one Pi reports, not the one the dashboard last
+  requested: after an out-of-band change the next status read differs, and the
+  status path sent no `set_model`.
+- `contextUsage` absent, or `tokens`/`percent` `null`, renders as unknown - a test
+  asserts the absent case produces the unknown label rather than 0% or 100%.
+- The control appears only where the agent advertises `session.status`
+  (`agentControls`), and the ADR 0013 guard test passes unchanged.
+
+### M6-7 - docs and proof
 
 - `README.md`: the model and command bullets, in their own honest words.
 - `SECURITY.md`: choosing a model spends the operator's money on a provider the
@@ -273,6 +314,8 @@ The ADR fixes an explicit **support matrix** rather than leaving it implied:
   execution opt-in; the command hint list reveals resource *names* only.
 - `PRODUCT.md` / `DESIGN.md`: the new controls and the honesty rule they obey.
 - `docs/PROTOCOL.md`: the new skills and the amended `process.spawn` shape.
+- `README.md`/`docs/PROTOCOL.md`: the status readout skill, and what an ungated
+  peer read of the operator's model, cost and context numbers reveals.
 - `docs/two-machine-proof.md`: a transcript of choosing a model before a spawn,
   changing the model of a running session, and a prompt with a skill command,
   including at least one refusal.
@@ -333,6 +376,8 @@ does not touch.
   choice rather than the request.
 - The prompt box offers the commands Pi reports, labels them advisory, and never
   presents a refusal as a success.
+- The status readout shows the model and context Pi reports, or states that they
+  are unknown; it never invents a context window and never mutates the session.
 - No new process machinery exists in the control plane; the ADR 0013 guard test
   passes unchanged.
 - Every absent capability states its reason, and an unconfirmed list is never

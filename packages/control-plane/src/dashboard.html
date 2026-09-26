@@ -741,7 +741,7 @@
     current.model = null;
     current.review = null;
   }
-  function loadSpawnModels(agent, current) {
+  function loadSpawnModels(agent, current, apply) {
     // The pre-spawn catalog: no job_id, so the agent answers from its bounded
     // helper, not a running process. Re-fetched whenever state reloads and
     // stamped so the form can show its age: the list is a snapshot, never
@@ -776,7 +776,10 @@
       .finally(() => {
         if(generation !== current.modelsGeneration) return;
         current.modelsLoading = false;
-        render();
+        // Paint the control in place; a full render() here would rebuild the form
+        // inputs while the operator is typing into them (or a test is filling
+        // them), dropping what was entered.
+        apply();
       });
   }
   function renderModelAvailability(data, owner, current) {
@@ -1230,35 +1233,44 @@
       else node('p', 'No cached projects for this agent yet. Enter a project name.', form).className = 'dim';
       const promptLabel = node('label', 'Prompt ', form); const prompt = node('textarea', undefined, promptLabel); prompt.required = true; prompt.value = current.prompt;
       const cwdLabel = node('label', 'Working directory (optional) ', form); const cwd = node('input', undefined, cwdLabel); cwd.value = current.cwd;
-      const modelModels = Array.isArray(current.models) ? current.models.filter(usableModel) : [];
-      // A choice is cleared only when a CONFIRMED list no longer contains it. A
-      // reload that has not yet re-fetched (models === null) keeps the reviewed
-      // choice visible as re-checking and blocks submission until the fresh list
-      // confirms it, so a refusal keeps the operator's review for a retry.
-      const modelUnconfirmed = current.model !== null && current.models === null;
+      // A choice is cleared only when a CONFIRMED list no longer contains it; a
+      // reload that has not re-fetched (models === null) keeps the reviewed choice
+      // visible as re-checking and blocks submission until the fresh list confirms
+      // it, so a refusal keeps the operator's review for a retry.
+      function spawnModelUnconfirmed(){ return current.model !== null && current.models === null; }
       const modelLabel = node('label', 'Model ', form); const modelSelect = node('select', undefined, modelLabel);
-      const defaultOption = node('option', "Use this machine's default", modelSelect); defaultOption.value = '';
-      for(const choice of modelModels) { const option = node('option', choice.name+' — '+choice.provider+'/'+choice.id, modelSelect); option.value = JSON.stringify({provider:choice.provider, model_id:choice.id}); }
-      if(current.model) {
-        const match = modelModels.find(choice => choice.provider === current.model.provider && choice.id === current.model.model_id);
-        if(match) modelSelect.value = JSON.stringify({provider:match.provider, model_id:match.id});
-        else if(modelUnconfirmed) { const option = node('option', current.model.provider+'/'+current.model.model_id+' (re-checking)', modelSelect); option.value = JSON.stringify({provider:current.model.provider, model_id:current.model.model_id}); modelSelect.value = option.value; }
-        else { current.model = null; current.review = null; }
+      const modelHint = node('p', '', form); modelHint.className = 'dim hint';
+      // Update the model control IN PLACE. The catalog arrives asynchronously and
+      // must NOT trigger a whole-form re-render: that rebuilds the inputs and can
+      // drop what the operator had typed while the request was in flight.
+      function applySpawnModels() {
+        const list = Array.isArray(current.models) ? current.models.filter(usableModel) : [];
+        const match = current.model ? list.find(choice => choice.provider === current.model.provider && choice.id === current.model.model_id) : null;
+        if(current.model && !match && current.models !== null){ current.model = null; current.review = null; }
+        modelSelect.replaceChildren();
+        const none = node('option', "Use this machine's default", modelSelect); none.value = '';
+        for(const choice of list) { const option = node('option', choice.name+' — '+choice.provider+'/'+choice.id, modelSelect); option.value = JSON.stringify({provider:choice.provider, model_id:choice.id}); }
+        if(current.model) {
+          if(match) modelSelect.value = JSON.stringify({provider:match.provider, model_id:match.id});
+          else if(current.models === null) { const option = node('option', current.model.provider+'/'+current.model.model_id+' (re-checking)', modelSelect); option.value = JSON.stringify({provider:current.model.provider, model_id:current.model.model_id}); modelSelect.value = option.value; }
+        }
+        const unconfirmed = spawnModelUnconfirmed();
+        modelSelect.disabled = current.pending || unconfirmed || current.modelsFailed || (current.models !== null && list.length === 0);
+        modelHint.textContent = current.models && current.models.length
+          ? 'Model list from this agent ('+ageLabel(Date.now() - current.modelsAt)+'); a snapshot, re-checked on each reload.'
+          : (current.modelStatus || '');
+        reviewButton.disabled = current.pending || unconfirmed || !project.value.trim() || !prompt.value.trim();
+        submit.disabled = current.pending || unconfirmed;
       }
-      if(current.modelsFailed || (current.models !== null && modelModels.length === 0)) modelSelect.disabled = true;
-      const modelHint = current.models && current.models.length
-        ? 'Model list from this agent ('+ageLabel(Date.now() - current.modelsAt)+'); a snapshot, re-checked on each reload.'
-        : current.modelStatus;
-      if(modelHint) node('p', modelHint, form).className = 'dim hint';
-      loadSpawnModels(agent, current);
       project.disabled = prompt.disabled = cwd.disabled = current.pending;
-      if(current.pending || modelUnconfirmed) modelSelect.disabled = true;
       const reviewButton = node('button', 'Review start', form); reviewButton.type = 'button'; reviewButton.hidden = !!current.review;
-      reviewButton.disabled = current.pending || modelUnconfirmed || !project.value.trim() || !prompt.value.trim();
       const review = node('div', undefined, form); review.className = 'start-review notice'; review.hidden = !current.review;
       const reviewText = node('p', '', review);
-      const submit = node('button', 'Start', review); submit.type = 'submit'; submit.disabled = current.pending || modelUnconfirmed;
+      const submit = node('button', 'Start', review); submit.type = 'submit'; submit.disabled = current.pending;
       const cancel = node('button', 'Cancel', review); cancel.type = 'button'; cancel.disabled = current.pending;
+      // reviewButton/submit exist now, so paint the control and fetch the list.
+      applySpawnModels();
+      loadSpawnModels(agent, current, applySpawnModels);
       function showReview() {
         review.hidden = !current.review;
         reviewButton.hidden = !!current.review;
@@ -1270,16 +1282,16 @@
         catch { current.model = null; }
         current.review = null;
         showReview();
-        reviewButton.disabled = current.pending || modelUnconfirmed || !project.value.trim() || !prompt.value.trim();
+        reviewButton.disabled = current.pending || spawnModelUnconfirmed() || !project.value.trim() || !prompt.value.trim();
       });
       for(const [input, key] of [[project, 'project'], [prompt, 'prompt'], [cwd, 'cwd']]) input.addEventListener('input', () => {
         current[key] = input.value;
         current.review = null;
         showReview();
-        reviewButton.disabled = current.pending || modelUnconfirmed || !project.value.trim() || !prompt.value.trim();
+        reviewButton.disabled = current.pending || spawnModelUnconfirmed() || !project.value.trim() || !prompt.value.trim();
       });
       reviewButton.addEventListener('click', () => {
-        if(current.pending || modelUnconfirmed || !current.project.trim() || !current.prompt.trim()) return;
+        if(current.pending || spawnModelUnconfirmed() || !current.project.trim() || !current.prompt.trim()) return;
         // Built from state, not the DOM: an async catalog reload can rebuild the
         // inputs underneath the click, and the reviewed values must be the ones
         // the operator entered.

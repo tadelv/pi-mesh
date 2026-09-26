@@ -97,9 +97,8 @@ declines to add a second, looser way to choose a directory.
 - `mesh.handoff` on a machine with execution disabled must be refused exactly like
   the other execution skills, and `servedSkills(true)` must include it, so
   capability honesty (ADR 0006) holds without anyone remembering to update a list.
-- The `-32004` for `mesh.handoff` that `docs/two-machine-proof.md` recorded on a
-  gate-closed Pi becomes `-32102` once it is registered; that transcript is
-  historical and stays as written.
+- The `-32004` for `mesh.handoff` observed on a gate-closed Pi becomes `-32102`
+  once it is registered; that historical note stays as written.
 
 ## Response shapes, pinned
 

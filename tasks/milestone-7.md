@@ -93,8 +93,8 @@ fails on the clause it names.
 - `PROTOCOL.md`: the control plane's `/api/.../stream` endpoint and its frames.
 - `PRODUCT.md` / `DESIGN.md`: live view vs record, and the fallback rule.
 - `README.md`: the streaming bullet says what is live and what is a re-read.
-- `docs/two-machine-proof.md`: a transcript of a second machine's session updating
-  live, and the same session after the agent is stopped.
+- `README.md`'s "Verified on real hardware": a transcript of a second machine's
+  session updating live, and the same session after the agent is stopped.
 
 ## Risks
 

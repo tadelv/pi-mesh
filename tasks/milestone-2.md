@@ -295,7 +295,8 @@ Verified against the installed Pi 0.85.1 docs and the research note in
   one method that both routes call.
 
 - **Outcome (M2-9, INCOMPLETE): evidence recorded, one clause unreachable.**
-  Transcripts are in `docs/two-machine-proof.md`. The proof found a REAL DEFECT
+  The hardware proof is summarised in `README.md`'s "Verified on real hardware".
+  The proof found a REAL DEFECT
   the fixture never could: with the gate closed, `process.spawn` answered
   `-32004` while `session.steer` answered `-32102` on the same machine at the
   same moment, against the exit criterion below. Fixed in `fb5c338` and

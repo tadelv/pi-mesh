@@ -73,7 +73,7 @@ Acceptance: capture and inspect screenshots at ~390px and ~1440px, light and dar
 
 ## Packet 6 — M5-5 documentation and hardware evidence
 
-Worker may draft the small doc changes (`README.md`, `docs/SECURITY.md`, `PRODUCT.md`, `DESIGN.md`) with precise existing behaviour; parent validates wording and runs the hardware check. Do not write a fictitious transcript. Deploy identical built commits to control and remote agent, confirm opt-in by explicit control id and confidential execution (loopback/TLS, or explicitly document the insecure override), start a real session, open it, prompt it, and quote the new transcript turn. Repeat with a gate-closed agent and capture refusal/reason; verify accepted is not confused with acted-on. Include commands, commit ids, what was and was **not** proved in `docs/two-machine-proof.md`. Existing historical proof stays historical.
+Worker may draft the small doc changes (`README.md`, `docs/SECURITY.md`, `PRODUCT.md`, `DESIGN.md`) with precise existing behaviour; parent validates wording and runs the hardware check. Do not write a fictitious transcript. Deploy identical built commits to control and remote agent, confirm opt-in by explicit control id and confidential execution (loopback/TLS, or explicitly document the insecure override), start a real session, open it, prompt it, and quote the new transcript turn. Repeat with a gate-closed agent and capture refusal/reason; verify accepted is not confused with acted-on. Include commands, commit ids, what was and was **not** proved in `README.md`'s "Verified on real hardware" section. Existing historical proof stays historical.
 
 ## Parent validation and delegation rhythm
 

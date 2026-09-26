@@ -325,9 +325,9 @@ one.
 - `docs/PROTOCOL.md`: the new skills and the amended `process.spawn` shape.
 - `README.md`/`docs/PROTOCOL.md`: the status readout skill, and what an ungated
   peer read of the operator's model, cost and context numbers reveals.
-- `docs/two-machine-proof.md`: a transcript of choosing a model before a spawn,
-  changing the model of a running session, and a prompt with a skill command,
-  including at least one refusal.
+- `README.md`'s "Verified on real hardware": a transcript of choosing a model
+  before a spawn, changing the model of a running session, and a prompt with a
+  skill command, including at least one refusal.
 
 **DoD:** the transcript is in the repo, uses **deployed commit IDs**, shows the
 command or model actually acting on the session (not an API acknowledgement), and

@@ -137,8 +137,8 @@ indifferent).
 
 ## Outcome
 
-Implemented (M4-2..M4-4) and verified on three machines (M4-5); the transcript is
-in `docs/two-machine-proof.md` under "M4 - dashboard control".
+Implemented (M4-2..M4-4) and verified on three machines (M4-5); the hardware run is
+summarised in `README.md`'s "Verified on real hardware".
 
 - The four routes reuse `callAgent`; a test scans `packages/control-plane/src`
   for process machinery and fails if any appears (ADR 0013 decision 2).

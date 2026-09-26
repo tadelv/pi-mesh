@@ -183,6 +183,10 @@ you do not know yet.
   `KillMode=control-group`, which is inclusive regardless of `setsid` - not a
   wider signal. Verify by reaping a tool command after a hard kill, not after a
   graceful stop, because the graceful path passes either way.
+- **A running Pi sets its process *title*, so its argv is not `pi`.** `ps args`
+  shows only `pi` for a spawned session; grepping the command line for the argv
+  the spawner built finds nothing. Match on `^pi$` or the recorded pid instead,
+  and never conclude "no Pi process" from an argv grep.
 
 ## Environment / tooling
 
@@ -222,6 +226,17 @@ you do not know yet.
   from `tsc`, `eslint` and `prettier` alike, each pointing at the comment
   rather than the cause.
 - **`cd X && node ... &` backgrounds the whole chain**; `cd` on its own line.
+- **A `.local` mDNS name can take seconds to resolve, and a bare `ssh <name>` may
+  not resolve at all.** Measured: resolving `devpi.local` took ~5 s from the Mac,
+  which exceeds the client's handshake timeout, so `--peer-host devpi.local:7330`
+  failed as "unreachable" while `--peer-host 192.168.12.108:7330` worked, and
+  `ssh devpi` did not resolve at all. Dial the address a peer advertised
+  (`connectHost()` already prefers it); dialling by hostname is the one path that
+  bypasses it.
+- **Portainer's Docker API proxy can answer HTTP 400 to `containers/start`.**
+  Measured while moving stack 43 onto a new image: `POST .../containers/<id>/start`
+  with an empty body returned 400, and `containers/restart` then recovered the
+  stopped container. Prefer a stack redeploy, or fall back to `restart`.
 
 ## Process / delegation
 

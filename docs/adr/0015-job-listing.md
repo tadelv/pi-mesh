@@ -93,9 +93,8 @@ was already telling the operator one click too late.
   group with its input and output shape.
 - The capability tests gain the gate-closed advertisement assertion; the M2-8
   card and mDNS assertions must agree with the three-group split.
-- `docs/two-machine-proof.md`'s M4 transcript records the Mac advertising 6
-  skills. That is a historical record and stays; the current number for a
-  gate-closed machine is 4.
+- The M4 hardware run recorded the Mac advertising 6 skills. That is a
+  historical record and stays; the current number for a gate-closed machine is 4.
 - The dashboard's Jobs section shows the agent's table with per-agent freshness.
 - Control-plane code still starts no process and manages no lifecycle: this ADR
   adds a read of the agent's table, so the ADR 0013 §2 guard (a test that scans

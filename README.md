@@ -125,14 +125,47 @@ that have opted in; it depends on no agent to start. The dashboard prompts a
 selected session only when a confirmed running job and steering opt-in permit
 it, and starts sessions with project suggestions and inline review. Resume is
 explicitly confirmed with a warning that concurrent Pi TUI writers can corrupt
-the session or lose history. Milestone 4 was verified across three machines. Milestone 5's new turn, response and
-opt-out refusal were verified on a real Pi through the dashboard API, while
-the browser behaviour is covered by Chromium tests
-([proof](docs/two-machine-proof.md)); a matching log entry is not proof of
-request origin. The offline-cache clause against a device that goes away
-remains exercised in-process only, not on hardware. See
-[tasks/milestone-5.md](tasks/milestone-5.md) and
+the session or lose history. The offline-cache clause against a device that
+goes away remains exercised in-process only, not on hardware. See
+[tasks/milestone-6.md](tasks/milestone-6.md) and
 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md).
+
+## Verified on real hardware
+
+The mesh was built and checked on a Mac and a Raspberry Pi on one LAN, then on a
+third machine running the control plane, not only in tests:
+
+- **Discovery and gating (M1-M2).** Real mDNS found the Pi; the agent card and
+  the mDNS `caps` record agreed, and both dropped the gated `process.spawn` /
+  `session.steer` pair when the machine started without `--allow-execution`. A
+  spawn across the LAN ran in its own process group; stop was idempotent and an
+  unknown job was `-32103`. This run found a real defect - `process.spawn`
+  answered `-32004` where `session.steer` answered `-32102` for the same closed
+  gate - which was fixed.
+- **Handoff (M3).** `mesh.handoff` from the Mac made the Pi do the work, and the
+  commit subjects it reported were the ones just pushed. A rejected handoff
+  returned a rejected task and started nothing.
+- **Dashboard control (M4).** Start, steer and stop through the dashboard routes
+  on an opted-in agent, and `-32102` with no process on a machine that never
+  opted in - the same request to two machines, as a positive control. A refusal
+  is a result, not an HTTP error.
+- **Jobs are the agent's (ADR 0015).** A cached job vanished from the mirror once
+  the agent restarted and no longer knew it.
+- **Prompting and resume (M5).** A real prompt produced a real user and assistant
+  turn on the Pi; resuming a saved session required the concurrent-writer
+  acknowledgement and was refused `-32102` with the gate closed. A matching log
+  entry is observation, not proof of request origin.
+- **Model, commands and status (M6).** A model chosen before the spawn produced
+  the first assistant turn (its durable `model_change` entry names it); a running
+  session's model could be changed; the status readout returned Pi's own model,
+  tokens and context window; `session.commands` returned what that Pi reported;
+  an unlisted model was refused `-32602` with no process; and a skill command
+  entered in the box expanded and acted.
+
+Every run used the stack's documented `PI_MESH_ALLOW_INSECURE_EXECUTION=1`
+exception (plaintext LAN HTTP), not TLS. The detailed transcripts behind these
+were condensed here; the operational lessons that came out of them are in
+[docs/GOTCHAS.md](docs/GOTCHAS.md).
 
 ## Someday
 

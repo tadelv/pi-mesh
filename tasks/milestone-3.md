@@ -65,8 +65,8 @@ collaboration.
 `mesh.handoff` (M3-1) is **done and verified on hardware**, and this section is
 what M3-2 should read before starting.
 
-- Implemented in `9703bb5`; the CI race it exposed in `3081d31`; the hardware
-transcript in `docs/two-machine-proof.md` (`913569a`).
+- Implemented in `9703bb5`; the CI race it exposed in `3081d31`; the hardware run
+  in `README.md`'s "Verified on real hardware" (`913569a`).
 - A handoff from the Mac started a real session on the Pi, which did the work and
   reported it - and the report is verifiable, because the commits it listed are the
   ones pushed from the Mac minutes earlier.

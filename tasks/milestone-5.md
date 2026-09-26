@@ -158,9 +158,9 @@ this introduces a framework or an external resource (ADR 0011 constraints).
   a chat box *looks* like a new authority, and the trust model should say why it
   is not.
 - `PRODUCT.md` and `DESIGN.md`: the new controls, and the honesty rule they obey.
-- `docs/two-machine-proof.md`: a transcript of prompting a session on a second
-  machine, showing the turn appear in the transcript, and the refusal when the
-  agent has not opted in.
+- `README.md`'s "Verified on real hardware": a transcript of prompting a session
+  on a second machine, showing the turn appear in the transcript, and the refusal
+  when the agent has not opted in.
 
 **DoD:** the transcript is in the repo, and names what it does and does not show.
 

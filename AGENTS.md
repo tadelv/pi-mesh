@@ -94,14 +94,14 @@ devpi paired to it; packaging (M3-3) and `docs/DEPLOYMENT.md` (M3-4) are in.
 and "Process control" bullets are true: the dashboard starts, steers, stops and
 aborts on a paired agent by calling the agent's existing gated skills
 (`docs/adr/0013-dashboard-control.md`) - two independent grants, one execution
-path, and a per-agent opt-in by the control plane's id. The transcript is in
-`docs/two-machine-proof.md` under "M4 - dashboard control".
+path, and a per-agent opt-in by the control plane's id. The hardware proof is
+summarised in `README.md`'s "Verified on real hardware".
 
 **Milestone 5 is implemented and verified** (`tasks/milestone-5.md`): the
 selected-session prompt, an inline-reviewed Start form, and Chromium regression
 coverage. ADR 0016 fixes the identity and refusal model. The real-Pi prompt
 turn, response, gate-closed refusal, deployed Portainer image and limitations
-are recorded under "M5" in `docs/two-machine-proof.md`. Actual screen-reader
+are summarised in `README.md`'s "Verified on real hardware". Actual screen-reader
 speech is not verified. What remains is `README.md`'s "Someday" list and the
 deferred encryption in `docs/SECURITY.md`.
 
@@ -118,7 +118,7 @@ Read order for revisiting M5 or changing its execution path:
    credential and the wire the dashboard speaks.
 5. `docs/GOTCHAS.md` - read this before trusting a green test run.
 
-(For the M3 record, see `tasks/milestone-3.md` and `docs/two-machine-proof.md`.)
+(For the M3 record, see `tasks/milestone-3.md` and the README's hardware proof.)
 
 ## What to build first
 

@@ -219,6 +219,47 @@ describe("upstream registry", () => {
     registry.closeAll();
   });
 
+  it("keeps a reading subscriber connected across a full replay and later frames", async () => {
+    // Regression: the boundary replay used to count against the subscriber's
+    // own bound, so a full 256-frame replay plus one frame cut off a subscriber
+    // that was reading perfectly well.
+    const source = new Source();
+    const registry = new UpstreamRegistry();
+    const first = registry.get("agent\0session", source.open);
+    source.live({ n: -1 });
+    await first.ready;
+    for (let index = 0; index < 256; index += 1) source.live({ n: index });
+    await settle();
+    const late = registry.get("agent\0session", source.open);
+    source.live({ n: 999 });
+    // Read only after the replay AND the next live frame are queued, so the
+    // bound is exercised before the reader has drained anything.
+    await settle();
+    let endReason: string | undefined;
+    let sawTail = false;
+    let seen = 0;
+    for (let index = 0; index < 700; index += 1) {
+      const next = await late.frames.next();
+      if (next.done === true) break;
+      if (next.value.kind === "end") {
+        endReason = next.value.reason;
+        break;
+      }
+      seen += 1;
+      if ((next.value.data as { n?: number }).n === 999) {
+        sawTail = true;
+        break;
+      }
+    }
+    expect(
+      endReason,
+      "a reading subscriber must not be cut off by its own replay",
+    ).toBeUndefined();
+    expect(sawTail, "the live tail after the replay").toBe(true);
+    expect(seen, "the replay is delivered too").toBeGreaterThan(1);
+    registry.closeAll();
+  });
+
   it("closes only the named agent's upstreams when an agent is unpaired", async () => {
     const a = new Source();
     const b = new Source();

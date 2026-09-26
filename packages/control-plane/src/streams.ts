@@ -57,8 +57,10 @@ function messageOf(error: unknown): string {
 class Subscriber implements AsyncIterableIterator<SubscriberFrame> {
   readonly ready: Promise<UpstreamReady>;
   private resolveReady!: (value: UpstreamReady) => void;
-  private readonly queue: SubscriberFrame[] = [];
-  private queuedBytes = 0;
+  private readonly queue: Array<{ frame: SubscriberFrame; seeded: boolean }> =
+    [];
+  private liveCount = 0;
+  private liveBytes = 0;
   private ended = false;
   private waiter: (() => void) | undefined;
 
@@ -72,21 +74,36 @@ class Subscriber implements AsyncIterableIterator<SubscriberFrame> {
     this.resolveReady(ready);
   }
 
+  /**
+   * Seed the boundary replay. It is bounded by the upstream ring already, so it
+   * must NOT count against this queue's bound: doing so cut a reading
+   * subscriber off the moment a 256-frame replay was followed by one frame.
+   */
+  seed(frame: SubscriberFrame): void {
+    if (this.ended) return;
+    this.queue.push({ frame, seeded: true });
+    this.wake();
+  }
+
   push(frame: SubscriberFrame): void {
     if (this.ended) return;
-    this.queue.push(frame);
-    this.queuedBytes += bytesOf(frame);
-    if (
-      this.queue.length > MAX_QUEUE_EVENTS ||
-      this.queuedBytes > MAX_QUEUE_BYTES
-    ) {
+    this.queue.push({ frame, seeded: false });
+    if (frame.kind === "frame") {
+      this.liveCount += 1;
+      this.liveBytes += bytesOf(frame.data);
+    }
+    if (this.liveCount > MAX_QUEUE_EVENTS || this.liveBytes > MAX_QUEUE_BYTES) {
       this.queue.length = 0;
-      this.queuedBytes = 0;
+      this.liveCount = 0;
+      this.liveBytes = 0;
       this.ended = true;
       this.queue.push({
-        kind: "end",
-        reason:
-          "the reader fell behind and was disconnected; re-read the session for the durable page",
+        frame: {
+          kind: "end",
+          reason:
+            "the reader fell behind and was disconnected; re-read the session for the durable page",
+        },
+        seeded: false,
       });
     }
     this.wake();
@@ -95,7 +112,7 @@ class Subscriber implements AsyncIterableIterator<SubscriberFrame> {
   end(reason: string): void {
     if (this.ended) return;
     this.ended = true;
-    this.queue.push({ kind: "end", reason });
+    this.queue.push({ frame: { kind: "end", reason }, seeded: false });
     this.wake();
   }
 
@@ -108,7 +125,14 @@ class Subscriber implements AsyncIterableIterator<SubscriberFrame> {
   async next(): Promise<IteratorResult<SubscriberFrame>> {
     for (;;) {
       const item = this.queue.shift();
-      if (item !== undefined) return { value: item, done: false };
+      if (item !== undefined) {
+        // Only live frames count against the bound; a seeded replay does not.
+        if (!item.seeded && item.frame.kind === "frame") {
+          this.liveCount -= 1;
+          this.liveBytes -= bytesOf(item.frame.data);
+        }
+        return { value: item.frame, done: false };
+      }
       if (this.ended) return { value: undefined, done: true };
       await new Promise<void>((resolve) => {
         this.waiter = resolve;
@@ -162,7 +186,7 @@ class Upstream {
     this.subscribers.add(subscriber);
     if (this.kind === "live") {
       subscriber.settle(this.readyValue());
-      for (const data of this.replay) subscriber.push({ kind: "frame", data });
+      for (const data of this.replay) subscriber.seed({ kind: "frame", data });
     } else if (this.kind !== "opening") {
       subscriber.settle(this.readyValue());
       subscriber.end(this.reason ?? this.kind);
@@ -226,7 +250,7 @@ class Upstream {
     if (kind === "live") {
       for (const subscriber of this.subscribers)
         for (const data of this.replay)
-          subscriber.push({ kind: "frame", data });
+          subscriber.seed({ kind: "frame", data });
     }
   }
 

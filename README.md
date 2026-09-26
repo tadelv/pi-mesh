@@ -166,6 +166,15 @@ third machine running the control plane, not only in tests:
   tokens and context window; `session.commands` returned what that Pi reported;
   an unlisted model was refused `-32602` with no process; and a skill command
   entered in the box expanded and acted.
+- **Watching a session work (M7).** The dashboard started a real session on the
+  Pi, and its transcript filled in live - thinking and assistant deltas arrived
+  with no reload while the turn ran, and no token text reached the live status
+  region. Stopping the agent mid-turn ended the view with the reason stated
+  (`Agent stream ended unexpectedly: terminated`), removed the live tail and
+  fell back to the durable page. The first hardware attempt found a real defect:
+  the boundary replay counted against the subscriber's own bound, so a full
+  replay plus one frame disconnected a browser that was reading. Fixed, with a
+  regression test that reproduces the hardware failure.
 
 Every run used the stack's documented `PI_MESH_ALLOW_INSECURE_EXECUTION=1`
 exception (plaintext LAN HTTP), not TLS. The detailed transcripts behind these

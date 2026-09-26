@@ -105,6 +105,24 @@ are summarised in `README.md`'s "Verified on real hardware". Actual screen-reade
 speech is not verified. What remains is `README.md`'s "Someday" list and the
 deferred encryption in `docs/SECURITY.md`.
 
+**Milestone 6 is done and verified** (`tasks/milestone-6.md`): a model chosen
+before a spawn (ADR 0017), the command surface, and a session status readout.
+**Milestone 7 is done and verified** (`tasks/milestone-7.md`, ADR 0018): a
+running session's transcript updates live in the dashboard over SSE - one
+upstream fanned out per `(agent, session)`, an ambiguous or unconfirmed session
+refused with a stated reason, and any close (`not-live`/`error`/`end`) falling
+back to the durable page without claiming a missed delta. Both are summarised in
+`README.md`'s "Verified on real hardware"; the first M7 hardware run found and
+fixed a real subscriber-bound defect (recorded there).
+
+Read order for revisiting M7 or changing the stream:
+
+1. `tasks/milestone-7.md` and `docs/adr/0018-dashboard-live-streaming.md` - the
+   clauses the stream must make fail by name.
+2. `packages/control-plane/src/streams.ts` - the one-upstream fan-out and the
+   bounded subscriber: the bound is on frames beyond the replay, not the replay.
+3. `docs/GOTCHAS.md` - read this before trusting a green test run.
+
 Read order for revisiting M5 or changing its execution path:
 
 1. `tasks/milestone-5.md` - the issues, their Definition of Done, and what M5-1
@@ -122,10 +140,10 @@ Read order for revisiting M5 or changing its execution path:
 
 ## What to build first
 
-M5 is complete; do not reimplement it. For a new issue, read its requirements,
-ADR 0016 if it touches the selected-session prompt, and `docs/GOTCHAS.md`
-before trusting tests. The requirements are frozen: if you find a gap, open an
-ADR in `docs/adr/` rather than inventing a shape that suits the code.
+M5, M6 and M7 are complete; do not reimplement them. For a new issue, read its
+requirements, the ADR it touches, and `docs/GOTCHAS.md` before trusting tests.
+The requirements are frozen: if you find a gap, open an ADR in `docs/adr/`
+rather than inventing a shape that suits the code.
 
 ## What NOT to do
 

@@ -17,11 +17,17 @@ import {
   callAgent,
   fetchAgentCard,
   fetchSessionList,
+  streamAgent,
 } from "./client.js";
 import { dashboardHtml } from "./dashboard.js";
 import { agentControls } from "./controls.js";
+import { UpstreamRegistry, streamKey } from "./streams.js";
 
 const MAX_BODY_BYTES = 64 * 1024;
+/** A subscriber whose socket is this far behind is cut off, not buffered. */
+const MAX_SUBSCRIBER_BUFFER = 256 * 1024;
+/** SSE comment cadence, so a proxy does not close an idle live view. */
+const STREAM_HEARTBEAT_MS = 15_000;
 
 export interface ControlServerOptions {
   store: ControlStore;
@@ -53,6 +59,12 @@ export interface ControlServer {
   start(): Promise<{ address: string; port: number }>;
   stop(): Promise<void>;
   dashboardUrl(host?: string): string;
+  /**
+   * Close every live view of one agent's sessions. Called when the agent is
+   * unpaired, so a long-lived upstream does not outlive the pairing that
+   * authorised it (ADR 0018 §5).
+   */
+  closeAgentStreams(peerId: string): void;
 }
 
 export function createControlServer(
@@ -83,6 +95,7 @@ export function createControlServer(
   const jobsWrites = new Map<string, number>();
   const jobsListingSettled = new Map<string, number>();
   let jobsListingSeq = 0;
+  const streams = new UpstreamRegistry();
   const confidential = options.confidential ?? isConfidential;
   const allowInsecure = options.allowInsecureExecution === true;
   const serveDashboard = options.dashboardHtml ?? dashboardHtml;
@@ -520,6 +533,156 @@ export function createControlServer(
         json(response, 200, { results });
         return;
       }
+      const streamMatch = /^\/api\/sessions\/([^/]+)\/([^/]+)\/stream$/.exec(
+        url.pathname,
+      );
+      if (request.method === "GET" && streamMatch !== null) {
+        // Watching is a read (ADR 0009 §5): no execution grant, no ADR 0014
+        // transport gate. What it does owe is an unambiguous running job
+        // (ADR 0016) and a confirmed listing - a cached row opens no stream.
+        let agentId: string, sessionId: string;
+        try {
+          agentId = decodeURIComponent(streamMatch[1]!);
+          sessionId = decodeURIComponent(streamMatch[2]!);
+        } catch {
+          json(response, 400, { error: "invalid_path" });
+          return;
+        }
+        const agent = store.getAgent(agentId);
+        if (agent === undefined) {
+          json(response, 404, { error: "unknown_agent" });
+          return;
+        }
+        if (typeof jobsSyncedAt.get(agentId) !== "number") {
+          json(response, 409, {
+            error: "jobs_unconfirmed",
+            message:
+              "The job list has not been confirmed with this agent. Sync to check before watching live.",
+          });
+          return;
+        }
+        const running = store
+          .listJobs(agentId)
+          .filter(
+            (job) => job.session_id === sessionId && job.state === "running",
+          );
+        if (running.length === 0) {
+          json(response, 409, {
+            error: "no_running_job",
+            message: "No running job claims this session.",
+          });
+          return;
+        }
+        if (running.length > 1) {
+          // The agent's own live lookup takes the FIRST match; guessing here is
+          // exactly the silent choice ADR 0016 forbids, so the stream refuses
+          // and the operator disambiguates a job as the prompt path requires.
+          json(response, 409, {
+            error: "ambiguous_session",
+            message:
+              "More than one running job claims this session; choose a job before watching live.",
+          });
+          return;
+        }
+        const target = {
+          peerId: agent.peer_id,
+          host: agent.host,
+          port: agent.port,
+          credential: agent.credential,
+        };
+        const subscriber = streams.get(
+          streamKey(agentId, sessionId),
+          (signal) =>
+            streamAgent(
+              target,
+              "session.stream",
+              { id: sessionId },
+              {
+                controlId: store.controlId(),
+                ...(options.fetch === undefined
+                  ? {}
+                  : { fetch: options.fetch }),
+              },
+              signal,
+            ),
+        );
+        try {
+          // Wait only for the agent to accept the stream. "Is the source live"
+          // arrives in-band below; blocking the HTTP answer on the first delta
+          // would leave a fetch() unresolved through a whole quiet turn.
+          await subscriber.connected;
+        } catch (error) {
+          subscriber.close();
+          json(response, 502, {
+            error: "stream_unavailable",
+            ...(error instanceof AgentSkillError ? { code: error.code } : {}),
+            message: error instanceof Error ? error.message : String(error),
+          });
+          return;
+        }
+        response.writeHead(200, {
+          "content-type": "text/event-stream; charset=utf-8",
+          "cache-control": "no-cache",
+          connection: "keep-alive",
+          // Defeat a buffering reverse proxy: this must stream, not arrive whole.
+          "x-accel-buffering": "no",
+        });
+        response.flushHeaders();
+        const writeEvent = (event: string, data: unknown): void => {
+          if (!response.writableEnded && !response.destroyed)
+            response.write(
+              `event: ${event}\ndata: ${JSON.stringify(data)}\n\n`,
+            );
+        };
+        let closed = false;
+        const heartbeat = setInterval(() => {
+          if (!response.writableEnded) response.write(": keep-alive\n\n");
+        }, STREAM_HEARTBEAT_MS);
+        const teardown = (): void => {
+          if (closed) return;
+          closed = true;
+          clearInterval(heartbeat);
+          subscriber.close();
+        };
+        request.once("close", teardown);
+        response.once("close", teardown);
+        try {
+          // The discriminator lands after the headers, so the browser is told
+          // in-band: a confirmed running job can still stop between the
+          // freshness check and the attach, and the agent then serves the
+          // durable file. That is not a live view and must not look like one.
+          const ready = await subscriber.ready;
+          if (ready.kind !== "live") {
+            writeEvent(ready.kind === "file" ? "not-live" : "error", {
+              reason: ready.reason ?? "the session is not streaming live here",
+            });
+            response.end();
+            return;
+          }
+          for await (const frame of subscriber.frames) {
+            if (response.writableEnded || response.destroyed) break;
+            if (response.writableLength > MAX_SUBSCRIBER_BUFFER) {
+              // A reader that stopped reading: disconnect rather than grow
+              // memory for a session that may run for hours (ADR 0018 §5).
+              response.destroy();
+              break;
+            }
+            if (frame.kind === "end") {
+              writeEvent("end", { reason: frame.reason });
+              response.end();
+              break;
+            }
+            writeEvent("live", frame.data);
+          }
+          if (!response.writableEnded && !response.destroyed) {
+            writeEvent("end", { reason: "the live view ended" });
+            response.end();
+          }
+        } finally {
+          teardown();
+        }
+        return;
+      }
       const sessionMatch = /^\/api\/sessions\/([^/]+)\/([^/]+)$/.exec(
         url.pathname,
       );
@@ -651,6 +814,8 @@ export function createControlServer(
     },
     async stop() {
       if (!server.listening) return;
+      // No upstream outlives the control plane, even one mid-turn.
+      streams.closeAll();
       await new Promise<void>((resolve, reject) => {
         server.close((error) =>
           error === undefined ? resolve() : reject(error),
@@ -665,6 +830,9 @@ export function createControlServer(
       // Deliberately no token. It is read with `pi-mesh-control-plane token`
       // or `serve --print-token` and pasted into the page (ADR 0014 decision 2).
       return `http://${urlHost}:${actualPort}/`;
+    },
+    closeAgentStreams(peerId: string) {
+      streams.closeAgent(peerId);
     },
   };
 }

@@ -597,7 +597,7 @@
   const promptStates = new Map();
   function promptState(owner) {
     const key = owner.agentId+'\0'+owner.sessionId;
-    if(!promptStates.has(key)) promptStates.set(key, {draft:'', status:'', pending:false, jobId:'', confirmed:false, candidateIds:'', modelJobId:'', models:null, modelsLoading:false, modelsFailed:false, modelRequestOwner:null, modelStatus:'', modelNotice:'', modelPending:false, modelCandidate:null, commands:null, commandsJobId:'', commandsStatus:'', commandsFailed:false, commandsRequest:0});
+    if(!promptStates.has(key)) promptStates.set(key, {draft:'', status:'', pending:false, jobId:'', confirmed:false, candidateIds:'', modelJobId:'', models:null, modelsLoading:false, modelsFailed:false, modelRequestOwner:null, modelStatus:'', modelNotice:'', modelPending:false, modelCandidate:null, commands:null, commandsJobId:'', commandsStatus:'', commandsFailed:false, commandsRequest:0, sessionStatus:null, sessionStatusJobId:'', sessionStatusMessage:'', sessionStatusFailed:false, sessionStatusRequest:0});
     return promptStates.get(key);
   }
   const resumeStates = new Map();
@@ -903,6 +903,7 @@
     // Filled in once loadCommands exists below, so the multi-job selector (built
     // above the composer) can load hints for the job the operator picks.
     let loadCommandsFor = null;
+    let loadStatusFor = null;
     const head = node('header', undefined, section);
     head.className = 'card-head';
     node('h3', 'Prompt this session', head);
@@ -917,6 +918,48 @@
     // The model strip is part of this card but a separate action from sending, so
     // it renders before the early return and explains itself either way.
     renderModelAvailability(data, owner, current);
+    // Session status: an ungated read (ADR 0017 decision 7), so it renders
+    // whenever the agent advertises it and a running job can be named - NOT
+    // behind the steering grant or the execution-transport reasons below.
+    // Read-only: this path never sends set_model.
+    const statusLine = node('p', '', section); statusLine.className = 'dim hint';
+    const sessionStatusAvailable = !!(agent && agent.controls && agent.controls.status);
+    function paintSessionStatus() {
+      const snapshot = current.sessionStatus;
+      if(snapshot === null) { statusLine.textContent = current.sessionStatusMessage || ''; return; }
+      const parts = [];
+      const model = snapshot.model;
+      if(model && typeof model === 'object') parts.push('Model: '+String(model.name || model.id || 'unknown')+(model.provider ? ' ('+String(model.provider)+')' : ''));
+      if(typeof snapshot.thinkingLevel === 'string' && snapshot.thinkingLevel) parts.push('thinking: '+snapshot.thinkingLevel);
+      const usage = snapshot.contextUsage;
+      const known = !!usage && typeof usage === 'object' && usage.tokens !== null && usage.tokens !== undefined && usage.percent !== null && usage.percent !== undefined;
+      parts.push(known ? 'context: '+usage.tokens+' / '+usage.contextWindow+' ('+usage.percent+'%)' : 'context: unknown');
+      statusLine.textContent = parts.join(' \u00b7 ');
+    }
+    async function loadSessionStatus(job) {
+      const request = (current.sessionStatusRequest ?? 0) + 1;
+      current.sessionStatusRequest = request;
+      if(!sessionStatusAvailable) { statusLine.textContent = ''; return; }
+      if(!job) { current.sessionStatus = null; current.sessionStatusJobId = ''; current.sessionStatusFailed = false; current.sessionStatusMessage = ''; statusLine.textContent = ''; return; }
+      if(current.sessionStatusJobId === job && current.sessionStatus !== null) { paintSessionStatus(); return; }
+      if(current.sessionStatusJobId === job && current.sessionStatusFailed) { statusLine.textContent = current.sessionStatusMessage; return; }
+      current.sessionStatusJobId = job; current.sessionStatus = null; current.sessionStatusFailed = false;
+      statusLine.textContent = 'Loading session status\u2026';
+      try {
+        const result = await api('/api/agents/'+encodeURIComponent(agent.peer_id)+'/status?job_id='+encodeURIComponent(job));
+        if(current.sessionStatusRequest !== request) return;
+        if(result.ok === false) { current.sessionStatusFailed = true; current.sessionStatusMessage = 'Session status unavailable: agent refusal ('+String(result.code)+'): '+String(result.message ?? ''); }
+        else { current.sessionStatus = result; }
+      } catch(error) {
+        if(current.sessionStatusRequest !== request) return;
+        current.sessionStatusFailed = true;
+        current.sessionStatusMessage = 'Session status unavailable: '+(error.status === 502 ? 'the agent is unreachable.' : (error.message || 'could not load status.'));
+      }
+      if(current.sessionStatusFailed) statusLine.textContent = current.sessionStatusMessage;
+      else paintSessionStatus();
+    }
+    loadStatusFor = loadSessionStatus;
+    if(sessionStatusAvailable) void loadSessionStatus(running.length === 1 ? running[0].job_id : (current.jobId || ''));
     if(reasons.length || running.length === 0) return;
     let jobId = running[0].job_id;
     if(running.length > 1) {
@@ -934,7 +977,7 @@
       confirm.type = 'checkbox';
       confirm.checked = current.confirmed && !!select.value;
       node('span', 'I chose this job intentionally', confirmLabel);
-      select.addEventListener('change', () => { current.jobId = select.value; current.confirmed = false; confirm.checked = false; send.disabled = true; if(loadCommandsFor) void loadCommandsFor(select.value); });
+      select.addEventListener('change', () => { current.jobId = select.value; current.confirmed = false; confirm.checked = false; send.disabled = true; if(loadCommandsFor) void loadCommandsFor(select.value); if(loadStatusFor) void loadStatusFor(select.value); });
       confirm.addEventListener('change', () => { current.confirmed = confirm.checked; send.disabled = !select.value || !confirm.checked || current.pending || !current.draft.trim() || new TextEncoder().encode(current.draft).length > 4096; });
       jobId = select.value;
     }
@@ -1139,6 +1182,15 @@
       current.commandsJobId = '';
       current.commandsFailed = false;
       current.commandsStatus = '';
+      current.sessionStatus = null;
+      current.sessionStatusJobId = '';
+      current.sessionStatusFailed = false;
+      current.sessionStatusMessage = '';
+      // Retire in-flight reads too, in defence in depth: the next load bumps the
+      // generation anyway, but a response for a superseded snapshot must not be
+      // able to apply in the gap before that.
+      current.commandsRequest += 1;
+      current.sessionStatusRequest += 1;
     }
   }
   function renderAgent(agent) {

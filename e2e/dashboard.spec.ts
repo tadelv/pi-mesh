@@ -1827,6 +1827,537 @@ test("selecting another job clears the previous hints, and clearing the selectio
   }
 });
 
+test("session status shows the model and context Pi reports, and says unknown when it reports none", async ({
+  browser,
+}) => {
+  const store = new ControlStore(":memory:");
+  store.controlName("Status Control");
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const page = await browser.newPage();
+  const token = store.dashboardToken();
+  const timestamp = new Date(0).toISOString();
+  let contextUnknown = false;
+  try {
+    const { port } = await control.start();
+    const baseURL = `http://127.0.0.1:${port}`;
+    await page.addInitScript(
+      (t) => localStorage.setItem("pi_mesh_token", t),
+      token,
+    );
+    await page.route("**/api/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const ok = request.headers()["x-pi-mesh-ui"] === token;
+      if (url.pathname === "/api/state" && request.method() === "GET" && ok) {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            control: { id: "control-status", name: "Status Control" },
+            agents: [
+              {
+                peer_id: "peer-a",
+                name: "Agent A",
+                host: "127.0.0.1",
+                port: 7330,
+                paired_at: timestamp,
+                skills: ["session.steer", "session.status"],
+                controls: {
+                  spawn: false,
+                  steer: true,
+                  stop: false,
+                  abort: false,
+                  status: true,
+                },
+                jobs_synced_at: 1,
+              },
+            ],
+            sessions: [
+              {
+                agent_id: "peer-a",
+                session_id: "session-a",
+                project: "/work/a",
+                name: "Session A",
+                started_at: timestamp,
+                updated_at: timestamp,
+                synced_at: timestamp,
+              },
+            ],
+            jobs: [
+              {
+                agent_id: "peer-a",
+                job_id: "job-a",
+                session_id: "session-a",
+                pid: 11,
+                project: "/work/a",
+                created_at: timestamp,
+                state: "running",
+              },
+            ],
+            execution_transport: "confidential",
+          }),
+        });
+        return;
+      }
+      if (url.pathname === "/api/sync" && request.method() === "POST" && ok) {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true }),
+        });
+        return;
+      }
+      if (
+        url.pathname === "/api/sessions/peer-a/session-a" &&
+        request.method() === "GET" &&
+        url.search === "" &&
+        ok
+      ) {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            events: [
+              {
+                entry_id: "e1",
+                timestamp,
+                data: JSON.stringify({
+                  type: "message",
+                  message: {
+                    role: "user",
+                    content: [{ type: "text", text: "hello" }],
+                  },
+                }),
+              },
+            ],
+            hasEarlier: false,
+            total: 1,
+            all: false,
+            stale: false,
+          }),
+        });
+        return;
+      }
+      if (
+        url.pathname === "/api/agents/peer-a/status" &&
+        request.method() === "GET" &&
+        ok
+      ) {
+        expect(
+          url.searchParams.get("job_id"),
+          "the status read names the running job",
+        ).toBe("job-a");
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify(
+            contextUnknown
+              ? {
+                  model: {
+                    id: "model-a",
+                    provider: "provider-a",
+                    name: "Model A",
+                  },
+                  thinkingLevel: "high",
+                }
+              : {
+                  model: {
+                    id: "model-a",
+                    provider: "provider-a",
+                    name: "Model A",
+                  },
+                  thinkingLevel: "high",
+                  tokens: { input: 100, output: 20, total: 120 },
+                  cost: 0.5,
+                  contextUsage: {
+                    tokens: 60000,
+                    contextWindow: 200000,
+                    percent: 30,
+                  },
+                },
+          ),
+        });
+        return;
+      }
+      if (
+        url.pathname === "/api/agents/peer-a/steer" &&
+        request.method() === "POST" &&
+        ok
+      ) {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            ok: false,
+            code: -32102,
+            message: "Execution is not enabled",
+          }),
+        });
+        return;
+      }
+      await route.fulfill({ status: 400, body: "unexpected request" });
+    });
+    await page.goto(baseURL);
+    await page.getByRole("button", { name: /Session A/ }).click();
+    const card = page.locator("#transcript-panel");
+    await expect(card).toContainText("Model: Model A (provider-a)");
+    await expect(card).toContainText("thinking: high");
+    await expect(card, "Pi's own context numbers are shown").toContainText(
+      "context: 60000 / 200000 (30%)",
+    );
+    // Pi omits contextUsage when it has none; that must read as unknown, never
+    // as 0% or a full bar.
+    contextUnknown = true;
+    await page.getByRole("button", { name: "Sync", exact: true }).click();
+    await expect(card).toContainText("context: unknown");
+    await expect(card).not.toContainText("context: 60000");
+    // After a reload the card repaints; a snapshot wrongly stored in the prompt
+    // feedback field would surface here as [object Object].
+    await expect(card).not.toContainText("[object Object]");
+    // The status snapshot and the prompt feedback are separate state: a send must
+    // still render its own refusal, never "[object Object]".
+    await page
+      .getByRole("textbox", { name: "Message to session" })
+      .fill("hello");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect(card).toContainText(
+      "Agent refusal (-32102): Execution is not enabled",
+    );
+    await expect(card).not.toContainText("[object Object]");
+  } finally {
+    await page.close();
+    await control.stop();
+    store.close();
+  }
+});
+
+test("session status renders for an agent that advertises it but not steering", async ({
+  browser,
+}) => {
+  const store = new ControlStore(":memory:");
+  store.controlName("Status Without Steering Control");
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const page = await browser.newPage();
+  const token = store.dashboardToken();
+  const timestamp = new Date(0).toISOString();
+  try {
+    const { port } = await control.start();
+    const baseURL = `http://127.0.0.1:${port}`;
+    await page.addInitScript(
+      (t) => localStorage.setItem("pi_mesh_token", t),
+      token,
+    );
+    await page.route("**/api/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const ok = request.headers()["x-pi-mesh-ui"] === token;
+      if (url.pathname === "/api/state" && request.method() === "GET" && ok) {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            control: {
+              id: "control-status-only",
+              name: "Status Without Steering Control",
+            },
+            agents: [
+              {
+                peer_id: "peer-a",
+                name: "Agent A",
+                host: "127.0.0.1",
+                port: 7330,
+                paired_at: timestamp,
+                skills: ["session.status"],
+                controls: {
+                  spawn: false,
+                  steer: false,
+                  stop: false,
+                  abort: false,
+                  status: true,
+                },
+                jobs_synced_at: 1,
+              },
+            ],
+            sessions: [
+              {
+                agent_id: "peer-a",
+                session_id: "session-a",
+                project: "/work/a",
+                name: "Session A",
+                started_at: timestamp,
+                updated_at: timestamp,
+                synced_at: timestamp,
+              },
+            ],
+            jobs: [
+              {
+                agent_id: "peer-a",
+                job_id: "job-a",
+                session_id: "session-a",
+                pid: 11,
+                project: "/work/a",
+                created_at: timestamp,
+                state: "running",
+              },
+            ],
+            execution_transport: "confidential",
+          }),
+        });
+        return;
+      }
+      if (
+        url.pathname === "/api/sessions/peer-a/session-a" &&
+        request.method() === "GET" &&
+        url.search === "" &&
+        ok
+      ) {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            events: [
+              {
+                entry_id: "e1",
+                timestamp,
+                data: JSON.stringify({
+                  type: "message",
+                  message: {
+                    role: "user",
+                    content: [{ type: "text", text: "hello" }],
+                  },
+                }),
+              },
+            ],
+            hasEarlier: false,
+            total: 1,
+            all: false,
+            stale: false,
+          }),
+        });
+        return;
+      }
+      if (
+        url.pathname === "/api/agents/peer-a/status" &&
+        request.method() === "GET" &&
+        ok
+      ) {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            model: { id: "model-a", provider: "provider-a", name: "Model A" },
+            contextUsage: { tokens: 60000, contextWindow: 200000, percent: 30 },
+          }),
+        });
+        return;
+      }
+      await route.fulfill({ status: 400, body: "unexpected request" });
+    });
+    await page.goto(baseURL);
+    await page.getByRole("button", { name: /Session A/ }).click();
+    const card = page.locator("#transcript-panel");
+    await expect(
+      card,
+      "an advertised status read renders even when steering is not granted",
+    ).toContainText("Model: Model A (provider-a)");
+    await expect(card).toContainText("context: 60000 / 200000 (30%)");
+    await expect(
+      page.getByRole("textbox", { name: "Message to session" }),
+      "steering is still unavailable, so there is no composer",
+    ).toHaveCount(0);
+  } finally {
+    await page.close();
+    await control.stop();
+    store.close();
+  }
+});
+
+test("a status response that arrives after a reload does not repopulate the card", async ({
+  browser,
+}) => {
+  const store = new ControlStore(":memory:");
+  store.controlName("Status Reload Control");
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const page = await browser.newPage();
+  const token = store.dashboardToken();
+  const timestamp = new Date(0).toISOString();
+  let statusCalls = 0;
+  let stateCalls = 0;
+  let holdState = false;
+  let releaseState!: () => void;
+  const stateGate = new Promise<void>((resolve) => {
+    releaseState = resolve;
+  });
+  let stateStarted!: () => void;
+  const stateStartedGate = new Promise<void>((resolve) => {
+    stateStarted = resolve;
+  });
+  let statusStarted!: () => void;
+  const statusStartedGate = new Promise<void>((resolve) => {
+    statusStarted = resolve;
+  });
+  let releaseFirst!: () => void;
+  const firstHeld = new Promise<void>((resolve) => {
+    releaseFirst = resolve;
+  });
+  try {
+    const { port } = await control.start();
+    const baseURL = `http://127.0.0.1:${port}`;
+    await page.addInitScript(
+      (t) => localStorage.setItem("pi_mesh_token", t),
+      token,
+    );
+    await page.route("**/api/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      const ok = request.headers()["x-pi-mesh-ui"] === token;
+      if (url.pathname === "/api/state" && request.method() === "GET" && ok) {
+        stateCalls += 1;
+        // Hold the reload's own state read so the stale status response can be
+        // released in the window between invalidation and the next render.
+        if (holdState && stateCalls === 2) {
+          stateStarted();
+          await stateGate;
+        }
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            control: { id: "control-reload", name: "Status Reload Control" },
+            agents: [
+              {
+                peer_id: "peer-a",
+                name: "Agent A",
+                host: "127.0.0.1",
+                port: 7330,
+                paired_at: timestamp,
+                skills: ["session.steer", "session.status"],
+                controls: {
+                  spawn: false,
+                  steer: true,
+                  stop: false,
+                  abort: false,
+                  status: true,
+                },
+                jobs_synced_at: 1,
+              },
+            ],
+            sessions: [
+              {
+                agent_id: "peer-a",
+                session_id: "session-a",
+                project: "/work/a",
+                name: "Session A",
+                started_at: timestamp,
+                updated_at: timestamp,
+                synced_at: timestamp,
+              },
+            ],
+            jobs: [
+              {
+                agent_id: "peer-a",
+                job_id: "job-a",
+                session_id: "session-a",
+                pid: 11,
+                project: "/work/a",
+                created_at: timestamp,
+                state: "running",
+              },
+            ],
+            execution_transport: "confidential",
+          }),
+        });
+        return;
+      }
+      if (url.pathname === "/api/sync" && request.method() === "POST" && ok) {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({ ok: true }),
+        });
+        return;
+      }
+      if (
+        url.pathname === "/api/sessions/peer-a/session-a" &&
+        request.method() === "GET" &&
+        url.search === "" &&
+        ok
+      ) {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            events: [
+              {
+                entry_id: "e1",
+                timestamp,
+                data: JSON.stringify({
+                  type: "message",
+                  message: {
+                    role: "user",
+                    content: [{ type: "text", text: "hello" }],
+                  },
+                }),
+              },
+            ],
+            hasEarlier: false,
+            total: 1,
+            all: false,
+            stale: false,
+          }),
+        });
+        return;
+      }
+      if (
+        url.pathname === "/api/agents/peer-a/status" &&
+        request.method() === "GET" &&
+        ok
+      ) {
+        statusCalls += 1;
+        if (statusCalls === 1) {
+          statusStarted();
+          await firstHeld;
+          await route.fulfill({
+            contentType: "application/json",
+            body: JSON.stringify({
+              model: { id: "model-a", provider: "provider-a", name: "Model A" },
+              contextUsage: {
+                tokens: 60000,
+                contextWindow: 200000,
+                percent: 30,
+              },
+            }),
+          });
+          return;
+        }
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            model: { id: "model-b", provider: "provider-b", name: "Model B" },
+            contextUsage: { tokens: 1000, contextWindow: 200000, percent: 1 },
+          }),
+        });
+        return;
+      }
+      await route.fulfill({ status: 400, body: "unexpected request" });
+    });
+    await page.goto(baseURL);
+    await page.getByRole("button", { name: /Session A/ }).click();
+    const card = page.locator("#transcript-panel");
+    // The first status read is in flight and held; a reload now supersedes it.
+    await statusStartedGate;
+    holdState = true;
+    await page.getByRole("button", { name: "Sync", exact: true }).click();
+    await stateStartedGate;
+    // Invalidation has run; the reload's state read is still pending. Release the
+    // stale status response now: it must be discarded, not applied and cached.
+    releaseFirst();
+    await page.evaluate(() => new Promise((resolve) => setTimeout(resolve, 0)));
+    releaseState();
+    await expect(card).toContainText("Model: Model B (provider-b)");
+    await expect(
+      card,
+      "a status read retired by reloading must not overwrite the fresh one",
+    ).not.toContainText("Model: Model A");
+    await expect(card).toContainText("context: 1000 / 200000 (1%)");
+  } finally {
+    releaseState();
+    releaseFirst();
+    await page.close();
+    await control.stop();
+    store.close();
+  }
+});
+
 test("resume requires the inline corruption warning confirmation and syncs before prompting", async ({
   browser,
 }) => {

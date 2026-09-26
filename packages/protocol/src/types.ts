@@ -11,6 +11,7 @@ export type Skill =
   | "session.models"
   | "session.set_model"
   | "session.commands"
+  | "session.status"
   | "session.abort"
   | "process.spawn"
   | "process.list"

@@ -401,10 +401,11 @@ describe("capability honesty and the gate", () => {
       "process.stop",
       "session.abort",
       "session.commands",
+      "session.status",
     ] as const) {
       expect(served).not.toContain(skill);
     }
-    expect(servedSkills(true, true)).toHaveLength(14);
+    expect(servedSkills(true, true)).toHaveLength(15);
     expect(servedSkills(true, true)).toContain("process.list");
   });
 

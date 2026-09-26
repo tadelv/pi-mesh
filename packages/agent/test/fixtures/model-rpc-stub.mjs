@@ -21,6 +21,7 @@ if (globalThis.process.env.MODEL_STUB_PID) {
   );
 }
 let buffer = "";
+let statusCalls = 0;
 function respond(command, data) {
   stdout.write(
     `${JSON.stringify({ type: "response", id: command.id, success: true, data })}\n`,
@@ -29,7 +30,29 @@ function respond(command, data) {
 function handle(line) {
   const command = JSON.parse(line);
   if (command.type === "get_state") {
-    respond(command, { sessionId: "123e4567-e89b-42d3-a456-426614174099" });
+    statusCalls += 1;
+    respond(command, {
+      sessionId: "123e4567-e89b-42d3-a456-426614174099",
+      // `status-shift` models a model changed out of band: successive reads must
+      // report different models with no set_model ever sent.
+      model:
+        mode === "status-shift"
+          ? {
+              id: "model-" + statusCalls,
+              provider: "fixture-provider",
+              name: "Model " + statusCalls,
+            }
+          : models[0],
+      thinkingLevel: "high",
+    });
+    return;
+  }
+  if (command.type === "get_session_stats") {
+    respond(command, {
+      tokens: { input: 100, output: 20, total: 120 },
+      cost: 0.5,
+      contextUsage: { tokens: 60000, contextWindow: 200000, percent: 30 },
+    });
     return;
   }
   if (command.type === "get_available_models") {

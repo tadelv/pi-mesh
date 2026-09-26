@@ -146,9 +146,8 @@ export function createControlServer(
         });
         return;
       }
-      const readMatch = /^\/api\/agents\/([^/]+)\/(models|commands)$/.exec(
-        url.pathname,
-      );
+      const readMatch =
+        /^\/api\/agents\/([^/]+)\/(models|commands|status)$/.exec(url.pathname);
       if (request.method === "GET" && readMatch !== null) {
         let peerId: string;
         try {
@@ -157,14 +156,21 @@ export function createControlServer(
           json(response, 400, { error: "invalid_input" });
           return;
         }
-        const kind = readMatch[2] === "commands" ? "commands" : "models";
+        const kind = readMatch[2]!;
         const skill =
-          kind === "commands" ? "session.commands" : "session.models";
-        // Commands belong to one Pi process, so the caller must name it (ADR
-        // 0017/0016). The agent enforces the same rule; a missing parameter is
-        // refused here rather than spent as a round trip.
+          kind === "commands"
+            ? "session.commands"
+            : kind === "status"
+              ? "session.status"
+              : "session.models";
+        // Commands and status belong to one running Pi process, so the caller
+        // must name it (ADR 0017/0016). The agent enforces the same rule; a
+        // missing parameter is refused here rather than spent as a round trip.
         const jobId = url.searchParams.get("job_id");
-        if (kind === "commands" && (jobId === null || jobId === "")) {
+        if (
+          (kind === "commands" || kind === "status") &&
+          (jobId === null || jobId === "")
+        ) {
           json(response, 400, { error: "invalid_input" });
           return;
         }
@@ -188,6 +194,19 @@ export function createControlServer(
               ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
             },
           );
+          if (kind === "status") {
+            // A status is one object, not a list.
+            if (
+              typeof result !== "object" ||
+              result === null ||
+              Array.isArray(result)
+            )
+              throw new AgentUnreachableError(
+                "Agent returned a malformed session.status result",
+              );
+            json(response, 200, result);
+            return;
+          }
           const list = result?.[kind];
           if (!Array.isArray(list))
             throw new AgentUnreachableError(

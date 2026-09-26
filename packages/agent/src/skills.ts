@@ -36,6 +36,7 @@ export const JOB_SKILLS: readonly Skill[] = [
   "process.stop",
   "session.abort",
   "session.commands",
+  "session.status",
 ];
 
 /**
@@ -666,6 +667,44 @@ export function createSkillRegistry(
     if (!Array.isArray(commands))
       throw new Error("Pi returned an invalid command list");
     return { commands };
+  });
+  skills.register("session.status", async (input) => {
+    const jobId = requiredString(input, "job_id");
+    if (jobId.trim().length === 0) {
+      throw new PiMeshError(-32602, "session.status job_id must be non-blank");
+    }
+    if (options.jobs === undefined) {
+      throw new PiMeshError(-32004, "session.status requires a job manager");
+    }
+    const job = options.jobs.get(jobId);
+    if (job === undefined) {
+      throw new PiMeshError(ErrorCode.UnknownJob, `Unknown job: ${jobId}`);
+    }
+    if (job.state !== "running") {
+      throw new PiMeshError(
+        ErrorCode.JobNotRunning,
+        `Job is not running: ${jobId}`,
+      );
+    }
+    // Two read-only RPC calls; nothing here mutates. Pi is the authority for the
+    // numbers, and the fields are passed through only when it reported them.
+    const stateResponse = await options.jobs.send(jobId, { type: "get_state" });
+    const statsResponse = await options.jobs.send(jobId, {
+      type: "get_session_stats",
+    });
+    const stateData = (stateResponse.data ?? {}) as Record<string, unknown>;
+    const statsData = (statsResponse.data ?? {}) as Record<string, unknown>;
+    return {
+      ...(stateData.model === undefined ? {} : { model: stateData.model }),
+      ...(stateData.thinkingLevel === undefined
+        ? {}
+        : { thinkingLevel: stateData.thinkingLevel }),
+      ...(statsData.tokens === undefined ? {} : { tokens: statsData.tokens }),
+      ...(statsData.cost === undefined ? {} : { cost: statsData.cost }),
+      ...(statsData.contextUsage === undefined
+        ? {}
+        : { contextUsage: statsData.contextUsage }),
+    };
   });
   skills.registerExecution("session.set_model", async (input) => {
     const jobId = requiredString(input, "job_id");

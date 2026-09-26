@@ -36,6 +36,7 @@ const GATE_OPEN_SKILLS = [
   "process.stop",
   "session.abort",
   "session.commands",
+  "session.status",
   ...EXECUTION_SKILLS,
 ].sort();
 
@@ -221,7 +222,7 @@ describe("M2-8 capability honesty", () => {
     expect(disabled.capsSkills.length).toBeGreaterThan(0);
   });
 
-  it("clause 6: ENABLED advertises all thirteen job and execution skills", () => {
+  it("clause 6: ENABLED advertises all fourteen job and execution skills", () => {
     expect(enabled.cardSkills).toEqual(GATE_OPEN_SKILLS);
     expect(enabled.capsSkills).toEqual(GATE_OPEN_SKILLS);
   });

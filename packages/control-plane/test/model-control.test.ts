@@ -14,6 +14,13 @@ const models = [
 const commands = [
   { name: "fix-tests", description: "Fix failing tests", source: "prompt" },
 ];
+const status = {
+  model: { id: "model-a", provider: "provider-a", name: "Model A" },
+  thinkingLevel: "high",
+  tokens: { input: 100, output: 20, total: 120 },
+  cost: 0.5,
+  contextUsage: { tokens: 60000, contextWindow: 200000, percent: 30 },
+};
 const resources: Array<{ stop(): Promise<void>; close(): void }> = [];
 
 afterEach(async () => {
@@ -160,6 +167,7 @@ it("advertises model controls only for their exact agent skills", () => {
     models: true,
     setModel: true,
     commands: false,
+    status: false,
   });
   expect(agentControls(["session.commands"])).toMatchObject({
     commands: true,
@@ -243,6 +251,34 @@ it("commands read surfaces the agent refusal", async () => {
   );
   expect(result.status).toBe(200);
   expect(result.body).toMatchObject({ ok: false, code: -32107 });
+});
+
+it("status read forwards the required job_id and returns the object", async () => {
+  const fixture = await setup({
+    response: (skill, input) => {
+      expect(skill, "status route calls session.status").toBe("session.status");
+      expect(input, "status route forwards job_id").toEqual({
+        job_id: "job-7",
+      });
+      return status;
+    },
+  });
+  const result = await fixture.get(
+    `/api/agents/${agentId}/status?job_id=job-7`,
+  );
+  expect(
+    fixture.requests,
+    "status dispatch preserves skill and job_id",
+  ).toEqual([{ skill: "session.status", input: { job_id: "job-7" } }]);
+  expect(result.status).toBe(200);
+  expect(result.body).toEqual(status);
+});
+
+it("status read refuses a missing job_id without contacting the agent", async () => {
+  const fixture = await setup({ response: () => status });
+  const result = await fixture.get(`/api/agents/${agentId}/status`);
+  expect(result.status).toBe(400);
+  expect(fixture.requests, "no agent call for a missing job_id").toEqual([]);
 });
 
 it("setmodel forwards the exact request body and returns the agent result", async () => {

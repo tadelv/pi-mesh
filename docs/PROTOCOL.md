@@ -48,6 +48,7 @@ Each skill also declares its **exposure**:
 | `session.models` | peer (ungated; read) | `{ job_id? }` | `{ models: Model[] }` |
 | `session.set_model` | **gated on the spawn policy** | `{ job_id, provider, model_id }` | Pi `set_model` model data |
 | `session.commands` | peer (ungated; read, job manager required) | `{ job_id }` | `{ commands: [{ name, description?, source, sourceInfo? }] }` from `get_commands` |
+| `session.status` | peer (ungated; read, job manager required) | `{ job_id }` | `{ model?, thinkingLevel?, tokens?, cost?, contextUsage? }` from `get_state` + `get_session_stats` |
 | `process.list` | peer (ungated; job manager required) | `{}` | `{ jobs: [{ job_id, session_id (nullable), pid (nullable), project, cwd, state, started_at, exit? }] }` |
 | `session.steer` | **gated on the spawn policy** | `{ job_id (mesh id, not PID), message (≤4096 UTF-8 bytes) }` | Pi RPC response; refused with `-32102` when closed |
 | `session.resume` | **gated on the spawn policy** | `{ session_id, acknowledge_concurrent_writers: true }` | `{ job_id, pid, session_id }`; refused with `-32102` when closed |
@@ -88,6 +89,12 @@ are absent from `get_commands` by Pi's design:
   | `/<template>` prompt template | expanded by Pi | yes |
   | an extension command | executed immediately, even while streaming | yes |
   | `/model`, `/settings`, `/compact`, `/hotkeys` and other TUI built-ins | nothing - Pi rejects them outside interactive mode | **no** |
+- `session.status` is a read-only snapshot of a running job: Pi's reported `model`
+and `thinkingLevel` from `get_state`, and `tokens`, `cost` and `contextUsage` from
+`get_session_stats`. The agent computes none of it. `contextUsage` is omitted when
+Pi has no model or window, and its `tokens`/`percent` are `null` right after
+compaction; the dashboard shows that as unknown rather than as 0% or a full bar.
+The status path never sends `set_model`.
 - `process.spawn`'s `cwd`, when given, must resolve inside the workspace root
   (which defaults to the user's home directory), because the realpath check is
   an accident guard and project selector. It is not a sandbox: the spawned

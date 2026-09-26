@@ -17,11 +17,12 @@ losing visibility into what each instance is doing. pi-mesh gives you:
   agents are actually running.
 - **Steering** — prompt the selected session when its agent confirms a running job and has opted in; an accepted request is checked against a new transcript turn, whose origin cannot be proven.
 - **Model and command surface** — see the models an agent's Pi offers, choose one
-  before a start or change a running session's, and get the commands that Pi
-  reports as advisory completion. Plain prose, `/skill:<name>`, prompt templates
-  and extension commands run; TUI-only built-ins (`/model`, `/settings`,
-  `/compact`, `/hotkeys`) do not, and are sent as text where Pi refuses them. A
-  hint never promises a command will run, and the box never reports one as run.
+  before a start or change a running session's, read the current model and context
+  window Pi reports, and get the commands that Pi reports as advisory completion.
+  Plain prose, `/skill:<name>`, prompt templates and extension commands run;
+  TUI-only built-ins (`/model`, `/settings`, `/compact`, `/hotkeys`) do not, and
+  are sent as text where Pi refuses them. A hint never promises a command will
+  run, and the box never reports one as run.
 - **Process control** — start and stop Pi sessions on remote devices.
 
 ## Install

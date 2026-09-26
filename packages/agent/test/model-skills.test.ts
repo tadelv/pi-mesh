@@ -39,6 +39,13 @@ const COMMANDS = [
   { name: "fix-tests", description: "Fix failing tests", source: "prompt" },
   { name: "skill:deploy", description: "Deploy the service", source: "skill" },
 ];
+const STATUS = {
+  model: MODEL,
+  thinkingLevel: "high",
+  tokens: { input: 100, output: 20, total: 120 },
+  cost: 0.5,
+  contextUsage: { tokens: 60000, contextWindow: 200000, percent: 30 },
+};
 
 async function setup(mode = "catalog", timeoutMs = 1_000, ttlMs = 30_000) {
   const parent = await realpath(
@@ -111,8 +118,8 @@ async function setup(mode = "catalog", timeoutMs = 1_000, ttlMs = 30_000) {
 import { PiRpcClient } from "../src/rpc.js";
 const requireRpc = { PiRpcClient };
 
-async function startJob(state?: "running" | "stopping") {
-  const env = await setup();
+async function startJob(state?: "running" | "stopping", mode = "catalog") {
+  const env = await setup(mode);
   const job = await env.jobs.startReady({
     peerId: "peer",
     project: "fixture",
@@ -318,6 +325,52 @@ describe("model skills", () => {
       await expect(
         env.skills.invoke("session.commands", { job_id: env.job.id }),
       ).rejects.toMatchObject({ code: ErrorCode.JobNotRunning });
+    } finally {
+      await env.close();
+    }
+  });
+
+  it("returns Pi's model and context usage for a running job, and refuses unnamed, blank, unknown, or stopping jobs", async () => {
+    const env = await startJob();
+    try {
+      await expect(
+        env.skills.invoke("session.status", { job_id: env.job.id }),
+      ).resolves.toEqual(STATUS);
+      await expect(
+        env.skills.invoke("session.status", {}),
+      ).rejects.toMatchObject({ code: -32602 });
+      await expect(
+        env.skills.invoke("session.status", { job_id: "   " }),
+      ).rejects.toMatchObject({ code: -32602 });
+      await expect(
+        env.skills.invoke("session.status", { job_id: "missing" }),
+      ).rejects.toMatchObject({ code: ErrorCode.UnknownJob });
+      env.job.state = "stopping";
+      await expect(
+        env.skills.invoke("session.status", { job_id: env.job.id }),
+      ).rejects.toMatchObject({ code: ErrorCode.JobNotRunning });
+    } finally {
+      await env.close();
+    }
+  });
+
+  it("reports Pi's current model on each read and never sends set_model", async () => {
+    const env = await startJob(undefined, "status-shift");
+    try {
+      const first = (await env.skills.invoke("session.status", {
+        job_id: env.job.id,
+      })) as { model: { id: string } };
+      const second = (await env.skills.invoke("session.status", {
+        job_id: env.job.id,
+      })) as { model: { id: string } };
+      expect(
+        first.model.id,
+        "the read reflects an out-of-band model change rather than a cached request",
+      ).not.toBe(second.model.id);
+      expect(
+        await count(env.commands),
+        "the status path must never send set_model",
+      ).toBe(0);
     } finally {
       await env.close();
     }

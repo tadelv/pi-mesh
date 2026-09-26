@@ -293,6 +293,9 @@
       .entry { animation: arrive .18s ease-out both; }
       @keyframes arrive { from { opacity: .65; transform: translateY(3px); } to { opacity: 1; transform: none; } }
     }
+    .live-tail { margin-top: 6px; padding-top: 6px; border-top: 1px dashed rgba(128,128,128,.45); }
+    .live-banner { font-size: 11px; opacity: .7; letter-spacing: .02em; margin: 0 0 6px; text-transform: uppercase; }
+    .entry.live { opacity: .95; }
   </style>
 </head>
 <body>
@@ -319,6 +322,7 @@
         <p id="status" role="status"></p>
         <p id="pairing"></p>
         <p id="transcript-status" role="status" aria-live="polite"></p>
+        <p id="live-status" role="status" aria-live="polite"></p>
       </div>
       <section id="transcript-panel" hidden></section>
     </main>
@@ -500,8 +504,192 @@
     const query = all ? '?all=1' : before ? '?before='+encodeURIComponent(before) : '';
     return api('/api/sessions/'+encodeURIComponent(agentId)+'/'+encodeURIComponent(sessionId)+query, 'GET', undefined, signal);
   }
+  // Live view (ADR 0018). A view over the durable record, never the record:
+  // frames are ephemeral, and a disconnect falls back to the page-read path.
+  const liveStates = new Map();
+  function liveState(owner) {
+    const key = owner.agentId+'\0'+owner.sessionId;
+    if(!liveStates.has(key)) liveStates.set(key, {controller:null, active:false, container:null, tail:[]});
+    return liveStates.get(key);
+  }
+  function announceLive(owner, text) {
+    if(selected !== owner) return;
+    const region = document.querySelector('#live-status');
+    if(region) region.textContent = text;
+  }
+  function isLiveActive(owner) {
+    const current = liveStates.get(owner.agentId+'\0'+owner.sessionId);
+    return !!current && current.active;
+  }
+  async function* readSse(body, signal) {
+    const reader = body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+    try {
+      for(;;) {
+        const result = await reader.read().catch(error => {
+          if(signal && signal.aborted) return {done:true, value:undefined};
+          throw error;
+        });
+        if(result.done) return;
+        buffer += decoder.decode(result.value, {stream:true});
+        let boundary = buffer.indexOf('\n\n');
+        while(boundary !== -1) {
+          const record = buffer.slice(0, boundary);
+          buffer = buffer.slice(boundary+2);
+          const lines = record.split('\n');
+          const name = (lines.find(line => line.startsWith('event:')) || '').slice(6).trim() || 'message';
+          const data = lines.filter(line => line.startsWith('data:')).map(line => line.slice(5).trim()).join('\n');
+          if(data) {
+            let parsed;
+            try { parsed = JSON.parse(data); } catch { parsed = undefined; }
+            yield {name, data:parsed};
+          }
+          boundary = buffer.indexOf('\n\n');
+        }
+      }
+    } finally {
+      void reader.cancel().catch(() => undefined);
+    }
+  }
+  function stopLiveView(owner) {
+    const current = liveStates.get(owner.agentId+'\0'+owner.sessionId);
+    if(!current) return;
+    current.active = false;
+    current.container = null;
+    if(current.controller) { current.controller.abort(); current.controller = null; }
+  }
+  function reasonOf(data, fallback) {
+    return data && typeof data.reason === 'string' && data.reason ? data.reason : fallback;
+  }
+  function toolName(frame) { return String(frame.toolName || frame.tool || frame.name || 'tool'); }
+  async function startLiveView(owner) {
+    const agent = state.agents.find(item => item.peer_id === owner.agentId);
+    if(!agent || !agent.controls.stream || typeof agent.jobs_synced_at !== 'number') return;
+    const running = state.jobs.filter(job => job.agent_id === owner.agentId && job.session_id === owner.sessionId && job.state === 'running');
+    // Ambiguity is refused here as well as at the endpoint: opening a view for a
+    // session two running jobs claim is exactly what ADR 0016 forbids.
+    if(running.length !== 1) return;
+    const current = liveState(owner);
+    if(current.controller || current.active) return;
+    const controller = new AbortController();
+    current.controller = controller;
+    current.tail = [];
+    try {
+      const response = await fetch('/api/sessions/'+encodeURIComponent(owner.agentId)+'/'+encodeURIComponent(owner.sessionId)+'/stream', {headers:{'X-Pi-Mesh-Ui':token}, signal:controller.signal});
+      if(selected !== owner) return;
+      if(!response.ok) {
+        const body = await response.json().catch(() => ({}));
+        announceLive(owner, 'Live view unavailable: '+(body.message || ('request failed: '+response.status)));
+        return;
+      }
+      current.active = true;
+      announceLive(owner, 'Watching this session live. The durable transcript is still the record.');
+      let ended = false;
+      for await (const item of readSse(response.body, controller.signal)) {
+        // Ownership: a frame for session A must never render over session B.
+        if(selected !== owner) return;
+        if(item.name === 'live') renderLiveFrame(owner, item.data);
+        else if(item.name === 'not-live') { ended = true; announceLive(owner, 'This session is not live here: '+reasonOf(item.data, 'the agent served the durable file')+'. Showing the durable page.'); break; }
+        else if(item.name === 'error') { ended = true; announceLive(owner, 'The live view failed: '+reasonOf(item.data, 'unknown error')+'. Showing the durable page.'); break; }
+        else if(item.name === 'end') { ended = true; announceLive(owner, 'The live view ended ('+reasonOf(item.data, 'the agent stopped streaming')+'). Re-read the session for the durable page.'); break; }
+      }
+      if(!ended && selected === owner) announceLive(owner, 'The live view ended. Re-read the session for the durable page.');
+    } catch(error) {
+      if(error && error.name === 'AbortError') return;
+      if(selected === owner) announceLive(owner, 'The live view disconnected. Re-read the session for the durable page.');
+    } finally {
+      if(current.controller === controller) current.controller = null;
+      current.active = false;
+      current.container = null;
+      // Reconnect reconciliation: re-read the durable page and never claim the
+      // deltas that were missed. A closed stream is not evidence the turn ended.
+      if(selected === owner) void refreshSelected();
+    }
+  }
+  function renderLiveFrame(owner, frame) {
+    if(!isLiveActive(owner) || !frame || typeof frame !== 'object') return;
+    const type = String(frame.type || '');
+    if(type === 'message_update') {
+      const event = frame.assistantMessageEvent;
+      if(!event) return;
+      if(event.type === 'text_delta' && typeof event.delta === 'string') appendLiveTextItem(owner, 'assistant', event.delta);
+      else if(event.type === 'thinking_delta' && typeof event.delta === 'string') appendLiveTextItem(owner, 'thinking', event.delta);
+      return;
+    }
+    if(type === 'message_end') { closeLiveTextItem(owner); announceLive(owner, 'The assistant finished a message.'); return; }
+    if(type === 'turn_end') { announceLive(owner, 'The turn ended.'); return; }
+    if(type === 'tool_execution_start') { appendLiveEntry(owner, 'tool-call', 'Tool call · '+toolName(frame), frame); return; }
+    if(type === 'tool_execution_end') { appendLiveEntry(owner, 'tool-result', 'Tool result · '+toolName(frame), frame); return; }
+  }
+  function appendLiveTextItem(owner, kind, delta) {
+    const current = liveState(owner);
+    let item = current.tail[current.tail.length-1];
+    if(!item || item.kind !== kind || item.done) {
+      item = {kind, text:'', done:false};
+      current.tail.push(item);
+      // Announce the entry boundary, never the individual token: a screen
+      // reader must not hear a delta at a time (ADR 0018 §7).
+      if(kind === 'assistant') announceLive(owner, 'The assistant is responding.');
+    }
+    item.text += delta;
+    paintLiveTail(owner);
+  }
+  function closeLiveTextItem(owner) {
+    const current = liveState(owner);
+    const item = current.tail[current.tail.length-1];
+    if(item) item.done = true;
+    paintLiveTail(owner);
+  }
+  function appendLiveEntry(owner, kind, label, detail) {
+    const current = liveState(owner);
+    current.tail.push({kind, label, detail});
+    announceLive(owner, label);
+    paintLiveTail(owner);
+  }
+  function ensureLiveTail(owner) {
+    const current = liveState(owner);
+    if(!current.active) return null;
+    if(current.container && current.container.isConnected) return current.container;
+    const list = transcriptPanel.querySelector('.transcript');
+    if(!list) return null;
+    const container = node('div', undefined, list);
+    container.className = 'live-tail';
+    current.container = container;
+    return container;
+  }
+  function paintLiveTail(owner) {
+    const current = liveState(owner);
+    const container = ensureLiveTail(owner);
+    if(!container) return;
+    container.replaceChildren();
+    if(!current.tail.length) return;
+    node('p', 'Live — not the durable record', container).className = 'live-banner';
+    for(const item of current.tail) {
+      const entry = node('article', undefined, container);
+      const css = item.kind === 'assistant' ? 'assistant' : item.kind === 'thinking' ? 'meta-entry' : item.kind === 'tool-call' ? 'tool-call' : 'tool-result';
+      entry.className = 'entry '+css+' live';
+      const meta = node('div', undefined, entry); meta.className = 'entry-meta';
+      node('span', item.kind === 'assistant' ? 'assistant (live)' : item.kind === 'thinking' ? 'thinking (live)' : item.label, meta).className = 'entry-role';
+      const body = node('div', undefined, entry); body.className = 'entry-body';
+      if(item.kind === 'assistant' || item.kind === 'thinking') node('div', item.text || '…', body);
+      else {
+        const details = node('details', undefined, body); details.className = 'tool-payload';
+        node('summary', 'Payload (expand)', details);
+        node('pre', JSON.stringify(item.detail === undefined ? {} : item.detail, null, 2), details);
+      }
+    }
+  }
+  function attachLiveTail(owner, list) {
+    const current = liveStates.get(owner.agentId+'\0'+owner.sessionId);
+    if(!current || !current.active) return;
+    const container = node('div', undefined, list);
+    container.className = 'live-tail';
+    current.container = container;
+    paintLiveTail(owner);
+  }
   async function openSession(agentId, sessionId) {
-    if(selected) { const previous = promptState(selected); previous.jobId = ''; previous.confirmed = false; }
+    if(selected) { const previous = promptState(selected); previous.jobId = ''; previous.confirmed = false; stopLiveView(selected); }
     const next = promptState({agentId, sessionId}); next.jobId = ''; next.confirmed = false;
     selected = {agentId, sessionId};
     showView('session');
@@ -522,6 +710,8 @@
         status.textContent = data.stale ? 'Could not verify session '+owner.sessionId+'.' : 'Loaded session '+owner.sessionId+'.';
         const list = transcriptPanel.querySelector('.transcript');
         if(list) list.scrollTop = list.scrollHeight;
+        // Only now, with the durable page on screen, does the live view attach.
+        void startLiveView(owner);
       }
     } catch(error) {
       if(selected !== owner) return;
@@ -547,6 +737,7 @@
     list.className = 'transcript';
     if(data.events.length === 0) node('p', data.stale ? 'No cached transcript entries.' : 'No transcript entries yet; the session may still be starting.', list).className = 'dim';
     for(const event of data.events) renderEntry(event, list);
+    attachLiveTail(owner, list);
     renderResumeAvailability(data, owner);
     renderPromptAvailability(data, owner);
     const actions = node('div', undefined, list);

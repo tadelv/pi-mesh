@@ -168,6 +168,7 @@ it("advertises model controls only for their exact agent skills", () => {
     setModel: true,
     commands: false,
     status: false,
+    stream: false,
   });
   expect(agentControls(["session.commands"])).toMatchObject({
     commands: true,

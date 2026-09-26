@@ -128,6 +128,7 @@ it("reports advertised capabilities and unknown for an unreachable agent", async
     resume: true,
     commands: true,
     status: true,
+    stream: true,
   });
   expect(controls["unreachable-agent"]).toEqual({
     spawn: false,
@@ -139,6 +140,7 @@ it("reports advertised capabilities and unknown for an unreachable agent", async
     resume: false,
     commands: false,
     status: false,
+    stream: false,
   });
 
   const restarted = createControlServer({ store, host: "127.0.0.1", port: 0 });
@@ -198,6 +200,7 @@ it("derives each control from its advertised skill", () => {
     resume: false,
     commands: false,
     status: false,
+    stream: false,
   });
   expect(
     agentControls(["process.spawn", "process.stop", "session.read"]),
@@ -211,6 +214,7 @@ it("derives each control from its advertised skill", () => {
     resume: false,
     commands: false,
     status: false,
+    stream: false,
   });
   expect(agentControls(null)).toEqual({
     spawn: false,
@@ -222,6 +226,7 @@ it("derives each control from its advertised skill", () => {
     resume: false,
     commands: false,
     status: false,
+    stream: false,
   });
 });
 

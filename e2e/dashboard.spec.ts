@@ -3845,3 +3845,479 @@ test("selected-session model control is capability-, job-, and owner-bound", asy
     }
   }
 });
+
+/**
+ * A running session's transcript updates from the SSE stream without a page
+ * reload, and token deltas reach the transcript but never the live region.
+ */
+test("a running session's transcript updates live and announces only boundaries", async ({
+  browser,
+}) => {
+  const store = new ControlStore(":memory:");
+  store.controlName("Live View Control");
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const { port } = await control.start();
+  const token = store.dashboardToken();
+  const timestamp = new Date(0).toISOString();
+  const page = await browser.newPage();
+  const streamHeaders: Array<string | undefined> = [];
+  const streamUrls: string[] = [];
+  let sessionReads = 0;
+  try {
+    await page.addInitScript(
+      (value) => localStorage.setItem("pi_mesh_token", value),
+      token,
+    );
+    await page.route("**/api/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (url.pathname === "/api/state") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            control: { id: "control-live", name: "Live View Control" },
+            agents: [
+              {
+                peer_id: "peer-a",
+                name: "Agent A",
+                host: "127.0.0.1",
+                port: 7330,
+                paired_at: timestamp,
+                skills: ["session.stream"],
+                controls: {
+                  spawn: false,
+                  steer: true,
+                  stop: false,
+                  abort: false,
+                  models: false,
+                  setModel: false,
+                  resume: false,
+                  commands: false,
+                  status: false,
+                  stream: true,
+                },
+                jobs_synced_at: 1,
+              },
+            ],
+            sessions: [
+              {
+                agent_id: "peer-a",
+                session_id: "session-a",
+                project: "/work/a",
+                name: "Session A",
+                started_at: timestamp,
+                updated_at: timestamp,
+                synced_at: timestamp,
+              },
+            ],
+            jobs: [
+              {
+                agent_id: "peer-a",
+                job_id: "job-a",
+                session_id: "session-a",
+                pid: 1,
+                project: "live",
+                created_at: timestamp,
+                state: "running",
+              },
+            ],
+            execution_transport: "confidential",
+          }),
+        });
+        return;
+      }
+      if (url.pathname === "/api/sessions/peer-a/session-a/stream") {
+        streamHeaders.push(request.headers()["x-pi-mesh-ui"]);
+        streamUrls.push(request.url());
+        await route.fulfill({
+          contentType: "text/event-stream",
+          body:
+            "event: live\ndata: " +
+            JSON.stringify({
+              type: "message_update",
+              source: "live",
+              assistantMessageEvent: {
+                type: "text_delta",
+                delta: "Live hello",
+              },
+            }) +
+            "\n\nevent: end\ndata: " +
+            JSON.stringify({ reason: "the agent stopped streaming" }) +
+            "\n\n",
+        });
+        return;
+      }
+      if (url.pathname === "/api/sessions/peer-a/session-a") {
+        sessionReads += 1;
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            events: [
+              {
+                entry_id: "durable-1",
+                timestamp,
+                data: JSON.stringify({
+                  type: "message",
+                  message: {
+                    role: "user",
+                    content: [{ type: "text", text: "Durable turn" }],
+                  },
+                }),
+              },
+            ],
+            hasEarlier: false,
+            total: 1,
+            all: false,
+            stale: false,
+          }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: "{}",
+      });
+    });
+    await page.goto(`http://127.0.0.1:${port}`);
+    await page
+      .locator(".session-link")
+      .filter({ hasText: "Session A" })
+      .click();
+    const panel = page.locator("#transcript-panel");
+    await expect(panel).toContainText("Durable turn");
+    await expect(
+      panel,
+      "the streamed frame appears without a reload",
+    ).toContainText("Live hello");
+    await expect(page.locator("#live-status")).toContainText("live view ended");
+    // The live region announces entry boundaries, never the tokens themselves.
+    await expect(page.locator("#live-status")).not.toContainText("Live hello");
+    expect(streamHeaders, "the stream carried the dashboard token").toEqual([
+      token,
+    ]);
+    expect(streamUrls[0], "no token in the stream URL").not.toContain("token");
+    await expect
+      .poll(() => sessionReads, {
+        message: "the durable page is re-read after the stream ends",
+      })
+      .toBeGreaterThan(1);
+  } finally {
+    await page.close();
+    try {
+      await control.stop();
+    } finally {
+      store.close();
+    }
+  }
+});
+
+test("a not-live stream falls back to the durable page and names the reason", async ({
+  browser,
+}) => {
+  const store = new ControlStore(":memory:");
+  store.controlName("Not Live Control");
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const { port } = await control.start();
+  const token = store.dashboardToken();
+  const timestamp = new Date(0).toISOString();
+  const page = await browser.newPage();
+  try {
+    await page.addInitScript(
+      (value) => localStorage.setItem("pi_mesh_token", value),
+      token,
+    );
+    await page.route("**/api/**", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === "/api/state") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            control: { id: "control-a", name: "Not Live Control" },
+            agents: [
+              {
+                peer_id: "peer-a",
+                name: "Agent A",
+                host: "127.0.0.1",
+                port: 7330,
+                paired_at: timestamp,
+                skills: ["session.stream"],
+                controls: {
+                  spawn: false,
+                  steer: false,
+                  stop: false,
+                  abort: false,
+                  models: false,
+                  setModel: false,
+                  resume: false,
+                  commands: false,
+                  status: false,
+                  stream: true,
+                },
+                jobs_synced_at: 1,
+              },
+            ],
+            sessions: [
+              {
+                agent_id: "peer-a",
+                session_id: "session-a",
+                project: "/work/a",
+                name: "Session A",
+                started_at: timestamp,
+                updated_at: timestamp,
+                synced_at: timestamp,
+              },
+            ],
+            jobs: [
+              {
+                agent_id: "peer-a",
+                job_id: "job-a",
+                session_id: "session-a",
+                pid: 1,
+                project: "file",
+                created_at: timestamp,
+                state: "running",
+              },
+            ],
+            execution_transport: "confidential",
+          }),
+        });
+        return;
+      }
+      if (url.pathname === "/api/sessions/peer-a/session-a/stream") {
+        await route.fulfill({
+          contentType: "text/event-stream",
+          body:
+            "event: not-live\ndata: " +
+            JSON.stringify({
+              reason: "the agent served the durable file, not a live turn",
+            }) +
+            "\n\n",
+        });
+        return;
+      }
+      if (url.pathname === "/api/sessions/peer-a/session-a") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            events: [
+              {
+                entry_id: "durable-1",
+                timestamp,
+                data: JSON.stringify({
+                  type: "message",
+                  message: {
+                    role: "user",
+                    content: [{ type: "text", text: "Durable only" }],
+                  },
+                }),
+              },
+            ],
+            hasEarlier: false,
+            total: 1,
+            all: false,
+            stale: false,
+          }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: "{}",
+      });
+    });
+    await page.goto(`http://127.0.0.1:${port}`);
+    await page
+      .locator(".session-link")
+      .filter({ hasText: "Session A" })
+      .click();
+    const panel = page.locator("#transcript-panel");
+    await expect(panel).toContainText("Durable only");
+    await expect(
+      page.locator("#live-status"),
+      "the downgrade is stated, not silent",
+    ).toContainText("not live here");
+    await expect(page.locator("#live-status")).toContainText("durable file");
+    // The durable entry is shown once, and never as a live overlay.
+    await expect(panel.locator("text=Durable only")).toHaveCount(1);
+    await expect(panel.locator(".live-tail")).toHaveCount(0);
+  } finally {
+    await page.close();
+    try {
+      await control.stop();
+    } finally {
+      store.close();
+    }
+  }
+});
+
+test("a live frame for session A never renders over session B", async ({
+  browser,
+}) => {
+  const store = new ControlStore(":memory:");
+  store.controlName("Live Ownership Control");
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const { port } = await control.start();
+  const token = store.dashboardToken();
+  const timestamp = new Date(0).toISOString();
+  const page = await browser.newPage();
+  let releaseA: () => void = () => undefined;
+  const gateA = new Promise<void>((resolve) => {
+    releaseA = resolve;
+  });
+  let aRequested = false;
+  const sessions = ["session-a", "session-b"];
+  try {
+    await page.addInitScript(
+      (value) => localStorage.setItem("pi_mesh_token", value),
+      token,
+    );
+    await page.route("**/api/**", async (route) => {
+      const url = new URL(route.request().url());
+      if (url.pathname === "/api/state") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            control: { id: "control-a", name: "Live Ownership Control" },
+            agents: [
+              {
+                peer_id: "peer-a",
+                name: "Agent A",
+                host: "127.0.0.1",
+                port: 7330,
+                paired_at: timestamp,
+                skills: ["session.stream"],
+                controls: {
+                  spawn: false,
+                  steer: false,
+                  stop: false,
+                  abort: false,
+                  models: false,
+                  setModel: false,
+                  resume: false,
+                  commands: false,
+                  status: false,
+                  stream: true,
+                },
+                jobs_synced_at: 1,
+              },
+            ],
+            sessions: sessions.map((id) => ({
+              agent_id: "peer-a",
+              session_id: id,
+              project: "/work/a",
+              name: id === "session-a" ? "Session A" : "Session B",
+              started_at: timestamp,
+              updated_at: timestamp,
+              synced_at: timestamp,
+            })),
+            jobs: sessions.map((id) => ({
+              agent_id: "peer-a",
+              job_id: `job-${id}`,
+              session_id: id,
+              pid: 1,
+              project: "live",
+              created_at: timestamp,
+              state: "running",
+            })),
+            execution_transport: "confidential",
+          }),
+        });
+        return;
+      }
+      if (url.pathname === "/api/sessions/peer-a/session-a/stream") {
+        aRequested = true;
+        // Held until the test switches to session B, so A's frames arrive late.
+        await gateA;
+        try {
+          await route.fulfill({
+            contentType: "text/event-stream",
+            body:
+              "event: live\ndata: " +
+              JSON.stringify({
+                type: "message_update",
+                source: "live",
+                assistantMessageEvent: { type: "text_delta", delta: "LEAKED" },
+              }) +
+              "\n\n",
+          });
+        } catch {
+          // The browser aborted A's fetch when B was selected; that is the point.
+        }
+        return;
+      }
+      if (url.pathname === "/api/sessions/peer-a/session-b/stream") {
+        await route.fulfill({
+          contentType: "text/event-stream",
+          body:
+            "event: end\ndata: " +
+            JSON.stringify({ reason: "the agent stopped streaming" }) +
+            "\n\n",
+        });
+        return;
+      }
+      const sessionMatch = url.pathname.match(
+        /^\/api\/sessions\/peer-a\/(session-a|session-b)$/,
+      );
+      if (sessionMatch) {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            events: [
+              {
+                entry_id: `${sessionMatch[1]}-durable`,
+                timestamp,
+                data: JSON.stringify({
+                  type: "message",
+                  message: {
+                    role: "user",
+                    content: [
+                      { type: "text", text: `Durable ${sessionMatch[1]}` },
+                    ],
+                  },
+                }),
+              },
+            ],
+            hasEarlier: false,
+            total: 1,
+            all: false,
+            stale: false,
+          }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: "{}",
+      });
+    });
+    await page.goto(`http://127.0.0.1:${port}`);
+    await page
+      .locator(".session-link")
+      .filter({ hasText: "Session A" })
+      .click();
+    await expect.poll(() => aRequested).toBe(true);
+    await page
+      .locator(".session-link")
+      .filter({ hasText: "Session B" })
+      .click();
+    const panel = page.locator("#transcript-panel");
+    await expect(panel).toContainText("Durable session-b");
+    releaseA();
+    await page.waitForTimeout(300);
+    await expect(
+      panel,
+      "missing observation: a frame for session A must not render over session B",
+    ).not.toContainText("LEAKED");
+  } finally {
+    releaseA();
+    await page.close();
+    try {
+      await control.stop();
+    } finally {
+      store.close();
+    }
+  }
+});

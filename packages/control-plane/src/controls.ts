@@ -10,6 +10,7 @@ export function agentControls(skills: string[] | null): {
   resume: boolean;
   commands: boolean;
   status: boolean;
+  stream: boolean;
 } {
   return {
     spawn: skills?.includes("process.spawn") ?? false,
@@ -21,5 +22,6 @@ export function agentControls(skills: string[] | null): {
     resume: skills?.includes("session.resume") ?? false,
     commands: skills?.includes("session.commands") ?? false,
     status: skills?.includes("session.status") ?? false,
+    stream: skills?.includes("session.stream") ?? false,
   };
 }

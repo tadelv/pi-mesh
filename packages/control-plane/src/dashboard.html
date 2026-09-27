@@ -521,11 +521,25 @@
   // that produced more entries than a view needs to hold.
   const MAX_LIVE_RECORD = 1024 * 1024;
   const MAX_LIVE_ITEMS = 300;
+  // Bounded backoff for a dropped live view: a blip heals itself, a dead agent
+  // is not hammered, and after the last attempt the operator is told to act.
+  const LIVE_RETRY_MS = [1000, 2000, 4000, 8000, 15000];
   const liveStates = new Map();
   function liveState(owner) {
     const key = owner.agentId+'\0'+owner.sessionId;
-    if(!liveStates.has(key)) liveStates.set(key, {controller:null, active:false, container:null, tail:[]});
+    if(!liveStates.has(key)) liveStates.set(key, {controller:null, active:false, container:null, tail:[], retryTimer:null, attempts:0});
     return liveStates.get(key);
+  }
+  // Chat-style scroll memory: follow new output only while the reader is at the
+  // bottom. Scrolling up is a deliberate act and must not be yanked back, and a
+  // refresh must not throw them to the top either.
+  const scrollMemory = new Map();
+  function scrollKey(owner) { return owner.agentId+'\0'+owner.sessionId; }
+  function listIsNearBottom(list) { return list.scrollHeight - list.scrollTop - list.clientHeight < 48; }
+  function followLive(owner) {
+    const memory = scrollMemory.get(scrollKey(owner));
+    const list = transcriptPanel.querySelector('.transcript');
+    if(memory && memory.stuck && list) list.scrollTop = list.scrollHeight;
   }
   function announceLive(owner, text) {
     if(selected !== owner) return;
@@ -576,6 +590,10 @@
     const current = liveStates.get(owner.agentId+'\0'+owner.sessionId);
     if(!current) return;
     current.active = false;
+    // A deliberate close owns the outcome: cancel a pending reconnect so it
+    // cannot re-open the view the operator just left.
+    if(current.retryTimer) { clearTimeout(current.retryTimer); current.retryTimer = null; }
+    current.attempts = 0;
     // Take the overlay down with the view; a stale live tail must not linger on
     // screen while the durable page is (or cannot be) re-read.
     if(current.container && current.container.isConnected) current.container.remove();
@@ -594,10 +612,12 @@
     // session two running jobs claim is exactly what ADR 0016 forbids.
     if(running.length !== 1) return;
     const current = liveState(owner);
-    if(current.controller || current.active) return;
+    if(current.controller || current.active || current.retryTimer) return;
     const controller = new AbortController();
     current.controller = controller;
     current.tail = [];
+    let ended = false;
+    let dropped = false;
     try {
       const response = await fetch('/api/sessions/'+encodeURIComponent(owner.agentId)+'/'+encodeURIComponent(owner.sessionId)+'/stream', {headers:{'X-Pi-Mesh-Ui':token}, signal:controller.signal});
       if(selected !== owner) return;
@@ -608,7 +628,6 @@
       }
       current.active = true;
       announceLive(owner, 'Watching this session live. The durable transcript is still the record.');
-      let ended = false;
       for await (const item of readSse(response.body, controller.signal)) {
         // Ownership: a frame for session A must never render over session B.
         if(selected !== owner) return;
@@ -617,10 +636,14 @@
         else if(item.name === 'error') { ended = true; announceLive(owner, 'The live view failed: '+reasonOf(item.data, 'unknown error')+'. Showing the durable page.'); break; }
         else if(item.name === 'end') { ended = true; announceLive(owner, 'The live view ended ('+reasonOf(item.data, 'the agent stopped streaming')+'). Re-read the session for the durable page.'); break; }
       }
-      if(!ended && selected === owner) announceLive(owner, 'The live view ended. Re-read the session for the durable page.');
+      // The reader closed without the control plane's end frame: a drop, not a
+      // finished view. A stated end is terminal and must not be re-opened.
+      if(!ended) dropped = true;
+      if(!ended && selected === owner) announceLive(owner, 'The live view disconnected; re-reading the durable page\u2026');
     } catch(error) {
       if(error && error.name === 'AbortError') return;
-      if(selected === owner) announceLive(owner, 'The live view disconnected. Re-read the session for the durable page.');
+      dropped = true;
+      if(selected === owner) announceLive(owner, 'The live view disconnected; re-reading the durable page\u2026');
     } finally {
       if(current.controller === controller) current.controller = null;
       current.active = false;
@@ -629,13 +652,51 @@
       // tail on screen as if it were still live.
       if(current.container && current.container.isConnected) current.container.remove();
       current.container = null;
-      // Reconnect reconciliation: re-read the durable page and never claim the
-      // deltas that were missed. A closed stream is not evidence the turn ended.
-      if(selected === owner) void refreshSelected();
+      if(selected === owner) {
+        // Reconnect reconciliation: re-read the durable page and never claim the
+        // deltas that were missed. `true` keeps this from re-entering the view
+        // path below, which is what makes a retry bounded rather than a loop.
+        void refreshSelected(true);
+        if(dropped) scheduleLiveRetry(owner);
+      }
     }
+  }
+  /**
+   * The one place a view is (re)opened outside the initial session click: a
+   * refresh (Sync, an action reload, a reconnect) re-attaches while the session
+   * still has exactly one running job. Without this the operator had to re-open
+   * the session by hand whenever the stream ended.
+   */
+  function maybeStartLiveView(owner) {
+    if(selected !== owner) return;
+    const current = liveState(owner);
+    if(current.controller || current.active || current.retryTimer) return;
+    const agent = state.agents.find(item => item.peer_id === owner.agentId);
+    if(agent && !agent.controls.stream) return;
+    // An unconfirmed listing is deliberately NOT refreshed here: the operator's
+    // Sync is what confirms it (M5/M6 honesty rule), and the card states it.
+    void startLiveView(owner);
+  }
+  function scheduleLiveRetry(owner) {
+    const current = liveState(owner);
+    if(current.attempts >= LIVE_RETRY_MS.length) {
+      current.attempts = 0;
+      announceLive(owner, 'The live view disconnected and could not be re-established. Sync or reopen the session to try again.');
+      return;
+    }
+    const delay = LIVE_RETRY_MS[current.attempts];
+    current.attempts += 1;
+    if(current.retryTimer) clearTimeout(current.retryTimer);
+    current.retryTimer = setTimeout(() => {
+      current.retryTimer = null;
+      if(selected === owner) void maybeStartLiveView(owner);
+    }, delay);
+    announceLive(owner, 'The live view disconnected; reconnecting\u2026');
   }
   function renderLiveFrame(owner, frame) {
     if(!isLiveActive(owner) || !frame || typeof frame !== 'object') return;
+    // A frame means the view is healthy again: the retry budget resets.
+    liveState(owner).attempts = 0;
     const type = String(frame.type || '');
     if(type === 'message_update') {
       const event = frame.assistantMessageEvent;
@@ -680,6 +741,7 @@
     if(!ensureLiveTail(owner)) return;
     for(const item of current.tail) { if(item.node && item.node.isConnected) item.node.remove(); item.node = null; }
     for(const item of current.tail) liveNode(owner, item);
+    followLive(owner);
   }
   function appendLiveTextItem(owner, kind, delta) {
     const current = liveState(owner);
@@ -696,6 +758,7 @@
     // quadratic over a long turn.
     if(liveNode(owner, item) && item.textNode) item.textNode.textContent = item.text || '…';
     trimLiveTail(owner);
+    followLive(owner);
   }
   function closeLiveTextItem(owner) {
     const current = liveState(owner);
@@ -709,6 +772,7 @@
     liveNode(owner, item);
     trimLiveTail(owner);
     announceLive(owner, label);
+    followLive(owner);
   }
   function ensureLiveTail(owner) {
     const current = liveState(owner);
@@ -772,6 +836,12 @@
   // after a different session was opened belongs to a transcript that is gone.
   function renderTranscript(data, owner, focusHeading = false) {
     owner.transcript = data;
+    // Capture where the reader was before this rebuild: a refresh must not throw
+    // them to the top, and must not yank them down if they scrolled up.
+    const key = scrollKey(owner);
+    const previous = transcriptPanel.querySelector('.transcript');
+    const memory = scrollMemory.get(key) ?? {stuck:true};
+    const previousDistance = previous ? previous.scrollHeight - previous.scrollTop : 0;
     transcriptPanel.replaceChildren();
     const session = state.sessions.find(item => item.agent_id === owner.agentId && item.session_id === owner.sessionId);
     const heading = node('header', undefined, transcriptPanel);
@@ -831,6 +901,12 @@
     const dock = node('div', undefined, transcriptPanel);
     dock.className = 'composer-dock';
     while (list.nextElementSibling && list.nextElementSibling !== dock) dock.append(list.nextElementSibling);
+    // Follow mode belongs to the reader, not the render: re-pin only when they
+    // were already at the bottom, otherwise keep their distance from the end.
+    list.addEventListener('scroll', () => { memory.stuck = listIsNearBottom(list); scrollMemory.set(key, memory); });
+    scrollMemory.set(key, memory);
+    if(memory.stuck) list.scrollTop = list.scrollHeight;
+    else list.scrollTop = Math.max(0, list.scrollHeight - previousDistance);
   }
   const promptStates = new Map();
   function promptState(owner) {
@@ -1617,7 +1693,7 @@
     for(const agent of state.agents) renderAgent(agent);
   }
   let refreshPending = false;
-  async function refreshSelected() {
+  async function refreshSelected(fromLiveView = false) {
     if(refreshPending || !selected) return;
     refreshPending = true;
     const current = selected;
@@ -1632,6 +1708,10 @@
         if(status) status.textContent = 'The durable transcript could not be re-read: '+(error && error.message ? error.message : 'unknown error');
       }
     } finally { refreshPending = false; }
+    // A refresh is the moment to (re)attach: Sync, an action reload, or a drop.
+    // A reconnect coming from the live view itself passes true, so this cannot
+    // loop back into itself.
+    if(!fromLiveView && selected === current) void maybeStartLiveView(current);
   }
   async function load(){ invalidateSpawnModels(); invalidateCommandHints(); state=await api('/api/state'); render(); }
   async function sync(){ await api('/api/sync','POST'); await load(); }

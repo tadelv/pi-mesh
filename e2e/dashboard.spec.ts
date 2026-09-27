@@ -3926,7 +3926,7 @@ test("a running session's transcript updates live and announces only boundaries"
               },
             });
             state.push = (text) => sink.enqueue(encoder.encode(text));
-            state.close = () => sink.close();
+            state.close = () => { try { sink.close(); } catch { /* already settled */ } };
             return Promise.resolve(
               new Response(body, {
                 status: 200,
@@ -4083,6 +4083,16 @@ test("a running session's transcript updates live and announces only boundaries"
     // Close the stream while the durable re-read will fail: the overlay must
     // still come down, and the failed read must be stated rather than silent.
     failRead = true;
+    // An explicit end is terminal: the control plane always writes one before
+    // closing, so this is the "view ended" path, not the "connection dropped"
+    // path that reconnects.
+    await page.evaluate(
+      `window.__m7live.push(${JSON.stringify(
+        "event: end\ndata: " +
+          JSON.stringify({ reason: "the agent stopped streaming" }) +
+          "\n\n",
+      )})`,
+    );
     await page.evaluate("window.__m7live.close()");
     await expect(page.locator("#live-status")).toContainText("live view ended");
     await expect(
@@ -4531,6 +4541,469 @@ test("an unverified agent's status says the capability is unknown, not absent", 
       await control.stop();
     } finally {
       store.close();
+    }
+  }
+});
+
+test("a live view re-attaches after it ends, without re-opening the session", async ({
+  browser,
+}) => {
+  const store = new ControlStore(":memory:");
+  store.controlName("Live Reattach Control");
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const { port } = await control.start();
+  const token = store.dashboardToken();
+  const timestamp = new Date(0).toISOString();
+  const page = await browser.newPage();
+  try {
+    await page.addInitScript(
+      (value) => localStorage.setItem("pi_mesh_token", value),
+      token,
+    );
+    await page.addInitScript(`
+      (() => {
+        const original = window.fetch.bind(window);
+        const state = { opens: 0, push: null, close: null };
+        window.__m7live = state;
+        window.fetch = (input, init) => {
+          const url = typeof input === "string" ? input : input.url;
+          if (url.includes("/stream")) {
+            state.opens += 1;
+            const encoder = new TextEncoder();
+            let sink = null;
+            const body = new ReadableStream({
+              start(controller) { sink = controller; },
+            });
+            state.push = (text) => sink.enqueue(encoder.encode(text));
+            state.close = () => { try { sink.close(); } catch { /* already settled */ } };
+            return Promise.resolve(
+              new Response(body, {
+                status: 200,
+                headers: { "content-type": "text/event-stream" },
+              }),
+            );
+          }
+          return original(input, init);
+        };
+      })();
+    `);
+    await page.route("**/api/**", async (route) => {
+      const request = route.request();
+      const url = new URL(request.url());
+      if (url.pathname === "/api/state") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            control: { id: "control-a", name: "Live Reattach Control" },
+            agents: [
+              {
+                peer_id: "peer-a",
+                name: "Agent A",
+                host: "127.0.0.1",
+                port: 7330,
+                paired_at: timestamp,
+                skills: ["session.stream"],
+                controls: {
+                  spawn: false,
+                  steer: true,
+                  stop: false,
+                  abort: false,
+                  models: false,
+                  setModel: false,
+                  resume: false,
+                  commands: false,
+                  status: false,
+                  stream: true,
+                },
+                jobs_synced_at: 1,
+              },
+            ],
+            sessions: [
+              {
+                agent_id: "peer-a",
+                session_id: "session-a",
+                project: "/work/a",
+                name: "Session A",
+                started_at: timestamp,
+                updated_at: timestamp,
+                synced_at: timestamp,
+              },
+            ],
+            jobs: [
+              {
+                agent_id: "peer-a",
+                job_id: "job-a",
+                session_id: "session-a",
+                pid: 1,
+                project: "live",
+                created_at: timestamp,
+                state: "running",
+              },
+            ],
+            execution_transport: "confidential",
+          }),
+        });
+        return;
+      }
+      if (url.pathname === "/api/sync" && request.method() === "POST") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({ results: [] }),
+        });
+        return;
+      }
+      if (url.pathname === "/api/sessions/peer-a/session-a") {
+        await route.fulfill({
+          contentType: "application/json",
+          body: JSON.stringify({
+            events: [],
+            hasEarlier: false,
+            total: 0,
+            all: false,
+            stale: false,
+          }),
+        });
+        return;
+      }
+      await route.fulfill({
+        status: 404,
+        contentType: "application/json",
+        body: "{}",
+      });
+    });
+    await page.goto(`http://127.0.0.1:${port}`);
+    await page.locator(".session-link").first().click();
+    await expect
+      .poll(() => page.evaluate("window.__m7live.opens"), {
+        message: "the first live view opens",
+      })
+      .toBe(1);
+    const delta =
+      "event: live\ndata: " +
+      JSON.stringify({
+        type: "message_update",
+        source: "live",
+        assistantMessageEvent: { type: "text_delta", delta: "before" },
+      }) +
+      "\n\n";
+    await page.evaluate(`window.__m7live.push(${JSON.stringify(delta)})`);
+    await expect(page.locator("#transcript-panel")).toContainText("before");
+    // A stated end is terminal: the view does not reconnect by itself, so this
+    // isolates the refresh path. Closing without an end frame (a drop) is the
+    // separate case the retry test covers.
+    await page.evaluate(
+      `window.__m7live.push(${JSON.stringify(
+        "event: end\ndata: " +
+          JSON.stringify({ reason: "the agent stopped streaming" }) +
+          "\n\n",
+      )})`,
+    );
+    await page.evaluate("window.__m7live.close()");
+    await page.waitForTimeout(300);
+    expect(
+      await page.evaluate("window.__m7live.opens"),
+      "a stated end must not reconnect on its own",
+    ).toBe(1);
+    // The operator presses Sync; with the job still running, the view re-attaches.
+    await page.getByRole("button", { name: "Sync", exact: true }).click();
+    await expect
+      .poll(() => page.evaluate("window.__m7live.opens"), {
+        message:
+          "missing observation: the live view re-attached on refresh without re-opening the session",
+      })
+      .toBe(2);
+  } finally {
+    await page.close();
+    try {
+      await control.stop();
+    } finally {
+      store.close();
+    }
+  }
+});
+
+/** Shared harness for tests that drive the live SSE stream by hand. */
+async function mountLiveFixture(
+  browser: import("@playwright/test").Browser,
+  options: { entries?: number[] } = {},
+) {
+  const store = new ControlStore(":memory:");
+  store.controlName("Live Harness Control");
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const { port } = await control.start();
+  const token = store.dashboardToken();
+  const timestamp = new Date(0).toISOString();
+  const page = await browser.newPage();
+  const events = (options.entries ?? []).map((index) => ({
+    entry_id: `entry-${index}`,
+    timestamp,
+    data: JSON.stringify({
+      type: "message",
+      message: {
+        role: index % 2 === 0 ? "user" : "assistant",
+        content: [
+          {
+            type: "text",
+            text: `Entry number ${index} with enough text to occupy a line or two of the transcript panel.`,
+          },
+        ],
+      },
+    }),
+  }));
+  await page.addInitScript(
+    (value) => localStorage.setItem("pi_mesh_token", value),
+    token,
+  );
+  await page.addInitScript(`
+    (() => {
+      const original = window.fetch.bind(window);
+      const state = { opens: 0, push: null, close: null, drop: null };
+      window.__live = state;
+      window.fetch = (input, init) => {
+        const url = typeof input === "string" ? input : input.url;
+        if (url.includes("/stream")) {
+          state.opens += 1;
+          const encoder = new TextEncoder();
+          let sink = null;
+          const body = new ReadableStream({ start(controller) { sink = controller; } });
+          state.push = (text) => sink.enqueue(encoder.encode(text));
+          state.close = () => { try { sink.close(); } catch { /* already settled */ } };
+          state.drop = () => { try { sink.error(new Error("network")); } catch { /* already settled */ } };
+          return Promise.resolve(new Response(body, { status: 200, headers: { "content-type": "text/event-stream" } }));
+        }
+        return original(input, init);
+      };
+    })();
+  `);
+  let syncPosts = 0;
+  let listingConfirmed = options.entries === undefined ? true : true;
+  await page.route("**/api/**", async (route) => {
+    const request = route.request();
+    const url = new URL(request.url());
+    if (url.pathname === "/api/state") {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          control: { id: "control-a", name: "Live Harness Control" },
+          agents: [
+            {
+              peer_id: "peer-a",
+              name: "Agent A",
+              host: "127.0.0.1",
+              port: 7330,
+              paired_at: timestamp,
+              skills: ["session.stream"],
+              controls: {
+                spawn: false,
+                steer: true,
+                stop: false,
+                abort: false,
+                models: false,
+                setModel: false,
+                resume: false,
+                commands: false,
+                status: false,
+                stream: true,
+              },
+              jobs_synced_at: listingConfirmed ? 1 : null,
+            },
+          ],
+          sessions: [
+            {
+              agent_id: "peer-a",
+              session_id: "session-a",
+              project: "/work/a",
+              name: "Session A",
+              started_at: timestamp,
+              updated_at: timestamp,
+              synced_at: timestamp,
+            },
+          ],
+          jobs: [
+            {
+              agent_id: "peer-a",
+              job_id: "job-a",
+              session_id: "session-a",
+              pid: 1,
+              project: "live",
+              created_at: timestamp,
+              state: "running",
+            },
+          ],
+          execution_transport: "confidential",
+        }),
+      });
+      return;
+    }
+    if (url.pathname === "/api/sync" && request.method() === "POST") {
+      syncPosts += 1;
+      listingConfirmed = true;
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({ results: [] }),
+      });
+      return;
+    }
+    if (url.pathname === "/api/sessions/peer-a/session-a") {
+      await route.fulfill({
+        contentType: "application/json",
+        body: JSON.stringify({
+          events,
+          hasEarlier: false,
+          total: events.length,
+          all: false,
+          stale: false,
+        }),
+      });
+      return;
+    }
+    await route.fulfill({
+      status: 404,
+      contentType: "application/json",
+      body: "{}",
+    });
+  });
+  return {
+    page,
+    base: `http://127.0.0.1:${port}`,
+    control,
+    store,
+    opens: () => page.evaluate("window.__live.opens"),
+    syncPosts: () => syncPosts,
+    unconfirm: () => {
+      listingConfirmed = false;
+    },
+    metrics: () =>
+      page.evaluate(`(() => {
+        const list = document.querySelector('#transcript-panel .transcript');
+        return list ? { top: list.scrollTop, height: list.scrollHeight, client: list.clientHeight } : null;
+      })()`) as Promise<{ top: number; height: number; client: number } | null>,
+  };
+}
+
+const liveDelta = (text: string) =>
+  "event: live\ndata: " +
+  JSON.stringify({
+    type: "message_update",
+    source: "live",
+    assistantMessageEvent: { type: "text_delta", delta: text },
+  }) +
+  "\n\n";
+
+const liveEnd = () =>
+  "event: end\ndata: " +
+  JSON.stringify({ reason: "the agent stopped streaming" }) +
+  "\n\n";
+
+test("a dropped live view reconnects on its own, bounded backoff", async ({
+  browser,
+}) => {
+  const fixture = await mountLiveFixture(browser);
+  try {
+    await fixture.page.goto(fixture.base);
+    await fixture.page.locator(".session-link").first().click();
+    await expect
+      .poll(fixture.opens, { message: "the first view opens" })
+      .toBe(1);
+    await fixture.page.evaluate(
+      `window.__live.push(${JSON.stringify(liveDelta("hello"))})`,
+    );
+    await expect(fixture.page.locator("#transcript-panel")).toContainText(
+      "hello",
+    );
+    // A drop: the connection dies with no end frame. No operator action needed.
+    await fixture.page.evaluate("window.__live.drop()");
+    await expect
+      .poll(fixture.opens, {
+        timeout: 8000,
+        message:
+          "missing observation: a dropped live view reconnected without operator action",
+      })
+      .toBe(2);
+    // The reconnect is a new, healthy view.
+    await expect(fixture.page.locator("#live-status")).toContainText(
+      "Watching this session live",
+    );
+  } finally {
+    await fixture.page.close();
+    try {
+      await fixture.control.stop();
+    } finally {
+      fixture.store.close();
+    }
+  }
+});
+
+test("the transcript follows new output and holds position when scrolled up", async ({
+  browser,
+}) => {
+  const fixture = await mountLiveFixture(browser, {
+    entries: Array.from({ length: 80 }, (_value, index) => index),
+  });
+  try {
+    await fixture.page.goto(fixture.base);
+    await fixture.page.locator(".session-link").first().click();
+    await expect
+      .poll(fixture.opens, { message: "the live view opens" })
+      .toBe(1);
+    const atBottom = async () => {
+      const m = await fixture.metrics();
+      return !!m && m.height - m.top - m.client <= 52;
+    };
+    await expect
+      .poll(atBottom, {
+        message: "an opened session starts at the latest entry",
+      })
+      .toBe(true);
+    // Live output follows while the reader is at the bottom.
+    await fixture.page.evaluate(
+      `window.__live.push(${JSON.stringify(liveDelta("tail-one"))})`,
+    );
+    await expect(fixture.page.locator("#transcript-panel")).toContainText(
+      "tail-one",
+    );
+    await expect
+      .poll(atBottom, { message: "live output keeps the reader at the bottom" })
+      .toBe(true);
+    // A reader who scrolled up is not yanked down by a refresh...
+    await fixture.page.evaluate(`(() => {
+      const list = document.querySelector('#transcript-panel .transcript');
+      list.scrollTop = 0;
+      list.dispatchEvent(new Event('scroll'));
+    })()`);
+    await fixture.page
+      .getByRole("button", { name: "Sync", exact: true })
+      .click();
+    await fixture.page.waitForTimeout(600);
+    const held = await fixture.metrics();
+    expect(
+      held?.top,
+      "a refresh must not throw a reader who scrolled up to the bottom",
+    ).toBeLessThan(80);
+    // ...but a reader at the bottom stays pinned across a refresh.
+    await fixture.page.evaluate(`(() => {
+      const list = document.querySelector('#transcript-panel .transcript');
+      list.scrollTop = list.scrollHeight;
+      list.dispatchEvent(new Event('scroll'));
+    })()`);
+    await fixture.page
+      .getByRole("button", { name: "Sync", exact: true })
+      .click();
+    await fixture.page.waitForTimeout(600);
+    expect(
+      await atBottom(),
+      "a refresh must keep a reader who was at the bottom at the bottom",
+    ).toBe(true);
+    await fixture.page.evaluate(
+      `window.__live.push(${JSON.stringify(liveEnd())})`,
+    );
+    await fixture.page.evaluate("window.__live.close()");
+  } finally {
+    await fixture.page.close();
+    try {
+      await fixture.control.stop();
+    } finally {
+      fixture.store.close();
     }
   }
 });

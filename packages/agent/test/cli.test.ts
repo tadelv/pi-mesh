@@ -492,7 +492,7 @@ describe("agent CLI", () => {
         peerId: null,
         swarmKeyPresent: false,
         configuredPort: 7330,
-        piVersionFloor: "0.85.1",
+        piVersionFloor: "1.0.2",
         piVersion: null,
       });
       expect(captured.read().stderr).toBe("");

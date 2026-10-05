@@ -12,6 +12,12 @@ document is the operational side of it.
 
 ### Run it from a checkout
 
+Use **Node.js >=22.19.0** and **Pi >=1.0.2** on each agent device (ADR 0020).
+Upgrade the service user's Pi installation and restart the agent after rebuilding;
+`doctor` reports `piVersion` and `piVersionFloor`, but does not enforce the floor.
+The control plane needs Node, not a local Pi installation. The Durable/shared-TUI
+spike is not part of this deployment and does not change the execution grants.
+
 ```sh
 git clone https://github.com/tadelv/pi-mesh && cd pi-mesh
 pnpm install && pnpm -r build

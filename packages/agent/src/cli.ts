@@ -58,8 +58,8 @@ export type CliIO = {
   fetch?: typeof globalThis.fetch;
 };
 
-// Pi 0.85.1 is the oldest session format this milestone supports.
-export const PI_SUPPORTED_FLOOR = "0.85.1";
+// Installed Pi baseline (ADR 0020), independent of historical session formats.
+export const PI_SUPPORTED_FLOOR = "1.0.2";
 const usage =
   "Usage: pi-mesh-agent keygen\n" +
   "Usage: pi-mesh-agent pair <token> [--control-host host:port] [--timeout seconds]\n" +

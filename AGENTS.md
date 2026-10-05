@@ -8,9 +8,9 @@ open an ADR in `docs/adr/` rather than improvising.
 ## Conventions
 
 - **Language:** TypeScript, ESM only (`"type": "module"`).
-- **Runtime:** Node.js >= 22.13.0. Do not use Bun-specific APIs. The control
-  plane uses the builtin `node:sqlite`, which is only available without a flag
-  from 22.13.0 (`docs/adr/0011`).
+- **Runtime:** Node.js >= 22.19.0 and Pi >= 1.0.2 (ADR 0020). Do not use
+  Bun-specific APIs. The control plane uses builtin `node:sqlite`, available
+  without a flag from 22.13.0 (`docs/adr/0011`); Pi 1.0.2 sets the higher floor.
 - **Package manager:** pnpm workspaces. Run `pnpm install` first.
 - **Build:** `tsc -b` for each package, project references at the root.
 - **Tests:** `vitest` for unit tests, `playwright` for the control plane UI.

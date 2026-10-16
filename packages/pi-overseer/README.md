@@ -1,0 +1,132 @@
+# Overseer
+
+One pi session watching — and steering — every other pi session and subagent run
+on the machine, in any project folder.
+
+## Two planes
+
+**Observe (no dependencies).** Reads the evidence every pi process already writes:
+
+- `~/.pi/agent/sessions/--<munged-cwd>--/<iso>_<uuid>.jsonl` — every session transcript
+- `<tmp>/pi-subagents-<scope>/async-subagent-runs/<runId>/status.json` — every subagent run
+
+Runs are joined to their parent session via `status.json.sessionId`. A session is
+"live" when its transcript was written in the last 2 minutes; a run is live when its
+state is running/queued/starting and its pid is alive.
+
+**Control.** `steer` / `stop` / `interrupt` a run by id:
+
+- If this session **owns** the run → executes the pi-subagents RPC locally.
+- Otherwise → broadcasts an `overseer/v1` command over pi-intercom's extension bus.
+  The owning session receives it and executes the RPC in **its** process.
+
+Ownership matters because pi-subagents' RPC is ownership-scoped: only the session
+whose branch spawned a run may control it. The target key is exactly pi-subagents'
+own identity (`getSessionFile() ?? getSessionId()`), so keys always match.
+
+pi-intercom is optional. Without it the overseer still observes everything and
+controls its own runs; cross-window control goes quiet.
+
+## Surfaces
+
+- **`/overseer`** — live panel: control status, findings, live runs, sessions.
+- **`overseer` tool** — actions `summary | runs | sessions | findings | steer | stop | interrupt`.
+- **Status line** — `N live · X finding(s) · steer ready`.
+
+## Rules
+
+Deterministic thresholds in `config.json`:
+
+| rule | fires when |
+|---|---|
+| `run-stale` | live run, no activity for `staleMs` |
+| `run-long` | live run older than `maxRuntimeMs` |
+| `run-budget-usd` | run cost ≥ `maxCostUsd` |
+| `run-budget-tokens` | run tokens ≥ `maxTokens` |
+| `session-failure-streak` | ≥ `failureStreak` non-complete runs in one session |
+
+`rules.action` decides delivery:
+
+- `"notify"` (default) — a message, nothing is touched.
+- `"steer"` — sends `autoSteerMessage` to the stalled run.
+- `"stop"` — stops the run.
+
+Findings notify once and re-arm only after they clear.
+
+## Configuration
+
+`~/.pi/agent/extensions/overseer/config.json`:
+
+```json
+{
+  "maxAgeHours": 24,
+  "autoSteerMessage": "Overseer: this run looks stalled...",
+  "rules": { "action": "notify", "staleMs": 300000, "maxCostUsd": 5 }
+}
+```
+
+Subagent child sessions load this extension too, so their runs are addressable.
+They register for control but skip the scan, notifications, and auto-actions.
+
+## Layout
+
+| file | role |
+|---|---|
+| `discovery.ts` | scans sessions + run artifacts (plain `node:fs`, testable) |
+| `rules.ts` | thresholds → findings |
+| `control.ts` | pi-subagents RPC client (steer/stop/interrupt) |
+| `channel.ts` | pi-intercom `overseer/v1` extension channel |
+| `panel.ts` | `/overseer` view |
+| `format.ts` | display helpers |
+| `index.ts` | tool, command, lifecycle, rule execution |
+
+## Adopted into pi-mesh (`packages/pi-overseer`)
+
+This extension is developed here and installed into Pi from a checkout:
+
+```sh
+pi install ./packages/pi-overseer
+```
+
+Pi loads the TypeScript directly, so the package has no `build` script and no
+`dist` output; it stays out of the `tsc -b` project graph.
+
+```sh
+pnpm --filter @pi-mesh/pi-overseer typecheck
+pnpm --filter @pi-mesh/pi-overseer lint
+pnpm --filter @pi-mesh/pi-overseer test
+```
+
+Tested against **Pi 1.3.0** (`@earendil-works/pi-coding-agent` 1.3.0) and
+**pi-subagents 0.78.0**. Pi supplies `@earendil-works/pi-coding-agent`,
+`@earendil-works/pi-tui` and `typebox` to extensions at runtime (carried as
+`peerDependencies`); the same versions are pinned as `devDependencies` so
+typecheck and lint work on a machine without Pi installed.
+
+Three adoption-only deviations let the otherwise frozen extension pass this
+repository's gates: the `registerTool` call carries explicit type arguments
+naming the accurate union of the three `details` shapes it returns (Pi's own
+example extension declares a single details type the same way), `panel.ts`
+holds two `void _width;` no-op markers where its private line helpers ignore
+their trailing width parameter, and this package's `tsconfig.json` sets
+`exactOptionalPropertyTypes: false` - so the extension's optional properties
+are checked less strictly than the rest of this repository. Transpiling the
+sources before and after shows nothing else: the type annotations erase
+entirely and only the two no-op statements (plus their renames and comments)
+appear in the output.
+
+Without pi-subagents on a machine, local oversight keeps working - the observe
+plane is plain `node:fs` reads of session transcripts and run `status.json`
+files with no pi imports. Control goes quiet: `steer` / `stop` / `interrupt`
+need pi-subagents' ownership-scoped RPC in the owning session, so they time out
+instead of acting, and cross-window control (which also needs the pi-intercom
+extension bus) goes quiet with it.
+
+## Configuration file
+
+The running extension reads its config from
+`~/.pi/agent/extensions/overseer/config.json` - the installed location, loaded
+by `loadConfig()` in `index.ts` - falling back to built-in defaults when the
+file is absent or a field has the wrong type. The `config.json` copy in this
+package is not read at runtime; it is the default shipped alongside the
+extension so a fresh `pi install` starts from the documented thresholds.

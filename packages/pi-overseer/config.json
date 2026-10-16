@@ -1,0 +1,13 @@
+{
+  "maxAgeHours": 24,
+  "autoSteerMessage": "Overseer: this run looks stalled (no recent activity). Reply with a one-line status and either continue, finish, or state the blocker.",
+  "rules": {
+    "enabled": true,
+    "staleMs": 300000,
+    "maxRuntimeMs": 1800000,
+    "maxCostUsd": 5,
+    "maxTokens": 2000000,
+    "failureStreak": 3,
+    "action": "notify"
+  }
+}

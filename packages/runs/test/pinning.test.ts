@@ -9,7 +9,6 @@ import {
   assertSupportedLayout,
   assertSupportedVersion,
   PINNED_PI_SUBAGENTS_VERSION,
-  TESTED_PI_SUBAGENTS_RANGE,
 } from "../src/index.js";
 
 const packageDir = path.dirname(path.dirname(fileURLToPath(import.meta.url)));
@@ -26,20 +25,29 @@ describe("pinning", () => {
     expect(packageJson.dependencies?.["pi-subagents"]).toBe("0.78.0");
   });
 
-  it("records the pin and the tested range in one place, matching the manifest", () => {
+  it("the pin is the single source of truth and matches the manifest", () => {
     expect(PINNED_PI_SUBAGENTS_VERSION).toBe("0.78.0");
     expect(PINNED_PI_SUBAGENTS_VERSION).toBe(
       packageJson.dependencies?.["pi-subagents"],
     );
-    expect(TESTED_PI_SUBAGENTS_RANGE).toBe(">=0.78.0 <0.79.0");
     expect(assertSupportedVersion(PINNED_PI_SUBAGENTS_VERSION)).toEqual({
       ok: true,
     });
-    expect(assertSupportedVersion("0.78.3").ok).toBe(true);
-    expect(assertSupportedVersion("0.77.0").ok).toBe(false);
-    expect(assertSupportedVersion("0.79.0").ok).toBe(false);
-    expect(assertSupportedVersion("").ok).toBe(false);
+  });
+
+  it("accepts the pinned line and refuses everything outside it", () => {
+    for (const version of ["0.78.0", "0.78.1", "0.78.9"]) {
+      expect(assertSupportedVersion(version)).toEqual({ ok: true });
+    }
+    for (const version of ["0.79.0", "0.77.9", "1.78.0", "0.78", "abc"]) {
+      expect(assertSupportedVersion(version).ok).toBe(false);
+    }
+    expect(assertSupportedVersion("")).toEqual({
+      ok: false,
+      reason: "missing-version",
+    });
     expect(assertSupportedVersion(undefined).ok).toBe(false);
+    expect(assertSupportedVersion(78).ok).toBe(false);
   });
 
   it("refuses an unrecognised layout without throwing", () => {

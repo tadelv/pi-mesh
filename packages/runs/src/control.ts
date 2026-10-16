@@ -39,6 +39,12 @@ export interface ControlOptions {
   installedVersion?: string;
   now?: () => number;
   randomId?: () => string;
+  /**
+   * Closed-inbox predicate used by BOTH the pre-write and the post-write
+   * check. Defaults to the real `control/steer-inbox-closed.json` marker;
+   * inject a sequence to test the post-write re-check deterministically.
+   */
+  isInboxClosed?: (runDir: string) => boolean;
 }
 
 export type StopRunResult =
@@ -86,8 +92,14 @@ function closedMarkerPath(runDir: string): string {
   return path.join(runDir, "control", STEER_INBOX_CLOSED_FILE);
 }
 
-function closedMarkerPresent(runDir: string): boolean {
+function closedMarkerPresent(
+  runDir: string,
+  isInboxClosed: ((runDir: string) => boolean) | undefined,
+): boolean {
   try {
+    if (isInboxClosed) {
+      return isInboxClosed(runDir);
+    }
     return fs.existsSync(closedMarkerPath(runDir));
   } catch {
     // A marker we cannot stat is treated as present: fail closed.
@@ -231,7 +243,7 @@ export function writeSteerRequest(
           "Steer source must be a non-empty string of at most 256 chars.",
       };
     }
-    if (closedMarkerPresent(runDir)) {
+    if (closedMarkerPresent(runDir, options.isInboxClosed)) {
       return {
         ok: false,
         code: "steer-inbox-closed",
@@ -270,7 +282,7 @@ export function writeSteerRequest(
     } finally {
       fs.rmSync(tempPath, { force: true });
     }
-    if (closedMarkerPresent(runDir)) {
+    if (closedMarkerPresent(runDir, options.isInboxClosed)) {
       fs.rmSync(filePath, { force: true });
       return {
         ok: false,

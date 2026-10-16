@@ -99,6 +99,7 @@ export type LivenessReason =
   | "permission-denied"
   | "no-pid"
   | "zombie"
+  | "namespace-unmatched"
   | "probe-failed";
 
 /**

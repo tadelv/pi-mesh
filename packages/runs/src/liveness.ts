@@ -12,6 +12,10 @@
  * - On Linux, a zombie (`/proc/<pid>/stat` state `Z`) is `dead`: GOTCHAS
  *   measured `kill(pid, 0)` succeeding for a zombie, so the signal alone
  *   cannot prove aliveness.
+ * - On Linux, a pid in a different pid namespace than ours
+ *   (`/proc/<pid>/ns/pid` vs `/proc/self/ns/pid`) is `unknown` with reason
+ *   `namespace-unmatched`: the process exists but is not provably this
+ *   run's runner. An unreadable namespace falls back to the kill(0) result.
  *
  * Only signal 0 is ever sent. There is no boolean `live` (ADR 0021).
  */
@@ -25,6 +29,7 @@ export type KillFn = (pid: number, signal: 0) => void;
 export interface ProbeLivenessDeps {
   kill?: KillFn;
   readFile?: (path: string, encoding: "utf8") => string;
+  readlink?: (path: string) => string;
   platform?: NodeJS.Platform;
   now?: () => number;
 }
@@ -77,6 +82,25 @@ export function probeLiveness(
   }
   const platform = deps.platform ?? process.platform;
   if (platform === "linux") {
+    const readlink =
+      deps.readlink ??
+      ((target: string): string => fs.readlinkSync(target, "utf8"));
+    let selfScope: string | undefined;
+    let targetScope: string | undefined;
+    try {
+      selfScope = readlink("/proc/self/ns/pid");
+      targetScope = readlink(`/proc/${pid}/ns/pid`);
+    } catch {
+      selfScope = undefined;
+      targetScope = undefined;
+    }
+    if (
+      selfScope !== undefined &&
+      targetScope !== undefined &&
+      selfScope !== targetScope
+    ) {
+      return { state: "unknown", reason: "namespace-unmatched", probedAt };
+    }
     const readFile =
       deps.readFile ??
       ((path: string, encoding: "utf8"): string =>

@@ -4,8 +4,9 @@ Readers, tri-state liveness, thresholds and inbox writes for pi-subagents
 async runs. Pure Node, ESM, TypeScript. No `@pi-mesh/*` dependency, no Pi
 import, no I/O beyond the directories passed in as options.
 
-Pinned upstream: **pi-subagents `0.78.0`** (exact, see `src/version.ts` for
-the pin and the tested range).
+Pinned upstream: **pi-subagents `0.78.0`** (exact - see `src/version.ts`,
+where the pin is the single source of truth for the supported release
+line).
 
 ## What it does
 
@@ -15,13 +16,16 @@ the pin and the tested range).
   tokens and cost. A missing root, a malformed `status.json` or an
   unrecognised shape is skipped, never thrown and never a fabricated run.
   `maxAgeMs` bounds terminal runs only: an active run older than the window
-  is still listed.
+  is still listed. Runs are returned newest-first by
+  `lastUpdate ?? startedAt`, with `runId` breaking ties.
 - `probeLiveness(pid, deps?)` returns `{ state, reason, probedAt }` with
   `state` in `alive | dead | unknown`. `kill(pid, 0)` success is `alive`
   (a process exists - never proof it is this run's runner); `ESRCH` is
   `dead`; `EPERM` is `unknown` (`permission-denied`), not alive; a
-  missing/non-integer pid is `unknown` (`no-pid`); a Linux zombie is `dead`.
-  Only signal 0 is ever sent.
+  missing/non-integer pid is `unknown` (`no-pid`); a Linux zombie is `dead`;
+  a Linux pid in a different pid namespace than ours is `unknown`
+  (`namespace-unmatched`), falling back to the kill(0) result when a
+  namespace cannot be read. Only signal 0 is ever sent.
 - `evaluateRules(runs, config, now)` applies `DEFAULT_RULES` (stale 5 min,
   long 30 min, cost 5 USD, tokens 2,000,000, failure streak 3) for the five
   rules `run-stale`, `run-long`, `run-budget-usd`, `run-budget-tokens` and

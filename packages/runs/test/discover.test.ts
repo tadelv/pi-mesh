@@ -124,6 +124,36 @@ describe("discoverRuns", () => {
     expect(result.skipped.map((s) => s.reason)).toContain("outside-window");
   });
 
+  it("lists newest first by last update, runId breaking ties", () => {
+    const tmp = mkdtempSync(path.join(tmpdir(), "runs-order-"));
+    const root = path.join(tmp, "pi-subagents-test", "async-subagent-runs");
+    writeStatus(
+      path.join(root, "run-old"),
+      validStatus({ runId: "run-old", lastUpdate: NOW - 5000 }),
+    );
+    writeStatus(
+      path.join(root, "run-new"),
+      validStatus({ runId: "run-new", lastUpdate: NOW - 1000 }),
+    );
+    writeStatus(
+      path.join(root, "run-tie-b"),
+      validStatus({ runId: "run-tie-b", lastUpdate: NOW - 1000 }),
+    );
+    writeStatus(
+      path.join(root, "run-tie-a"),
+      validStatus({ runId: "run-tie-a", lastUpdate: NOW - 1000 }),
+    );
+
+    const result = discoverRuns({ tmp, now: NOW, maxAgeMs: 60_000 });
+
+    expect(result.runs.map((r) => r.runId)).toEqual([
+      "run-new",
+      "run-tie-a",
+      "run-tie-b",
+      "run-old",
+    ]);
+  });
+
   it("parses the written steer file only through the reader, not by hand", () => {
     const tmp = mkdtempSync(path.join(tmpdir(), "runs-roundtrip-"));
     const root = path.join(tmp, "pi-subagents-test", "async-subagent-runs");

@@ -243,7 +243,8 @@ function isSkip(
 
 /**
  * Discover runs under `tmp`. Never throws and never writes: every failure
- * becomes a `skipped` entry or an empty result.
+ * becomes a `skipped` entry or an empty result. Runs are returned
+ * newest-first by `lastUpdate ?? startedAt`, with `runId` breaking ties.
  */
 export function discoverRuns(options: DiscoverRunsOptions): DiscoverRunsResult {
   const result: DiscoverRunsResult = { runs: [], skipped: [] };
@@ -297,15 +298,16 @@ export function discoverRuns(options: DiscoverRunsOptions): DiscoverRunsResult {
         result.runs.push(mapped);
       }
     }
-    result.runs.sort((a, b) =>
-      a.startedAt === b.startedAt
-        ? a.runId < b.runId
-          ? -1
-          : a.runId > b.runId
-            ? 1
-            : 0
-        : a.startedAt - b.startedAt,
-    );
+    // Newest first by last update (falling back to start), runId breaking
+    // ties so the order is stable.
+    result.runs.sort((a, b) => {
+      const aKey = a.lastUpdate ?? a.startedAt;
+      const bKey = b.lastUpdate ?? b.startedAt;
+      if (aKey !== bKey) {
+        return bKey - aKey;
+      }
+      return a.runId < b.runId ? -1 : a.runId > b.runId ? 1 : 0;
+    });
     return result;
   } catch {
     return result;

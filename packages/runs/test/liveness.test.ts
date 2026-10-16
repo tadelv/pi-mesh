@@ -75,6 +75,62 @@ describe("probeLiveness", () => {
     expect(result.reason).toBe("pid-alive");
   });
 
+  it("the same Linux pid namespace stays alive", () => {
+    const runningStat =
+      "4242 (node) S 1 4242 4242 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0";
+    const result = probeLiveness(4242, {
+      kill: () => {},
+      readFile: () => runningStat,
+      readlink: () => "pid:[4026531836]",
+      platform: "linux",
+    });
+    expect(result.state).toBe("alive");
+    expect(result.reason).toBe("pid-alive");
+  });
+
+  it("a different Linux pid namespace is unknown, not alive", () => {
+    const runningStat =
+      "4242 (node) S 1 4242 4242 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0";
+    const result = probeLiveness(4242, {
+      kill: () => {},
+      readFile: () => runningStat,
+      readlink: (target) =>
+        target === "/proc/self/ns/pid"
+          ? "pid:[4026531836]"
+          : "pid:[4026532399]",
+      platform: "linux",
+    });
+    expect(result.state).toBe("unknown");
+    expect(result.reason).toBe("namespace-unmatched");
+    expect(result.state).not.toBe("alive");
+  });
+
+  it("an unreadable pid namespace falls back to the kill(0) result", () => {
+    const runningStat =
+      "4242 (node) S 1 4242 4242 0 -1 4194560 0 0 0 0 0 0 0 0 20 0 1 0";
+    const result = probeLiveness(4242, {
+      kill: () => {},
+      readFile: () => runningStat,
+      readlink: () => {
+        throw new Error("no procfs here");
+      },
+      platform: "linux",
+    });
+    expect(result.state).toBe("alive");
+    expect(result.reason).toBe("pid-alive");
+  });
+
+  it("a pid namespace is only compared on Linux", () => {
+    const result = probeLiveness(4242, {
+      kill: () => {},
+      readlink: (target) =>
+        target === "/proc/self/ns/pid" ? "pid:[1]" : "pid:[2]",
+      platform: "darwin",
+    });
+    expect(result.state).toBe("alive");
+    expect(result.reason).toBe("pid-alive");
+  });
+
   it("a live pid is alive with pid-alive evidence", () => {
     const result = probeLiveness(process.pid);
     expect(result.state).toBe("alive");

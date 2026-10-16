@@ -12,10 +12,15 @@
  * establish which version produced an existing run's artifacts.
  */
 
+import * as fs from "node:fs";
+import * as path from "node:path";
+
 export const PINNED_PI_SUBAGENTS_VERSION = "0.78.0";
 
-/** The upstream releases this package was tested against. */
-export const TESTED_PI_SUBAGENTS_RANGE = ">=0.78.0 <0.79.0";
+// Policy: control writes are allowed for any patch release on the pinned
+// minor line (0.78.x). A new minor or major is untested and refused. The
+// supported line is derived from the pin below, so this constant is the
+// single source of truth - there is no separate range to drift.
 
 export type SupportCheck = { ok: true } | { ok: false; reason: string };
 
@@ -27,17 +32,28 @@ function parseVersion(version: string): [number, number, number] | undefined {
   return [Number(match[1]), Number(match[2]), Number(match[3])];
 }
 
-/** Refuses (typed, never throws) versions outside the tested range. */
+/**
+ * The supported release line, derived from the pin: same major and minor,
+ * any patch. Undefined when our own pin is malformed (a programming error),
+ * in which case every version is refused.
+ */
+function supportedLine(): readonly [number, number] | undefined {
+  const pinned = parseVersion(PINNED_PI_SUBAGENTS_VERSION);
+  return pinned ? [pinned[0], pinned[1]] : undefined;
+}
+
+/** Refuses (typed, never throws) versions outside the pinned release line. */
 export function assertSupportedVersion(installed: unknown): SupportCheck {
   if (typeof installed !== "string" || installed.trim() === "") {
     return { ok: false, reason: "missing-version" };
   }
+  const line = supportedLine();
   const parsed = parseVersion(installed);
   if (
+    line === undefined ||
     !parsed ||
-    parsed[0] !== 0 ||
-    parsed[1] !== 78 ||
-    parsed[2] < 0 ||
+    parsed[0] !== line[0] ||
+    parsed[1] !== line[1] ||
     !Number.isSafeInteger(parsed[2])
   ) {
     return {
@@ -47,9 +63,6 @@ export function assertSupportedVersion(installed: unknown): SupportCheck {
   }
   return { ok: true };
 }
-
-import * as fs from "node:fs";
-import * as path from "node:path";
 
 export const EXPECTED_STATUS_FILE = "status.json";
 

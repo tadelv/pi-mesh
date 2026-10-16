@@ -90,6 +90,34 @@ describe("writeSteerRequest", () => {
     expect(steerFiles(runDir)).toEqual([]);
   });
 
+  it("a marker appearing after the write removes the request and refuses", () => {
+    const runDir = makeRunDir("steer-race");
+    const checks: number[] = [];
+    const result = writeSteerRequest(
+      runDir,
+      { message: "hello", id: "race-1", ts: NOW },
+      {
+        // Closed on the second (post-write) check only: a pre-write-only
+        // implementation would report success here.
+        isInboxClosed: () => {
+          checks.push(checks.length);
+          return checks.length > 1;
+        },
+      },
+    );
+    expect(checks).toHaveLength(2);
+    expect(result.ok).toBe(false);
+    if (result.ok) {
+      return;
+    }
+    expect(result.code).toBe("steer-inbox-closed");
+    const dir = path.join(runDir, "control", "steer-requests");
+    const expectedName = `${String(NOW).padStart(13, "0")}-${Buffer.from("race-1").toString("base64url")}.json`;
+    expect(existsSync(path.join(dir, expectedName))).toBe(false);
+    // No request and no leftover temp file.
+    expect(readdirSync(dir)).toEqual([]);
+  });
+
   it("refuses malformed requests without writing", () => {
     const runDir = makeRunDir("steer-bad");
     expect(writeSteerRequest(runDir, { message: "   " }).ok).toBe(false);

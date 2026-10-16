@@ -26,7 +26,7 @@ import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-a
 import { Type } from "typebox";
 import { createControlChannel, type ControlChannel, type ControlChannelStatus, type ControlCommand } from "./channel.ts";
 import { executeLocalControl, isVerb, type Verb } from "./control.ts";
-import { buildFleet, findRun } from "./discovery.ts";
+import { attentionRuns, buildFleet, findRun, type RunRecord } from "./discovery.ts";
 import { fmtAge, fmtDuration, fmtTokens, fmtUsd, shortPath } from "./format.ts";
 import { OverseerPanel, type PanelData } from "./panel.ts";
 import { DEFAULT_RULES, evaluateRules, type Action, type RulesConfig, type Severity } from "./rules.ts";
@@ -95,20 +95,27 @@ function scan(config: OverseerConfig): PanelData {
   return { fleet, findings: config.rules.enabled ? evaluateRules(fleet, config.rules) : [] };
 }
 
+function runGlyph(run: RunRecord): string {
+  if (run.live) return "●";
+  if (run.liveness.state === "unknown") return `◐ unknown(${run.liveness.reason})`;
+  return "○";
+}
+
 function summaryText(data: PanelData): string {
   const { fleet, findings } = data;
   const now = fleet.generatedAt;
+  const unknown = fleet.runs.filter((r) => r.liveness.state === "unknown").length;
   const out: string[] = [
-    `${fleet.liveRuns.length} live run(s) · ${fleet.sessions.length} session(s) in window (${fleet.liveSessions.length} live) · ${fmtUsd(fleet.totals.cost)} · ${fmtTokens(fleet.totals.tokens)} tok`,
+    `${fleet.liveRuns.length} live run(s)${unknown ? ` · ${unknown} unknown` : ""} · ${fleet.sessions.length} session(s) in window (${fleet.liveSessions.length} live) · ${fmtUsd(fleet.totals.cost)} · ${fmtTokens(fleet.totals.tokens)} tok`,
   ];
   for (const f of findings) out.push(`[${f.severity}] ${f.rule}: ${f.label} ${f.message} → ${f.action}`);
-  for (const r of fleet.liveRuns) {
+  for (const r of attentionRuns(fleet)) {
     out.push(
-      `  live ${r.agent ?? "agent"} ${r.runId.slice(0, 8)} ${r.state} ${r.startedAt ? fmtDuration(now - r.startedAt) : "?"} ${fmtUsd(r.totalCost)} ${shortPath(r.cwd)}`,
+      `  ${runGlyph(r)} ${r.agent ?? "agent"} ${r.runId.slice(0, 8)} ${r.state} ${r.startedAt ? fmtDuration(now - r.startedAt) : "?"} ${fmtUsd(r.totalCost)} ${shortPath(r.cwd)}`,
     );
   }
   for (const s of fleet.liveSessions) out.push(`  session ${shortPath(s.cwd)} ${fmtAge(s.lastActiveAt, now)}`);
-  if (!findings.length && !fleet.liveRuns.length) out.push("no active work");
+  if (!findings.length && !attentionRuns(fleet).length) out.push("no active work");
   return out.join("\n");
 }
 
@@ -250,7 +257,7 @@ export default function (pi: ExtensionAPI) {
             ? fleet.runs
                 .map(
                   (r) =>
-                    `${r.live ? "●" : "○"} ${r.agent ?? "agent"} ${r.runId.slice(0, 8)} ${r.state} ${r.startedAt ? fmtDuration(now - r.startedAt) : "?"} ${fmtUsd(r.totalCost)} ${fmtTokens(r.totalTokens)} ${shortPath(r.cwd)}`,
+                    `${runGlyph(r)} ${r.agent ?? "agent"} ${r.runId.slice(0, 8)} ${r.state} ${r.startedAt ? fmtDuration(now - r.startedAt) : "?"} ${fmtUsd(r.totalCost)} ${fmtTokens(r.totalTokens)} ${shortPath(r.cwd)}`,
                 )
                 .join("\n")
             : "No runs in window.";
@@ -346,6 +353,8 @@ export default function (pi: ExtensionAPI) {
 
     const control = channel.status();
     const bits = [`${data.fleet.liveRuns.length} live`];
+    const unknownRuns = data.fleet.runs.filter((r) => r.liveness.state === "unknown").length;
+    if (unknownRuns) bits.push(`${unknownRuns} unknown`);
     if (data.findings.length) bits.push(`${data.findings.length} finding(s)`);
     if (control.available && control.connected) bits.push("steer ready");
     ctx.ui.setStatus("overseer", bits.join(" · "));

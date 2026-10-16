@@ -9,15 +9,33 @@
  *     line 1: {"type":"session","version":3,"id":..,"timestamp":..,"cwd":..}
  *   <tmp>/pi-subagents-<scope>/async-subagent-runs/<runId>/status.json
  *     runId, sessionId (parent session *file*), sessionFile (child session),
- *     state, pid, cwd, startedAt, lastActivityAt, endedAt, steps, totals
+ *     state, pid, cwd, startedAt, lastUpdate, endedAt, steps, totals
  *
- * Plain node:fs only - no pi imports - so it is testable without the runtime
- * and safe to call from any process.
+ * Run detection belongs to `@pi-mesh/runs`: which runs exist, their
+ * windowing and ordering, and pid liveness all come from the module, so this
+ * package never carries a second copy of that logic. Session scanning stays
+ * here - the module reads run artifacts only. Plain node:fs otherwise - no
+ * pi imports - so it is testable without the runtime and safe to call from
+ * any process.
  */
 
-import { closeSync, openSync, readdirSync, readFileSync, readSync, statSync } from "node:fs";
+import {
+  closeSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  statSync,
+} from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
+import {
+  ACTIVE_RUN_STATES,
+  discoverRuns as discoverModuleRuns,
+  probeLiveness,
+  type Liveness,
+  type RunRecord as ModuleRunRecord,
+} from "@pi-mesh/runs";
 
 export const SESSION_ROOT = join(homedir(), ".pi/agent/sessions");
 
@@ -39,7 +57,14 @@ export interface RunRecord {
   runId: string;
   dir: string;
   state: string;
+  /**
+   * Derived from the module: the run's state is active and its pid probe
+   * came back `alive`. Anything else - dead, terminal, or `unknown` - is
+   * not live, but it is still listed.
+   */
   live: boolean;
+  /** Tri-state pid liveness with its evidence (ADR 0021 decision 1). */
+  liveness: Liveness;
   pid?: number;
   cwd?: string;
   /** parent session transcript (status.json.sessionId) */
@@ -49,6 +74,7 @@ export interface RunRecord {
   agent?: string;
   mode?: string;
   startedAt?: number;
+  /** module `lastUpdate`, falling back to a legacy `lastActivityAt` */
   lastActivityAt?: number;
   endedAt?: number;
   /** totalTokens.total */
@@ -92,18 +118,9 @@ function readHead(file: string, bytes = 8192): string {
   }
 }
 
-/** True when the pid exists (signal 0 probe; EPERM still means alive). */
-export function isAlive(pid: number | undefined): boolean {
-  if (!Number.isInteger(pid) || (pid as number) <= 0) return false;
-  try {
-    process.kill(pid as number, 0);
-    return true;
-  } catch (error) {
-    return (error as NodeJS.ErrnoException)?.code === "EPERM";
-  }
-}
-
-function readSessionHeader(file: string): { id: string; cwd: string; timestamp?: string } | undefined {
+function readSessionHeader(
+  file: string,
+): { id: string; cwd: string; timestamp?: string } | undefined {
   let first: string;
   try {
     first = readHead(file).split("\n", 1)[0] ?? "";
@@ -116,7 +133,12 @@ function readSessionHeader(file: string): { id: string; cwd: string; timestamp?:
   } catch {
     return undefined;
   }
-  const h = parsed as { type?: string; id?: unknown; cwd?: unknown; timestamp?: unknown };
+  const h = parsed as {
+    type?: string;
+    id?: unknown;
+    cwd?: unknown;
+    timestamp?: unknown;
+  };
   if (h?.type !== "session" || typeof h.id !== "string") return undefined;
   return {
     id: h.id,
@@ -177,93 +199,116 @@ export function discoverSessions(opts: DiscoveryOptions = {}): SessionRecord[] {
   return out;
 }
 
-function subagentScopeDirs(tmp: string): string[] {
-  try {
-    return readdirSync(tmp)
-      .filter((name) => name.startsWith("pi-subagents-"))
-      .map((name) => join(tmp, name, "async-subagent-runs"));
-  } catch {
-    return [];
-  }
-}
-
-/** Parse one run directory. `maxAgeMs` filters discovery; omit it for lookup by id. */
-function readRun(dir: string, fallbackId: string, now: number, maxAgeMs?: number): RunRecord | undefined {
-  const statusFile = join(dir, "status.json");
-  try {
-    if (maxAgeMs !== undefined && now - statSync(statusFile).mtimeMs > maxAgeMs) return undefined;
-  } catch {
-    return undefined;
-  }
+/**
+ * Display-only extras the module does not map: the working directory and
+ * the latest-window token count are presentation, not detection, so they
+ * are read here best-effort and never influence which runs exist.
+ * Candidate for the module if it ever passes display fields through.
+ */
+function readRunExtras(dir: string): {
+  cwd?: string;
+  contextWindow?: number;
+  lastActivityAt?: number;
+} {
   let s: Record<string, unknown>;
   try {
-    s = JSON.parse(readFileSync(statusFile, "utf8")) as Record<string, unknown>;
+    s = JSON.parse(
+      readFileSync(join(dir, "status.json"), "utf8"),
+    ) as Record<string, unknown>;
   } catch {
-    return undefined;
+    return {};
   }
-
-  const pid = typeof s.pid === "number" ? s.pid : undefined;
-  const state = String(s.state ?? "unknown");
-  const running = state === "running" || state === "queued" || state === "starting";
-  const steps = Array.isArray(s.steps) ? (s.steps as Array<{ agent?: string }>) : undefined;
-  // status.json reports these as objects, not scalars.
-  const tokens = s.totalTokens as { total?: number; window?: number } | undefined;
-  const cost = s.totalCost as { costUsd?: number } | undefined;
-
+  const tokens = s.totalTokens as
+    | { window?: unknown; total?: unknown }
+    | undefined;
   return {
-    runId: typeof s.runId === "string" ? s.runId : fallbackId,
-    dir,
-    state,
-    live: running && (pid === undefined || isAlive(pid)),
-    pid,
     cwd: typeof s.cwd === "string" ? s.cwd : undefined,
-    parentSessionFile: typeof s.sessionId === "string" ? s.sessionId : undefined,
-    childSessionFile: typeof s.sessionFile === "string" ? s.sessionFile : undefined,
-    agent: steps?.[0]?.agent,
-    mode: typeof s.mode === "string" ? s.mode : undefined,
-    startedAt: typeof s.startedAt === "number" ? s.startedAt : undefined,
-    lastActivityAt: typeof s.lastActivityAt === "number" ? s.lastActivityAt : undefined,
-    endedAt: typeof s.endedAt === "number" ? s.endedAt : undefined,
-    totalTokens: typeof tokens?.total === "number" ? tokens.total : undefined,
-    totalCost: typeof cost?.costUsd === "number" ? cost.costUsd : undefined,
-    contextWindow: typeof tokens?.window === "number" ? tokens.window : undefined,
-    stepCount: steps?.length,
+    contextWindow:
+      typeof tokens?.window === "number" ? tokens.window : undefined,
+    lastActivityAt:
+      typeof s.lastActivityAt === "number" ? s.lastActivityAt : undefined,
   };
 }
 
-/** Async subagent runs (any foreground/background mode), newest activity first. */
+/**
+ * Active (possibly still updating) runs whose pid probe was inconclusive:
+ * neither provably this run's runner nor provably gone. The panel shows
+ * these beside the live runs instead of dropping them silently.
+ */
+export function isUnresolvedRun(run: RunRecord): boolean {
+  return (
+    !run.live &&
+    run.liveness.state === "unknown" &&
+    (ACTIVE_RUN_STATES as readonly string[]).includes(run.state)
+  );
+}
+
+/** Runs needing operator attention first: live, then unresolved, in order. */
+export function attentionRuns(fleet: Fleet): RunRecord[] {
+  return fleet.runs.filter((r) => r.live || isUnresolvedRun(r));
+}
+
+function toPackageRun(mod: ModuleRunRecord): RunRecord {
+  const liveness = probeLiveness(mod.pid);
+  const extras = readRunExtras(mod.runDir);
+  const active = (ACTIVE_RUN_STATES as readonly string[]).includes(
+    mod.state,
+  );
+  return {
+    runId: mod.runId,
+    dir: mod.runDir,
+    state: mod.state,
+    live: active && liveness.state === "alive",
+    liveness,
+    pid: mod.pid,
+    cwd: extras.cwd,
+    parentSessionFile: mod.parentSessionFile,
+    childSessionFile: mod.childSessionFile,
+    agent: mod.agent,
+    mode: mod.mode,
+    startedAt: mod.startedAt,
+    lastActivityAt: mod.lastUpdate ?? extras.lastActivityAt,
+    endedAt: mod.endedAt,
+    totalTokens: mod.tokens?.total,
+    totalCost: mod.costUsd,
+    contextWindow: extras.contextWindow,
+    stepCount: mod.steps.length,
+  };
+}
+
+/**
+ * Async subagent runs (any foreground/background mode), newest first.
+ * Detection, windowing (terminal runs only) and ordering come from
+ * `@pi-mesh/runs`; this function only attaches liveness and the
+ * display-only extras above.
+ */
 export function discoverRuns(opts: DiscoveryOptions = {}): RunRecord[] {
   const tmp = opts.tmp ?? tmpdir();
   const now = opts.now ?? Date.now();
   const maxAgeMs = opts.maxAgeMs ?? DAY_MS;
-  const out: RunRecord[] = [];
-
-  for (const runsDir of subagentScopeDirs(tmp)) {
-    let ids: string[];
-    try {
-      ids = readdirSync(runsDir);
-    } catch {
-      continue;
-    }
-    for (const id of ids) {
-      const run = readRun(join(runsDir, id), id, now, maxAgeMs);
-      if (run) out.push(run);
-    }
-  }
-
-  out.sort((a, b) => (b.lastActivityAt ?? b.startedAt ?? 0) - (a.lastActivityAt ?? a.startedAt ?? 0));
-  return out;
+  const { runs } = discoverModuleRuns({ tmp, now, maxAgeMs });
+  return runs.map(toPackageRun);
 }
 
-/** Direct lookup by run id regardless of age, for control actions. */
-export function findRun(runId: string, opts: DiscoveryOptions = {}): RunRecord | undefined {
+/**
+ * Direct lookup by run id regardless of age, for control actions. The
+ * window is unbounded here because a terminal run is still stoppable in
+ * the idempotent sense - the module still decides which directories are
+ * runs.
+ */
+export function findRun(
+  runId: string,
+  opts: DiscoveryOptions = {},
+): RunRecord | undefined {
   const tmp = opts.tmp ?? tmpdir();
   const now = opts.now ?? Date.now();
-  for (const runsDir of subagentScopeDirs(tmp)) {
-    const run = readRun(join(runsDir, runId), runId, now);
-    if (run) return run;
-  }
-  return undefined;
+  const { runs } = discoverModuleRuns({
+    tmp,
+    now,
+    maxAgeMs: Number.MAX_SAFE_INTEGER,
+  });
+  const mod = runs.find((r) => r.runId === runId);
+  return mod ? toPackageRun(mod) : undefined;
 }
 
 /** Join both planes into the single view the panel, rules and tool all read. */

@@ -9,7 +9,7 @@
 
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, truncateToWidth } from "@earendil-works/pi-tui";
-import type { Fleet, RunRecord, SessionRecord } from "./discovery.ts";
+import { attentionRuns, type Fleet, type RunRecord, type SessionRecord } from "./discovery.ts";
 import type { Finding } from "./rules.ts";
 import { fmtAge, fmtDuration, fmtTokens, fmtUsd, shortPath } from "./format.ts";
 
@@ -87,10 +87,12 @@ export class OverseerPanel {
     };
 
     lines.push("");
+    const unknown = fleet.runs.filter((r) => r.liveness.state === "unknown").length;
     lines.push(
       truncateToWidth(
         th.fg("accent", th.bold(" Overseer")) +
           th.fg("muted", `   ${fleet.liveRuns.length} live run${fleet.liveRuns.length === 1 ? "" : "s"}`) +
+          (unknown ? th.fg("warning", ` · ${unknown} unknown`) : "") +
           th.fg("dim", ` · ${fleet.sessions.length} sessions (${fleet.liveSessions.length} live)`) +
           th.fg("dim", ` · ${fmtUsd(fleet.totals.cost)} · ${fmtTokens(fleet.totals.tokens)} tok`),
         width,
@@ -116,9 +118,11 @@ export class OverseerPanel {
       if (findings.length > MAX_FINDINGS) lines.push(truncateToWidth(th.fg("dim", `  … ${findings.length - MAX_FINDINGS} more`), width));
     }
 
-    lines.push(rule(`Live runs (${fleet.liveRuns.length})`));
-    if (!fleet.liveRuns.length) lines.push(truncateToWidth(th.fg("dim", "  none"), width));
-    for (const run of fleet.liveRuns.slice(0, MAX_RUNS)) lines.push(truncateToWidth(this.runLine(run, now, width), width));
+    const attention = attentionRuns(fleet);
+    const unresolved = attention.length - fleet.liveRuns.length;
+    lines.push(rule(`Live runs (${fleet.liveRuns.length}${unresolved ? ` + ${unresolved} unknown` : ""})`));
+    if (!attention.length) lines.push(truncateToWidth(th.fg("dim", "  none"), width));
+    for (const run of attention.slice(0, MAX_RUNS)) lines.push(truncateToWidth(this.runLine(run, now, width), width));
 
     lines.push(rule(`Sessions (${fleet.sessions.length})`));
     if (!fleet.sessions.length) lines.push(truncateToWidth(th.fg("dim", "  none in scan window"), width));
@@ -138,13 +142,20 @@ export class OverseerPanel {
   private runLine(run: RunRecord, now: number, _width: number): string {
     void _width;
     const th = this.theme;
-    const dot = run.live ? th.fg("success", "●") : th.fg("dim", "○");
+    const tri = run.live ? "alive" : run.liveness.state;
+    const dot =
+      tri === "alive"
+        ? th.fg("success", "●")
+        : tri === "unknown"
+          ? th.fg("warning", "◐")
+          : th.fg("dim", "○");
     const agent = th.fg("text", (run.agent ?? "agent").padEnd(14).slice(0, 14));
-    const state = th.fg(run.live ? "success" : "muted", run.state.padEnd(9).slice(0, 9));
+    const state = th.fg(tri === "alive" ? "success" : tri === "unknown" ? "warning" : "muted", run.state.padEnd(9).slice(0, 9));
     const t = run.startedAt !== undefined ? fmtDuration(now - run.startedAt).padEnd(8) : "".padEnd(8);
     const cost = fmtUsd(run.totalCost).padEnd(9);
     const cwd = th.fg("dim", shortPath(run.cwd));
-    return `  ${dot} ${agent} ${state} ${th.fg("muted", t)} ${th.fg("muted", cost)} ${cwd}`;
+    const evidence = tri === "unknown" ? th.fg("dim", ` (${run.liveness.reason})`) : "";
+    return `  ${dot} ${agent} ${state} ${th.fg("muted", t)} ${th.fg("muted", cost)} ${cwd}${evidence}`;
   }
 
   private sessionLine(s: SessionRecord, now: number, fleet: Fleet, _width: number): string {

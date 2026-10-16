@@ -148,7 +148,9 @@ rather than inventing a shape that suits the code.
 ## What NOT to do
 
 - Do not add a database to `@pi-mesh/agent`. The agent is stateless
-  except for its credentials file and process map.
+  except for its credentials file, its process map, and a bounded volatile
+  in-memory evaluator map that holds findings suppression keys, dies with the
+  process and is never persisted (ADR 0021 decision 4).
 - Do not implement GossipSub, ChromaDB, or shared memory yet. Those are
   milestone 3+.
 - Do not add an unauthenticated route to the LAN listener. Every peer

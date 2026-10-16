@@ -258,3 +258,14 @@ you do not know yet.
 - **Break-testing leaks processes when the break removes the only mechanism that
   could kill them.** Count the process table after a break run, not just after
   the suite.
+- **An async subagent child inherits the parent's ambient extensions, and one of
+  them can replace its entire tool surface.** With Pi Fabric full-code mode
+  loaded, every background child came up with `fabric_exec` as its only tool,
+  which is unregistered inside a detached runner: the child read nothing and
+  still returned a confident review of documents it never opened. Foreground
+  children never load ambient extensions, so a foreground control passes while
+  every async child fails. Set `extensions: []` on read-only advisor profiles.
+- **Check a child transcript's tool calls before believing its report.** Same
+  failure, cheap detector: count `toolCall` names in the child's
+  `_transcript.jsonl`. Zero reads is not a review, however fluent it sounds,
+  and "the tools were not wired" may be the one accurate sentence in it.

@@ -1,0 +1,92 @@
+{
+  "verdict": "Rescope before implementation. This is a credible external-run oversight plan, not yet a root-session orchestration plan.",
+  "howFarOff": {
+    "level": "moderate",
+    "reason": "The transport, supervised execution and control primitives already exist. The missing product link is a Pi-facing authenticated client; M8 explicitly excludes delegation and instead prioritizes dashboard oversight."
+  },
+  "gaps": [
+    {
+      "gap": "No first-class root-session mesh tool.",
+      "why": "M8-7 preserves local oversight but expressly avoids agent authentication. However, 'a session cannot delegate today' is too strong: its shell can invoke the existing generic authenticated CLI. What is missing is a discoverable, structured Pi tool wrapping that capability.",
+      "evidence": [
+        "tasks/milestone-8.md:44,136-145",
+        "packages/agent/src/cli.ts:70-71,376-404,643-646",
+        "packages/agent/src/client.ts:701-775"
+      ]
+    },
+    {
+      "gap": "Decision 6 defers the vision's central action.",
+      "why": "Yes, this is a product defect. Explicit-target delegation needs no routing model: handoff already starts supervised local work on the recipient and returns watch/control handles. There is no existing dashboard handoff route despite decision 6's suggestive wording.",
+      "evidence": [
+        "docs/adr/0021-oversight-of-runs.md:204-210",
+        "docs/adr/0010-mesh-handoff.md:24-42",
+        "packages/agent/src/skills.ts:499-516",
+        "packages/control-plane/src/server.ts:249-297"
+      ]
+    },
+    {
+      "gap": "The root session must actually be dashboard-controllable.",
+      "why": "The smallest supported root is a mesh-owned live session started in the home folder. Merely discovering an existing TUI transcript does not make its runtime steerable; shared-runtime attachment remains experimental, not shipped.",
+      "evidence": [
+        "docs/adr/0016-session-prompt-identity.md:7-17",
+        "docs/adr/0020-use-pi-durable-for-agent-spawning.md:65-74",
+        "packages/control-plane/src/server.ts:289-314"
+      ]
+    }
+  ],
+  "conflicts": [
+    {
+      "decision": "0021 decisions 5–6: actor and grant",
+      "conflict": "The gates do not inherently contradict the vision, but the actor is unspecified. Dashboard authorization to drive the root is not transitive authorization for that root to execute elsewhere. The tool exercises the root machine's swarm identity/key; each destination independently opts in. This is machine-level authority, not an authenticated per-session identity; peer-ID restrictions remain weak.",
+      "evidence": [
+        "docs/adr/0013-dashboard-control.md:31-75",
+        "docs/adr/0008-spawn-policy.md:40-62",
+        "packages/agent/src/server.ts:614-656",
+        "packages/agent/src/cli.ts:643-646"
+      ]
+    },
+    {
+      "decision": "0021 decision 7: sequencing",
+      "conflict": "Read-only first was explicitly operator-settled, not an accidental omission. It is sensible for the new external-run adapter, but insufficient as the first vision-delivering slice. Changing whole-milestone sequencing requires explicitly revising that settlement, not silently overriding it.",
+      "evidence": [
+        "docs/research/council-0021-oversight-of-runs.md:109-118",
+        "docs/adr/0021-oversight-of-runs.md:212-217",
+        "tasks/milestone-8.md:18-29"
+      ]
+    }
+  ],
+  "recommendedAdrChanges": [
+    {
+      "decision": "0021 decision 5 / M8-7",
+      "change": "Add an optional mesh tool to packages/pi-overseer, preserving standalone local behavior. Reuse sendSkill/streamSkill and existing credential loaders. Signed loopback calls can obtain mesh.peers; send handoff to the selected remote recipient. Loopback handoff alone starts work locally, not remotely.",
+      "reason": "Supplies the missing Pi-side consumer without a new principal, relay or unauthenticated route (packages/agent/src/client.ts:480,701-775; packages/agent/src/skills.ts:499-516; AGENTS.md:172-177)."
+    },
+    {
+      "decision": "0021 decision 6",
+      "change": "Include explicit-peer delegation in M8 using unchanged mesh.handoff, its task/session/job handles, session.read/stream, session.steer and process.stop. No dashboard delegate action is required initially.",
+      "reason": "Reuses the complete gated execution path rather than inventing orchestration infrastructure. Clarify ADR 0013's routing-related deferral if adding a dashboard proxy later (docs/adr/0010-mesh-handoff.md:24-42,66-82; docs/adr/0013-dashboard-control.md:85-89)."
+    },
+    {
+      "decision": "0021 decision 2",
+      "change": "Name the machine credential holder and destination grant explicitly. Keep the folded external-run grant, but enforce it through the shared dispatch classification, not an independent handler gate. Classify run capabilities by actual inbox/layout availability, not JobManager availability.",
+      "reason": "Preserves one gate and capability honesty; today's execution advertisement assumes every execution skill needs managed jobs, which external-run control does not (docs/adr/0008-spawn-policy.md:150-163; packages/agent/src/server.ts:779-790; packages/agent/src/skills.ts:814-824)."
+    },
+    {
+      "decision": "0021 decision 7 / M8 ordering",
+      "change": "Make root-to-peer delegation the first product slice; retain read-before-write staging within the subsequent external-runs work and findings afterward.",
+      "reason": "Demonstrates the operator's workflow before adding another observation plane; explicitly update the recorded settlement (tasks/milestone-8.md:94-145; docs/research/council-0021-oversight-of-runs.md:114-118)."
+    }
+  ],
+  "minimalVisionSlice": "Start one managed root Pi session at ~ through existing dashboard spawn; install its mesh tool. From that session, discover/select a peer, hand off one task, retain agent/session/job handles, read progress, steer and stop. The dashboard drives the root and mirrors fleet jobs unchanged. Prove this with the control plane absent too, and prove a destination with execution closed starts nothing. External pi-subagents runs and findings are not prerequisites.",
+  "doNotBuild": [
+    "Cloud or routing-model integration; ADR 0012 stays withdrawn.",
+    "A control-plane orchestrator, queue/retry scheduler or second spawning path.",
+    "Unauthenticated loopback routes or implicit grants from pairing/session ownership.",
+    "An agent database, duplicate run.read, arbitrary-PID control or claimed foreground-run control.",
+    "A production Durable migration or shared-TUI attachment promise."
+  ],
+  "confidence": {
+    "level": "high",
+    "reason": "Static repository evidence and installed pi-subagents 0.78.0 inspected. No tests, hardware behavior, installation or network verification performed."
+  }
+}

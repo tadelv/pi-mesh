@@ -37,6 +37,12 @@ controls its own runs; cross-window control goes quiet.
 
 - **`/overseer`** — live panel: control status, findings, live runs, sessions.
 - **`overseer` tool** — actions `summary | runs | sessions | findings | steer | stop | interrupt`.
+- **`mesh` tool** — actions `peers | handoff | follow | steer | stop`: discover
+  peers through the local agent over loopback, hand one task to a chosen peer
+  (existing `mesh.handoff`, gated there), then `session.read`, `session.steer`
+  or `process.stop` on that peer. Reuses the agent's authenticated client; a
+  handoff at loopback starts work on this machine and says so. Needs the
+  pi-mesh agent installed here, otherwise every action refuses.
 - **Status line** — `N live · X finding(s) · steer ready`.
 
 ## Rules
@@ -83,6 +89,7 @@ They register for control but skip the scan, notifications, and auto-actions.
 | file | role |
 |---|---|
 | `discovery.ts` | scans sessions + run artifacts (plain `node:fs`, testable) |
+| `mesh.ts` | `mesh` tool: peers/handoff/follow/steer/stop over the agent's client (injectable transport, no listener, no route) |
 | `rules.ts` | thresholds → findings |
 | `control.ts` | pi-subagents RPC client (steer/stop/interrupt) |
 | `channel.ts` | pi-intercom `overseer/v1` extension channel |
@@ -133,6 +140,44 @@ files with no pi imports. Control goes quiet: `steer` / `stop` / `interrupt`
 need pi-subagents' ownership-scoped RPC in the owning session, so they time out
 instead of acting, and cross-window control (which also needs the pi-intercom
 extension bus) goes quiet with it.
+
+## Try it (two machines, no control plane)
+
+Hardware proof is the operator's step - the commands below are exact, nothing
+here is run by automation. Both machines share one swarm key
+(`~/.pi-mesh/swarm.key`, mode `0600`) on the same LAN; the agent listens on
+`7330` unless `PI_MESH_PORT` says otherwise. The root session on machine A
+must be a mesh-supervised session (started in the home folder through the
+dashboard spawn, so it is steerable); a discovered TUI transcript is not a
+supported root.
+
+Machine B (the destination, e.g. devpi) - grant **open**:
+
+```sh
+node packages/agent/dist/cli.js start --allow-execution
+```
+
+Machine A - in the root Pi session (extension installed with
+`pi install ./packages/pi-overseer`, local agent running):
+
+1. `mesh` with `{"action": "peers"}` - note machine B's peer id.
+2. `mesh` with `{"action": "handoff", "peer": "<B id>", "task": "Summarise the README in five bullets", "project": "<a directory under B's workspace>"}` -
+   returns the task, session and job ids.
+3. `mesh` with `{"action": "follow", "peer": "<B id>", "session": "<session id>"}` -
+   entry count for that session on B.
+4. `mesh` with `{"action": "steer", "peer": "<B id>", "job": "<job id>", "message": "Also note the license"}`.
+5. `mesh` with `{"action": "stop", "peer": "<B id>", "job": "<job id>"}`.
+
+Machine B - grant **closed** (restart without the flag):
+
+```sh
+node packages/agent/dist/cli.js start
+```
+
+Repeat step 2 from machine A: the handoff is refused with a stated refusal
+carrying code `-32102` (execution closed on the destination) and starts
+nothing. The same handoff with the grant open (previous run) is the positive
+control: it starts exactly one job and returns its handles.
 
 ## Run evidence comes from `@pi-mesh/runs` (M8-1b)
 

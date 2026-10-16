@@ -281,6 +281,33 @@ proves *membership*, not that the peer is the machine you meant — on a network
 where anyone can answer for an address, so can anyone holding the swarm key
 (see "What it does not protect against").
 
+## Sessions as mesh actors
+
+The Pi package ships a `mesh` tool that lets a session discover peers, hand a
+task to one of them, and follow, steer or stop the work it started. Its
+authority needs stating because the actor is new, even though the grant is not.
+
+- **The authority is the machine's, not the session's.** The mesh has no
+  per-session principal: requests are signed with this machine's swarm identity,
+  so a session's calls are indistinguishable from the agent's own. A session
+  gains nothing a holder of the swarm key did not already have (ADR 0007), and
+  losing control of a session is losing control of what this machine is trusted
+  to do.
+- **Authorization does not travel.** Being allowed to drive a session - the
+  dashboard token (ADR 0013) or simply owning the terminal it runs in - is not
+  authorization for that session to execute on other machines. Each destination
+  decides for itself with its own `--allow-execution`, and a destination with
+  the gate closed refuses `-32102` and starts nothing.
+- **The tool cannot be aimed.** A peer id is resolved through the local agent's
+  own `mesh.peers` listing, and the client verifies the peer's identity against
+  the claimed id during the handshake, so a session cannot make the tool sign a
+  request for an address it chose. A peer that answers under someone else's id
+  fails authentication.
+- **It opens nothing.** No listener, no route, no new credential path: the tool
+  uses the same signed client and the same credential loaders as the agent. With
+  no swarm key on the machine every action refuses before a request is
+  constructed, and local oversight is unaffected.
+
 ## Revocation
 
 To revoke a compromised swarm key:

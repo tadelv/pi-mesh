@@ -25,6 +25,7 @@
     "typebox": "1.3.27"
   },
   "dependencies": {
+    "@pi-mesh/agent": "workspace:*",
     "@pi-mesh/runs": "workspace:*"
   }
 }

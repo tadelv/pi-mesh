@@ -62,6 +62,9 @@ importers:
 
   packages/pi-overseer:
     dependencies:
+      '@pi-mesh/agent':
+        specifier: workspace:*
+        version: link:../agent
       '@pi-mesh/runs':
         specifier: workspace:*
         version: link:../runs

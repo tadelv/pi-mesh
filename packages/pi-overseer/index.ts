@@ -25,6 +25,7 @@ import { join } from "node:path";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { createControlChannel, type ControlChannel, type ControlChannelStatus, type ControlCommand } from "./channel.ts";
+import { executeMeshAction, type MeshToolDetails } from "./mesh.ts";
 import { executeLocalControl, isVerb, type Verb } from "./control.ts";
 import { attentionRuns, buildFleet, findRun, type RunRecord } from "./discovery.ts";
 import { fmtAge, fmtDuration, fmtTokens, fmtUsd, shortPath } from "./format.ts";
@@ -72,6 +73,32 @@ function loadConfig(): OverseerConfig {
     return DEFAULT_CONFIG;
   }
 }
+
+const MeshParams = Type.Object({
+  action: Type.Union(
+    [
+      Type.Literal("peers"),
+      Type.Literal("handoff"),
+      Type.Literal("follow"),
+      Type.Literal("steer"),
+      Type.Literal("stop"),
+    ],
+    {
+      description:
+        'peers: list the fleet. handoff: hand one task to a peer. follow: read that session. steer/stop: redirect or end its job.',
+    },
+  ),
+  peer: Type.Optional(Type.String({ description: "Peer id from action peers" })),
+  task: Type.Optional(Type.String({ description: "The work to hand off (handoff)" })),
+  project: Type.Optional(Type.String({ description: "Project path on the destination (handoff)" })),
+  context: Type.Optional(
+    Type.Record(Type.String(), Type.Unknown(), { description: "Extra context appended to the task (handoff)" }),
+  ),
+  session: Type.Optional(Type.String({ description: "Session id from a handoff (follow)" })),
+  job: Type.Optional(Type.String({ description: "Job id from a handoff (steer/stop)" })),
+  message: Type.Optional(Type.String({ description: "Steering text (steer)" })),
+  since: Type.Optional(Type.String({ description: "Entry id to resume from (follow)" })),
+});
 
 const OverseerParams = Type.Object({
   action: Type.Union(
@@ -287,6 +314,35 @@ export default function (pi: ExtensionAPI) {
           totals: fleet.totals,
           control,
         },
+      };
+    },
+  });
+
+  pi.registerTool<typeof MeshParams, MeshToolDetails>({
+    name: "mesh",
+    label: "Mesh",
+    description:
+      "Discover pi-mesh peers, hand one task to a chosen peer, then follow, steer or stop it. " +
+      "A handoff addressed at loopback starts work on this machine, not remotely. " +
+      "Needs the pi-mesh agent installed here; otherwise every action refuses and local oversight is unaffected.",
+    parameters: MeshParams,
+
+    async execute(_toolCallId, params) {
+      const result = await executeMeshAction({
+        action: params.action as string,
+        ...(params.peer === undefined ? {} : { peer: params.peer }),
+        ...(params.task === undefined ? {} : { task: params.task }),
+        ...(params.project === undefined ? {} : { project: params.project }),
+        ...(params.context === undefined ? {} : { context: params.context as Record<string, unknown> }),
+        ...(params.session === undefined ? {} : { session: params.session }),
+        ...(params.job === undefined ? {} : { job: params.job }),
+        ...(params.message === undefined ? {} : { message: params.message }),
+        ...(params.since === undefined ? {} : { since: params.since }),
+      });
+      return {
+        content: result.content,
+        details: result.details,
+        ...(result.isError === true ? { isError: true as const } : {}),
       };
     },
   });

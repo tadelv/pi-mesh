@@ -97,6 +97,14 @@ you do not know yet.
 
 ## Node / runtime
 
+- **The SIGKILL-escalation test fails on Node 26 and passes in CI on Node 22.**
+  `test/jobs.test.ts` reports `expected 'SIGTERM' to be 'SIGKILL'` on Node
+  v26.12.0. It is neither the change under review nor the fixture: with HEAD's
+  agent sources it fails identically, and `rpc-stub.mjs` in `ignoreterm` mode
+  survives a direct SIGTERM when spawned outside the job manager. The divergence
+  is in the stop path or its ordering on Node 26. Read CI before treating a local
+  red as evidence, and do not "fix" the fixture to make it pass.
+
 - **`response.writeHead`/`end` on a destroyed socket does not throw and does not
   emit `error`.** Verified after a clean `close` and after an RST. So "the agent
   dies writing to a dropped socket" is false, and a guard for it is dead code.

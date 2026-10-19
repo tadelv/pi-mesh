@@ -56,6 +56,8 @@ Each skill also declares its **exposure**:
 | `process.spawn` | **gated on the spawn policy** | `{ project, cwd?, prompt, model? }` | `{ job_id, pid, session_id }` |
 | `process.stop` | peer (ungated) | `{ job_id (mesh id, not PID) }` | `{ job_id, state, pid }` |
 | `mesh.handoff` | **gated on the spawn policy** | `HandoffPayload` | `{ task_id, session_id, job_id }` on acceptance; `{ task: Task }` when rejected; refused with `-32102` when closed |
+| `run.list` | peer (ungated; read, recognised run layout required) | `{}` | `{ runs: [RunEntry], coverage, evaluated_at }` |
+| `run.findings` | peer (ungated; read, recognised run layout required) | `{}` | `{ findings: [Finding], config, coverage, evaluated_at }` |
 
 A peer exposure means the skill is reachable by any swarm member, and never
 means unauthenticated: every request carries a proof (below).
@@ -120,6 +122,55 @@ Steering is gated with spawning because injected prompts cause tool
 execution. Stopping is not gated: `session.abort` and `process.stop` are
 allowed to any member, since reducing activity cannot be the more dangerous
 operation.
+
+### Runs-plane reads (`run.list`, `run.findings`)
+
+Both skills are ungated peer reads over pi-subagents async runs on the
+agent's own machine (ADR 0021 decisions 1 and 4). Neither starts a process
+nor sends a signal: liveness is probed with `kill(pid, 0)` only - a success
+proves a process exists, never that it is the run's runner.
+
+A `RunEntry` carries `run_id`, `state`, tri-state `liveness`, `pid`,
+`parent_session` and `child_session` transcript references, `agent`, `mode`,
+`started_at` / `ended_at` / `last_update`, `status_age_ms`, `steps`, `tokens`
+and `cost_usd`. `liveness` is `alive` | `dead` | `unknown`, never a
+boolean, and always carries its evidence:
+
+| `state` | `reason` | Meaning |
+|---|---|---|
+| `alive` | `pid-alive` | `kill(pid, 0)` succeeded: a process exists |
+| `dead` | `pid-dead` | no such process (`ESRCH`) |
+| `dead` | `zombie` | Linux zombie: the signal succeeded but the process is dead |
+| `unknown` | `no-pid` | the run recorded no usable pid |
+| `unknown` | `permission-denied` | `EPERM`: a process exists but cannot be signalled - not alive |
+| `unknown` | `namespace-unmatched` | Linux pid in another pid namespace: exists, but not provably this run |
+| `unknown` | `probe-failed` | the probe itself errored unexpectedly |
+
+`liveness` also carries `probed_at` and `status_age_ms` (`now -
+(last_update ?? started_at)`). An active run older than any listing window
+is still listed; the window bounds terminal runs only, and a run's age is
+never rendered as failure.
+
+A `Finding` carries `rule` (`run-stale`, `run-long`, `run-budget-usd`,
+`run-budget-tokens`, `session-failure-streak`), `run_id` or `session_file`,
+`summary`, `observed_at`, and the measured `actual` against its `threshold`.
+`config` echoes the effective thresholds (the operator's
+`~/.pi-mesh/rules.json` merged over the module defaults; see
+`docs/DEPLOYMENT.md`).
+
+`coverage` is what lets a reader tell healthy-empty from never-evaluated:
+`layout_recognised` (whether a pi-subagents run layout exists on the
+machine), `last_success` and `last_error` (ISO timestamps of the last
+observation outcome, `null` when none has happened yet). A machine with no
+run layout serves neither skill and advertises neither: a call answers
+`-32004` naming the missing layout.
+
+**Restart to advertise.** Layout recognition is evaluated once, at agent
+startup. A machine that installs pi-subagents (or first produces runs)
+after the agent started neither advertises nor serves the run skills until
+the agent is restarted: calls answer `-32004` naming the missing layout.
+Advertisement and serving read the same startup fact, so they cannot
+disagree - but the fact is stale until a restart refreshes it.
 
 ## Skill invocation
 

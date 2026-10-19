@@ -614,8 +614,14 @@ describe("agent CLI", () => {
     const captured = output();
     const oldHome = process.env.HOME;
     const oldPort = process.env.PI_MESH_PORT;
+    const oldRunsTmp = process.env.PI_MESH_RUNS_TMP;
     process.env.HOME = home;
     process.env.PI_MESH_PORT = "47931";
+    // Pin the runs scan root to an empty dir: the expectation below assumes
+    // no recognised run layout, and the real temp dir is machine state.
+    process.env.PI_MESH_RUNS_TMP = await mkdtemp(
+      join(tmpdir(), "pi-mesh-cli-runs-"),
+    );
     try {
       const running = run(["start"], {
         ...captured.io,
@@ -652,6 +658,8 @@ describe("agent CLI", () => {
       else process.env.HOME = oldHome;
       if (oldPort === undefined) delete process.env.PI_MESH_PORT;
       else process.env.PI_MESH_PORT = oldPort;
+      if (oldRunsTmp === undefined) delete process.env.PI_MESH_RUNS_TMP;
+      else process.env.PI_MESH_RUNS_TMP = oldRunsTmp;
     }
   });
 });

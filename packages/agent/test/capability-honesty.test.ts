@@ -1,6 +1,9 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import { mkdtemp } from "node:fs/promises";
 import { createServer } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentCard } from "@pi-mesh/protocol";
@@ -118,9 +121,16 @@ async function observe(gate: string | undefined): Promise<Observation> {
   const oldGate = process.env.PI_MESH_ALLOW_SPAWN;
   const oldWorkspace = process.env.PI_MESH_WORKSPACE;
   const oldPiBinary = process.env.PI_MESH_PI_BINARY;
+  const oldRunsTmp = process.env.PI_MESH_RUNS_TMP;
   process.env.PI_MESH_PORT = String(port);
   process.env.PI_MESH_WORKSPACE = process.cwd();
   process.env.PI_MESH_PI_BINARY = PI_BINARY;
+  // Pin the runs scan root to an empty dir: the expected skill sets below
+  // assume no recognised run layout, and the real temp dir may hold
+  // pi-subagents runs on a machine that runs Pi with subagents.
+  process.env.PI_MESH_RUNS_TMP = await mkdtemp(
+    join(tmpdir(), "pi-mesh-caps-runs-"),
+  );
   if (gate === undefined) delete process.env.PI_MESH_ALLOW_SPAWN;
   else process.env.PI_MESH_ALLOW_SPAWN = gate;
 
@@ -178,6 +188,8 @@ async function observe(gate: string | undefined): Promise<Observation> {
     else process.env.PI_MESH_WORKSPACE = oldWorkspace;
     if (oldPiBinary === undefined) delete process.env.PI_MESH_PI_BINARY;
     else process.env.PI_MESH_PI_BINARY = oldPiBinary;
+    if (oldRunsTmp === undefined) delete process.env.PI_MESH_RUNS_TMP;
+    else process.env.PI_MESH_RUNS_TMP = oldRunsTmp;
   }
 }
 

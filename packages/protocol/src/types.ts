@@ -17,7 +17,9 @@ export type Skill =
   | "process.list"
   | "process.stop"
   | "mesh.peers"
-  | "mesh.handoff";
+  | "mesh.handoff"
+  | "run.list"
+  | "run.findings";
 
 export interface ControlTxtRecord {
   id: string;

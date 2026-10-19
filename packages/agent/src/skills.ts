@@ -4,6 +4,13 @@ import type { PeerSummary, Skill } from "@pi-mesh/protocol";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { realpath, stat } from "node:fs/promises";
 import { ErrorCode, PiMeshError } from "@pi-mesh/shared";
+import {
+  createRunsPlane,
+  defaultRulesPath,
+  defaultRunsTmp,
+  hasRecognisedRunLayout,
+} from "./runs.js";
+import type { ProbeLivenessDeps } from "@pi-mesh/runs";
 import { PeerRegistry } from "./registry.js";
 import { SessionStore, type SessionStoreOptions } from "./sessions.js";
 import { JobStartTimeoutError, type JobManager } from "./jobs.js";
@@ -21,23 +28,86 @@ export interface SkillRegistryOptions extends SessionStoreOptions {
   piBinary?: string;
   modelCatalogTtlMs?: number;
   modelCatalogTimeoutMs?: number;
+  /**
+   * Temp root scanned for pi-subagents run directories. Defaults to the
+   * real temp directory (overridable for tests, which must not depend on
+   * machine state). Evaluated once, at registry creation: a machine that
+   * gains a run layout later needs an agent restart (docs/PROTOCOL.md).
+   */
+  runsTmp?: string;
+  /** Terminal-run listing window; defaults to RUNS_LIST_WINDOW_MS. */
+  runsMaxAgeMs?: number;
+  /** Operator threshold overrides; defaults to ~/.pi-mesh/rules.json. */
+  rulesPath?: string;
+  /** Clock for evaluated_at/probed_at; defaults to Date.now. */
+  runsNow?: () => number;
+  /** Liveness probe dependencies, so tests can inject the probe. */
+  runsLiveness?: ProbeLivenessDeps;
 }
 
-export const ALWAYS_SERVED_SKILLS: readonly Skill[] = [
-  "mesh.peers",
-  "session.list",
-  "session.read",
-  "session.stream",
-  "session.models",
-];
+/** Who may call a skill: any swarm member, or only an execution grantee. */
+export type SkillExposure = "peer" | "gated";
 
-export const JOB_SKILLS: readonly Skill[] = [
-  "process.list",
-  "process.stop",
-  "session.abort",
-  "session.commands",
-  "session.status",
-];
+/**
+ * What a skill needs on this machine to run: nothing, a managed
+ * JobManager, or a recognised pi-subagents run layout.
+ */
+export type SkillRequirement = "none" | "jobs" | "run-layout";
+
+export interface SkillClassification {
+  exposure: SkillExposure;
+  requires: SkillRequirement;
+}
+
+/**
+ * The single declaration of every skill the agent serves (M8-3/M8-5). The
+ * agent card, the mDNS TXT `caps` record (both via `servedSkills`) and the
+ * server's dispatch refusal (`assertSkillRequirement`, and the spawn gate
+ * via `isExecutionSkill`) all read from this table - never from a parallel
+ * assumption. In particular, execution skills need a JobManager but the
+ * run reads need a run layout instead: a read that needs no jobs must not
+ * be advertised as unavailable merely because no job manager exists, and a
+ * skill that cannot run must never be advertised.
+ */
+export const SKILL_CLASSIFICATION: Record<Skill, SkillClassification> = {
+  "mesh.peers": { exposure: "peer", requires: "none" },
+  "session.list": { exposure: "peer", requires: "none" },
+  "session.read": { exposure: "peer", requires: "none" },
+  "session.stream": { exposure: "peer", requires: "none" },
+  "session.models": { exposure: "peer", requires: "none" },
+  "process.list": { exposure: "peer", requires: "jobs" },
+  "process.stop": { exposure: "peer", requires: "jobs" },
+  "session.abort": { exposure: "peer", requires: "jobs" },
+  "session.commands": { exposure: "peer", requires: "jobs" },
+  "session.status": { exposure: "peer", requires: "jobs" },
+  "process.spawn": { exposure: "gated", requires: "jobs" },
+  "session.steer": { exposure: "gated", requires: "jobs" },
+  "session.resume": { exposure: "gated", requires: "jobs" },
+  "session.set_model": { exposure: "gated", requires: "jobs" },
+  "mesh.handoff": { exposure: "gated", requires: "jobs" },
+  "run.list": { exposure: "peer", requires: "run-layout" },
+  "run.findings": { exposure: "peer", requires: "run-layout" },
+};
+
+function classified(
+  exposure: SkillExposure,
+  requires: SkillRequirement,
+): Skill[] {
+  return (Object.keys(SKILL_CLASSIFICATION) as Skill[]).filter(
+    (skill) =>
+      SKILL_CLASSIFICATION[skill]!.exposure === exposure &&
+      SKILL_CLASSIFICATION[skill]!.requires === requires,
+  );
+}
+
+export const ALWAYS_SERVED_SKILLS: readonly Skill[] = classified(
+  "peer",
+  "none",
+);
+
+export const JOB_SKILLS: readonly Skill[] = classified("peer", "jobs");
+
+export const RUN_SKILLS: readonly Skill[] = classified("peer", "run-layout");
 
 /**
  * Skills that start or steer work, and so require the local spawn policy
@@ -48,13 +118,43 @@ export const JOB_SKILLS: readonly Skill[] = [
  * dangerous operation, so `session.abort` and `process.stop` are allowed to any
  * member (ADR 0008 decision 5).
  */
-export const EXECUTION_SKILLS: readonly Skill[] = [
-  "process.spawn",
-  "session.steer",
-  "session.resume",
-  "session.set_model",
-  "mesh.handoff",
-];
+export const EXECUTION_SKILLS: readonly Skill[] = classified("gated", "jobs");
+
+/**
+ * Whether a skill starts or steers work, and therefore meets the spawn gate
+ * (ADR 0008). Reads the classification table live, so the gate and the
+ * advertisement cannot disagree about a skill whose exposure changed.
+ */
+export function isClassifiedExecutionSkill(skill: string): boolean {
+  const entry = (SKILL_CLASSIFICATION as Record<string, SkillClassification>)[
+    skill
+  ];
+  return entry !== undefined && entry.exposure === "gated";
+}
+
+export interface SkillAvailability {
+  jobsAvailable: boolean;
+  runsAvailable: boolean;
+}
+
+/**
+ * The shared dispatch refusal: a served skill whose requirement is not met
+ * on this machine answers -32004, naming what is missing. Reads the
+ * classification table live, so flipping a skill's requirement changes the
+ * advertisement and the answer together.
+ */
+export function assertSkillRequirement(
+  skill: Skill,
+  availability: SkillAvailability,
+): void {
+  const requires = SKILL_CLASSIFICATION[skill].requires;
+  if (requires === "jobs" && !availability.jobsAvailable) {
+    throw new PiMeshError(-32004, `${skill} requires a job manager`);
+  }
+  if (requires === "run-layout" && !availability.runsAvailable) {
+    throw new PiMeshError(-32004, `${skill} requires a recognised run layout`);
+  }
+}
 
 /**
  * Every skill the protocol defines: the union of the two lists above.
@@ -68,11 +168,7 @@ export const EXECUTION_SKILLS: readonly Skill[] = [
  * gate-closed peer still omits them because it never advertised them (issue #3).
  * Unknown future strings stay rejected until the protocol understands them.
  */
-const KNOWN_SKILLS: readonly string[] = [
-  ...ALWAYS_SERVED_SKILLS,
-  ...JOB_SKILLS,
-  ...EXECUTION_SKILLS,
-];
+const KNOWN_SKILLS: readonly string[] = Object.keys(SKILL_CLASSIFICATION);
 
 function objectInput(value: unknown): SkillInput {
   if (typeof value !== "object" || value === null || Array.isArray(value)) {
@@ -194,6 +290,31 @@ export function createSkillRegistry(
   // A killed agent must not leave the helper's child behind: shutdown closes it.
   skills.onClose(() => catalog.close());
 
+  // The two availability facts the classification table decides on. The run
+  // layout is evaluated once, here at startup: discovery and advertisement
+  // then agree by construction, and a machine that gains pi-subagents later
+  // needs a restart (docs/PROTOCOL.md).
+  const runsTmp = options.runsTmp ?? defaultRunsTmp();
+  const availability: SkillAvailability = {
+    jobsAvailable: options.jobs !== undefined,
+    runsAvailable: hasRecognisedRunLayout(runsTmp),
+  };
+  const plane = createRunsPlane({
+    tmp: runsTmp,
+    layoutRecognised: availability.runsAvailable,
+    ...(options.runsMaxAgeMs === undefined
+      ? {}
+      : { maxAgeMs: options.runsMaxAgeMs }),
+    ...(options.sessionsRoot === undefined
+      ? {}
+      : { sessionRoot: options.sessionsRoot }),
+    rulesPath: options.rulesPath ?? defaultRulesPath(),
+    ...(options.runsNow === undefined ? {} : { now: options.runsNow }),
+    ...(options.runsLiveness === undefined
+      ? {}
+      : { livenessDeps: options.runsLiveness }),
+  });
+
   // Registered UNCONDITIONALLY, exactly like session.steer - and that is
   // load-bearing, not a style choice. The gate can only report "execution is
   // disabled on this machine" (-32102) for a skill it can SEE; registering
@@ -223,6 +344,10 @@ export function createSkillRegistry(
         "process.spawn requires a non-blank prompt",
       );
     }
+    // The table refusal first, the narrowing throw second: while the table
+    // requires a manager the assert throws and the branch below is dead;
+    // it stays so a flipped requirement cannot turn this into a crash.
+    assertSkillRequirement("process.spawn", availability);
     if (jobs === undefined) {
       throw new PiMeshError(-32004, "process.spawn requires a job manager");
     }
@@ -369,6 +494,7 @@ export function createSkillRegistry(
       throw new PiMeshError(-32602, "session.resume session_id must be a UUID");
     }
     const jobs = options.jobs;
+    assertSkillRequirement("session.resume", availability);
     if (jobs === undefined) {
       throw new PiMeshError(-32004, "session.resume requires a job manager");
     }
@@ -521,6 +647,7 @@ export function createSkillRegistry(
   });
 
   skills.register("process.list", async () => {
+    assertSkillRequirement("process.list", availability);
     if (options.jobs === undefined) {
       throw new PiMeshError(-32004, "process.list requires a job manager");
     }
@@ -547,6 +674,7 @@ export function createSkillRegistry(
   });
   skills.register("process.stop", async (input) => {
     const jobId = requiredString(input, "job_id");
+    assertSkillRequirement("process.stop", availability);
     if (options.jobs === undefined) {
       throw new PiMeshError(-32004, "process.stop requires a job manager");
     }
@@ -555,6 +683,7 @@ export function createSkillRegistry(
   });
   skills.register("session.abort", async (input) => {
     const jobId = requiredString(input, "job_id");
+    assertSkillRequirement("session.abort", availability);
     if (options.jobs === undefined) {
       throw new PiMeshError(-32004, "session.abort requires a job manager");
     }
@@ -572,6 +701,7 @@ export function createSkillRegistry(
         "session.steer message exceeds 4096 UTF-8 bytes",
       );
     }
+    assertSkillRequirement("session.steer", availability);
     if (options.jobs === undefined) {
       throw new PiMeshError(-32004, "session.steer requires a job manager");
     }
@@ -609,6 +739,7 @@ export function createSkillRegistry(
       }
     }
     const jobId = requiredString(input, "job_id");
+    assertSkillRequirement("session.models", availability);
     if (options.jobs === undefined) {
       throw new PiMeshError(-32004, "session.models requires a job manager");
     }
@@ -648,6 +779,7 @@ export function createSkillRegistry(
         "session.commands job_id must be non-blank",
       );
     }
+    assertSkillRequirement("session.commands", availability);
     if (options.jobs === undefined) {
       throw new PiMeshError(-32004, "session.commands requires a job manager");
     }
@@ -687,6 +819,7 @@ export function createSkillRegistry(
     if (jobId.trim().length === 0) {
       throw new PiMeshError(-32602, "session.status job_id must be non-blank");
     }
+    assertSkillRequirement("session.status", availability);
     if (options.jobs === undefined) {
       throw new PiMeshError(-32004, "session.status requires a job manager");
     }
@@ -734,6 +867,7 @@ export function createSkillRegistry(
         "session.set_model fields must be non-blank",
       );
     }
+    assertSkillRequirement("session.set_model", availability);
     if (options.jobs === undefined) {
       throw new PiMeshError(-32004, "session.set_model requires a job manager");
     }
@@ -803,29 +937,57 @@ export function createSkillRegistry(
     throw new PiMeshError(-32004, "session.stream requires message/stream");
   });
 
+  // Runs-plane reads (ADR 0021 decisions 1 and 4): ungated peer skills that
+  // need a recognised run layout instead of a job manager. Registered
+  // unconditionally, exactly like process.spawn: a machine with no layout
+  // must answer -32004 "requires a recognised run layout", never the
+  // registry's own "not supported at all". Neither starts a process nor
+  // sends a signal; liveness is probed with kill(pid, 0) only.
+  skills.register("run.list", async () => {
+    assertSkillRequirement("run.list", availability);
+    return plane.listRuns();
+  });
+  skills.register("run.findings", async () => {
+    assertSkillRequirement("run.findings", availability);
+    return plane.evaluateFindings();
+  });
+
   return skills;
 }
 
 /**
- * What this agent advertises, as a function of two separate facts.
+ * What this agent advertises, as a function of three separate facts.
  *
  * `jobsAvailable` is whether a JobManager exists; `gateOpen` is the spawn policy
- * (ADR 0008). cli.ts constructs the manager iff the policy is enabled, so in
- * production these always agree - but the exported server constructor accepts
- * them independently, and a single flag made a server built with a manager and a
- * closed policy advertise execution it answers with -32102.
+ * (ADR 0008); `runsAvailable` is whether a recognised pi-subagents run layout
+ * exists on this machine (evaluated once at startup - a machine that installs
+ * pi-subagents later needs an agent restart, docs/PROTOCOL.md). cli.ts constructs
+ * the manager iff the policy is enabled, so in production the first two always
+ * agree - but the exported server constructor accepts them independently, and a
+ * single flag made a server built with a manager and a closed policy advertise
+ * execution it answers with -32102.
  *
  * EVERY execution skill needs the manager, `mesh.handoff` included: it does not
  * touch `options.jobs` directly, it delegates to the local `process.spawn`, so a
  * manager-less handoff fails with -32004 rather than being refused cleanly. That
- * indirection is why this was wrong twice.
+ * indirection is why this was wrong twice. And no skill is advertised on an
+ * assumption: each entry is served exactly when the classification table's
+ * requirement for it holds, so a read needing no jobs is not hidden for want
+ * of a manager, and nothing unservable is advertised.
  */
-export function servedSkills(jobsAvailable = false, gateOpen = false): Skill[] {
-  return [
-    ...ALWAYS_SERVED_SKILLS,
-    ...(jobsAvailable ? JOB_SKILLS : []),
-    ...(jobsAvailable && gateOpen ? EXECUTION_SKILLS : []),
-  ];
+export function servedSkills(
+  jobsAvailable = false,
+  gateOpen = false,
+  runsAvailable = false,
+): Skill[] {
+  const serves = (skill: Skill): boolean => {
+    const entry = SKILL_CLASSIFICATION[skill]!;
+    if (entry.exposure === "gated" && !gateOpen) return false;
+    if (entry.requires === "jobs" && !jobsAvailable) return false;
+    if (entry.requires === "run-layout" && !runsAvailable) return false;
+    return true;
+  };
+  return (Object.keys(SKILL_CLASSIFICATION) as Skill[]).filter(serves);
 }
 
 async function sendBeforeDeadline(

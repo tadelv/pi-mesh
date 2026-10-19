@@ -2,7 +2,7 @@
 
 import { ErrorCode, PiMeshError } from "@pi-mesh/shared";
 import { isUuid } from "./identity.js";
-import { EXECUTION_SKILLS } from "./skills.js";
+import { isClassifiedExecutionSkill } from "./skills.js";
 
 /**
  * The local spawn policy (ADR 0008).
@@ -113,16 +113,21 @@ export function parseSpawnPolicy(
   };
 }
 
-/** Whether a skill starts or steers work, and therefore needs the gate. */
+/**
+ * Whether a skill starts or steers work, and therefore needs the gate.
+ * Reads the skill classification table live (M8-3): the gate and the
+ * advertisement agree about a skill's exposure by construction.
+ */
 export function isExecutionSkill(skill: string): boolean {
-  return (EXECUTION_SKILLS as readonly string[]).includes(skill);
+  return isClassifiedExecutionSkill(skill);
 }
 
 /**
  * Throw unless this peer may execute here.
  *
- * The gate reads `EXECUTION_SKILLS`, the one list of skills that start or
- * steer work, so the check cannot drift from the list of things it guards.
+ * The gate reads the skill classification table (via `isExecutionSkill`),
+ * the one declaration of skills that start or steer work, so the check
+ * cannot drift from the list of things it guards.
  *
  * The message distinguishes "you are not allowed" from "this machine allows
  * nobody", because the fix is different in each case - a different peer, or a

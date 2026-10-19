@@ -169,6 +169,24 @@ from matching a real command containing `cli.js start`.
 Not supported. The swarm-key permission model relies on POSIX file modes, which
 Windows reports synthetically.
 
+### Run findings (`~/.pi-mesh/rules.json`)
+
+`run.findings` evaluates five thresholds over the machine's subagent runs:
+a stale run, a long run, cost and token budgets, and a session failure
+streak. The file is optional and takes threshold overrides as a JSON object
+- `staleMs`, `longMs` (also accepted as `maxRuntimeMs`, the pi-overseer
+extension's name for it), `maxCostUsd`, `maxTokens`, `failureStreak` - merged
+over the built-in defaults (5 minutes stale, 30 minutes long, $5, 2,000,000
+tokens, streak of 3). Absent file means defaults; a present file that is not
+valid JSON, is not an object, or sets a known threshold to a non-number
+makes `run.findings` refuse with the reason stated, never a silent fall back
+to defaults. Delivery policy (`enabled`, `notify` vs `steer`/`stop`) is not
+read here: the agent only detects, the reader decides what to do.
+
+Each finding notifies once, then stays suppressed until it clears and fires
+again. Suppression lives only in the agent process: a restart is a new epoch
+and may notify again, which is expected rather than a bug.
+
 ## The workspace root is an accident guard, not isolation
 
 `PI_MESH_WORKSPACE` (default `$HOME`) bounds where a peer may ask a session to

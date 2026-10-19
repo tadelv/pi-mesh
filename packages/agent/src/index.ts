@@ -15,6 +15,7 @@ export * from "./stream.js";
 export * from "./tasks.js";
 export * from "./skills.js";
 export * from "./spawn-policy.js";
+export * from "./runs.js";
 export * from "./server.js";
 export * from "./client.js";
 export * from "./rpc.js";

@@ -41,6 +41,9 @@ importers:
       '@pi-mesh/protocol':
         specifier: workspace:*
         version: link:../protocol
+      '@pi-mesh/runs':
+        specifier: workspace:*
+        version: link:../runs
       '@pi-mesh/shared':
         specifier: workspace:*
         version: link:../shared

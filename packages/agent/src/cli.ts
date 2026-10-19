@@ -28,6 +28,7 @@ import {
 } from "./client.js";
 import { createAgentServer } from "./server.js";
 import { servedSkills } from "./skills.js";
+import { defaultRunsTmp, hasRecognisedRunLayout } from "./runs.js";
 import { parseSpawnPolicy, type SpawnPolicy } from "./spawn-policy.js";
 import { SessionStore } from "./sessions.js";
 import { sessionStream } from "./stream.js";
@@ -288,7 +289,11 @@ async function start(
           version: process.env.PI_MESH_VERSION ?? "0.0.0",
           agentVersion: process.env.PI_MESH_AGENT_VERSION ?? "0.0.0",
           port: listening.port,
-          capabilities: servedSkills(jobs !== undefined, spawnPolicy.enabled),
+          capabilities: servedSkills(
+            jobs !== undefined,
+            spawnPolicy.enabled,
+            hasRecognisedRunLayout(defaultRunsTmp()),
+          ),
         },
         {
           profile,
@@ -704,7 +709,13 @@ async function doctor(io: CliIO): Promise<number> {
       configuredPort: configuredPort(),
       // doctor never constructs a JobManager, so it reports the set the
       // configured policy would produce rather than one it has verified.
-      servedSkills: servedSkills(spawnPolicy.enabled, spawnPolicy.enabled),
+      // The run layout is read for real: it is a filesystem fact, not a
+      // constructed resource.
+      servedSkills: servedSkills(
+        spawnPolicy.enabled,
+        spawnPolicy.enabled,
+        hasRecognisedRunLayout(defaultRunsTmp()),
+      ),
       piBinary: piBinary ?? null,
       workspaceRoot: workspaceRoot ?? null,
       ...(spawnResolutionError === undefined ? {} : { spawnResolutionError }),

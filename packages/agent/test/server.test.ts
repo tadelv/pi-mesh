@@ -272,6 +272,9 @@ describe("A2A HTTP server", () => {
     const server = createAgentServer({
       port: 0,
       sessionsRoot: root,
+      // Pin the runs scan root: the expectation below assumes no recognised
+      // run layout, and the real temp dir is machine state.
+      runsTmp: root,
       swarmKey: testKey,
       identity: testIdentity,
     });

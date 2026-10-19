@@ -50,6 +50,7 @@ import {
   type SkillRegistry,
   type SkillRegistryOptions,
 } from "./skills.js";
+import { defaultRunsTmp, hasRecognisedRunLayout } from "./runs.js";
 import { PiRpcResponseError } from "./rpc.js";
 import {
   sessionStream,
@@ -296,6 +297,13 @@ export class HttpAgentServer implements AgentServer {
   private readonly maxReplayEntries: number;
   private readonly spawnPolicy: SpawnPolicy;
   private readonly maxPendingHandshakes: number;
+  /**
+   * Whether a recognised pi-subagents run layout exists on this machine,
+   * evaluated once at construction (agent startup). The card and the
+   * skill handlers read the same fact, so advertisement and serving agree;
+   * a machine that gains a layout later needs a restart (docs/PROTOCOL.md).
+   */
+  private readonly runsAvailable: boolean;
   private readonly pendingHandshakes = new Map<
     string,
     { transcript: HandshakeTranscript; expiresAt: number }
@@ -310,6 +318,9 @@ export class HttpAgentServer implements AgentServer {
     this.maxPendingHandshakes =
       options.maxPendingHandshakes ?? MAX_PENDING_HANDSHAKES;
     this.skills = options.skillRegistry ?? createSkillRegistry(options);
+    this.runsAvailable = hasRecognisedRunLayout(
+      options.runsTmp ?? defaultRunsTmp(),
+    );
     this.spawnPolicy = options.spawnPolicy ?? parseSpawnPolicy();
     if (this.spawnPolicy.warning !== undefined) {
       // stderr, not stdout: the CLI prints machine-readable JSON on stdout, and
@@ -437,10 +448,12 @@ export class HttpAgentServer implements AgentServer {
       // One expression, shared with the mDNS advertisement in cli.ts. This used
       // cli.ts constructs the JobManager iff the spawn policy is enabled, so
       // these agree in production - they are passed separately because the
-      // constructor accepts them independently.
+      // constructor accepts them independently. The run skills join the card
+      // only where a layout was recognised at startup (M8-5).
       skills: servedSkills(
         this.options.jobs !== undefined,
         this.spawnPolicy.enabled,
+        this.runsAvailable,
       ).map(skillInfo),
       signatures: [],
       iconUrl: "",

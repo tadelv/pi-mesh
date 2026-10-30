@@ -227,6 +227,17 @@ you do not know yet.
 - **Always `ssh host bash -s <<'EOF'` for remote scripts.** A POSIX loop dies
   with `fish: Expected end of the statement` under a fish login shell.
 - **`timeout` is not present on macOS by default.**
+- **`launchctl kickstart -k` does not re-read an edited plist.** Measured on
+  artemis: after adding `PI_MESH_PI_BINARY` to the unit, `kickstart -k`
+  restarted the process with the old environment, so the agent died again with
+  `Failed to start agent: Unable to find executable pi` — while `launchctl
+  print` reported `state = running` and a fresh pid, and the failure only
+  showed as three stale lines at the end of the error log. `launchctl bootout
+  gui/$(id -u)/<label>` followed by `launchctl bootstrap gui/$(id -u)
+  ~/Library/LaunchAgents/<label>.plist` is what applies the change, and
+  `ps eww -p <pid>` is the only honest check that it did. The related trap on
+  the same machine: a launchd `PATH` without `~/.pi/agent/bin` makes the agent
+  fail on every restart while the service still reports itself running.
 - **The dashboard's inline script is a TypeScript template literal**, so an
   unescaped backtick inside it - even in a comment - ends the string, and a
   `${` in it starts interpolation. Measured: a comment marking up `owner` with

@@ -45,6 +45,7 @@ Each skill also declares its **exposure**:
 | `session.list` | peer | `{}` | `{ sessions: SessionSummary[] }` |
 | `session.read` | peer | `{ id, since? }` | `{ entries: Event[] }` |
 | `session.stream` | peer | `{ id }` | SSE stream of `Event` |
+| `mesh.watch` | peer | `{}` | SSE stream of inventory `WatchFrame` (never transcript entries) |
 | `session.models` | peer (ungated; read) | `{ job_id? }` | `{ models: Model[] }` |
 | `session.set_model` | **gated on the spawn policy** | `{ job_id, provider, model_id }` | Pi `set_model` model data |
 | `session.commands` | peer (ungated; read, job manager required) | `{ job_id }` | `{ commands: [{ name, description?, source }] }` from `get_commands` (absolute resource paths are dropped) |
@@ -421,6 +422,19 @@ file-backed. Its frame carries `source: "file"` in the streamed Pi entry and
 retains the existing `entryId` cursor semantics, so `session.read` can resume
 after that cursor. Live and file frames are intentionally not interchangeable:
 only file frames promise replay or resumption.
+
+### Inventory watch
+
+`mesh.watch` streams **inventory facts**, never transcript content: a session
+added, a session's summary changed, a session removed, or a job changing
+state (`WatchFrame`). The subscription starts with one complete listing
+(`snapshot`, produced by the same code as sync), then emits deltas. The agent
+stats the enumerated session files on an interval and reparses only changed
+paths, with a slower full re-list repairing a silently missed change while
+connected. Frames are bounded: an overflowing buffer drops the oldest frame
+and emits a `dropped` marker stating the reason, never a silent truncation.
+A machine with no recognised session layout serves neither the skill nor its
+advertisement until it is restarted.
 
 ## Control-plane live view
 

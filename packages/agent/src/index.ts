@@ -12,6 +12,7 @@ export * from "./mdns.js";
 export * from "./jsonl.js";
 export * from "./sessions.js";
 export * from "./stream.js";
+export * from "./watch.js";
 export * from "./tasks.js";
 export * from "./skills.js";
 export * from "./spawn-policy.js";

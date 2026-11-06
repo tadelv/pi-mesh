@@ -3,6 +3,7 @@
 import { readdir, readFile } from "node:fs/promises";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { statSync } from "node:fs";
 import type { Event, SessionSummary } from "@pi-mesh/protocol";
 import { decodeJsonl } from "./jsonl.js";
 
@@ -203,7 +204,73 @@ export function parseSession(
   return { ...(header === undefined ? {} : { header }), entries, errors };
 }
 
-async function sessionFiles(sessionsRoot: string): Promise<string[]> {
+/**
+ * Whether this machine shows a recognised session layout: the configured
+ * sessions root exists and is a directory. Never throws: a missing or
+ * unreadable root is "no layout", not a crash. Evaluated once at agent
+ * startup (like the runs layout): a machine that gains its sessions
+ * directory later needs a restart before `mesh.watch` is advertised.
+ */
+export function hasRecognisedSessionLayout(
+  sessionsRoot = defaultSessionsRoot(),
+): boolean {
+  try {
+    return statSync(sessionsRoot).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * A single session file reduced to its advertised summary, or the reason it
+ * must be skipped. The rules are the listing's rules, not a second set:
+ * no complete header is not a session, and a header id that is not a UUID
+ * cannot be addressed. Callers report the reason (the listing through
+ * `SessionStore.errors`, the watch through its `onError`); nothing here
+ * emits an empty session.
+ */
+export function summarizeParsed(
+  parsed: SessionParseResult,
+  path: string,
+):
+  | { summary: SessionSummary }
+  | { skipped: string } {
+  const header = parsed.header;
+  if (header === undefined) {
+    return {
+      skipped: `session file has no complete header and is skipped: ${path}`,
+    };
+  }
+  if (!isPlainUuid(header.id)) {
+    return {
+      skipped: `session id is not a UUID and cannot be addressed: ${header.id}`,
+    };
+  }
+  const last = parsed.entries.at(-1);
+  const named = parsed.entries.findLast(
+    (entry) => entry.type === "session_info",
+  );
+  const trimmed = typeof named?.name === "string" ? named.name.trim() : "";
+  const sessionName = trimmed === "" ? undefined : trimmed;
+  return {
+    summary: {
+      id: header.id,
+      project: header.cwd,
+      ...(sessionName === undefined ? {} : { name: sessionName }),
+      started_at: header.timestamp,
+      updated_at: last?.timestamp ?? header.timestamp,
+    },
+  };
+}
+
+/**
+ * Every `*.jsonl` under the enumerated session directories
+ * (`<root>/--<munged-cwd>--/`), across all projects. Exported for the
+ * inventory watch, which must stat the same enumerated set the listing
+ * reads - not just the root, where an append inside an existing file
+ * would never register.
+ */
+export async function sessionFiles(sessionsRoot: string): Promise<string[]> {
   let directories;
   try {
     directories = await readdir(sessionsRoot, { withFileTypes: true });
@@ -276,42 +343,24 @@ export class SessionStore {
         this.onError?.(warning);
         continue;
       }
-      const header = parsed.header;
-      if (header === undefined) continue;
-      if (!isPlainUuid(header.id)) {
-        // Pi permits a caller-supplied non-UUID session id, so skipping one
-        // silently would hide a real session with no trace of why.
-        const error: SessionParseError = {
-          line: 1,
-          message: `session id is not a UUID and cannot be addressed: ${header.id}`,
-          path,
-        };
-        this.parseErrors.push(error);
-        this.onError?.(error);
+      const reduced = summarizeParsed(parsed, path);
+      if ("skipped" in reduced) {
+        // A file with no complete header is not a session and was always
+        // skipped silently here; only an unaddressable id is reported,
+        // because Pi permits a caller-supplied id and silence would hide a
+        // real session with no trace of why.
+        if (reduced.skipped.includes("not a UUID")) {
+          const error: SessionParseError = {
+            line: 1,
+            message: reduced.skipped,
+            path,
+          };
+          this.parseErrors.push(error);
+          this.onError?.(error);
+        }
         continue;
       }
-
-      // No `status` or `ended_at`: Pi's session format records no lifecycle
-      // state, so neither is derivable. Emitting "unknown" for every session
-      // would look like data while carrying none, which is the same defect as
-      // the removed `fp` TXT key (ADR 0006). `updated_at` is last activity,
-      // and is named accordingly rather than pretending to be an end time.
-      const last = parsed.entries.at(-1);
-      // Pi reads the LATEST session_info entry, and a later entry with no name
-      // is an explicit clear. `find` (first) would report a stale name and
-      // could honour neither a rename nor a clear.
-      const named = parsed.entries.findLast(
-        (entry) => entry.type === "session_info",
-      );
-      const trimmed = typeof named?.name === "string" ? named.name.trim() : "";
-      const sessionName = trimmed === "" ? undefined : trimmed;
-      summaries.push({
-        id: header.id,
-        project: header.cwd,
-        ...(sessionName === undefined ? {} : { name: sessionName }),
-        started_at: header.timestamp,
-        updated_at: last?.timestamp ?? header.timestamp,
-      });
+      summaries.push(reduced.summary);
     }
     return summaries;
   }

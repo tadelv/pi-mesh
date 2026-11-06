@@ -28,6 +28,7 @@ const EXECUTION_SKILLS = [
 ].sort();
 const ALWAYS_SKILLS = [
   "mesh.peers",
+  "mesh.watch",
   "session.list",
   "session.read",
   "session.stream",
@@ -131,6 +132,10 @@ async function observe(gate: string | undefined): Promise<Observation> {
   process.env.PI_MESH_RUNS_TMP = await mkdtemp(
     join(tmpdir(), "pi-mesh-caps-runs-"),
   );
+  // Pin the sessions root to a recognised (existing) dir for the same
+  // reason: mesh.watch is advertised exactly where a session layout is
+  // recognised, and the real home directory is machine state.
+  const sessionsRoot = await mkdtemp(join(tmpdir(), "pi-mesh-caps-sess-"));
   if (gate === undefined) delete process.env.PI_MESH_ALLOW_SPAWN;
   else process.env.PI_MESH_ALLOW_SPAWN = gate;
 
@@ -151,6 +156,7 @@ async function observe(gate: string | undefined): Promise<Observation> {
       name: "capability-honesty-test",
     },
     swarmKey: Buffer.alloc(32, 7),
+    sessionsRoot,
   });
 
   try {
@@ -228,13 +234,13 @@ describe("M2-8 capability honesty", () => {
     expect(enabled.cardSkills).toEqual(enabled.capsSkills);
   });
 
-  it("clause 5: DISABLED advertises exactly the five always-served skills", () => {
+  it("clause 5: DISABLED advertises exactly the six always-served skills (mesh.watch included)", () => {
     expect(disabled.cardSkills).toEqual(ALWAYS_SKILLS);
     expect(disabled.capsSkills).toEqual(ALWAYS_SKILLS);
     expect(disabled.capsSkills.length).toBeGreaterThan(0);
   });
 
-  it("clause 6: ENABLED advertises all fourteen job and execution skills", () => {
+  it("clause 6: ENABLED advertises all sixteen served skills", () => {
     expect(enabled.cardSkills).toEqual(GATE_OPEN_SKILLS);
     expect(enabled.capsSkills).toEqual(GATE_OPEN_SKILLS);
   });

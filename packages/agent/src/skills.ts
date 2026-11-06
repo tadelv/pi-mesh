@@ -13,6 +13,9 @@ import {
 import type { ProbeLivenessDeps } from "@pi-mesh/runs";
 import { PeerRegistry } from "./registry.js";
 import { SessionStore, type SessionStoreOptions } from "./sessions.js";
+import {
+  hasRecognisedSessionLayout,
+} from "./sessions.js";
 import { JobStartTimeoutError, type JobManager } from "./jobs.js";
 import { ModelCatalog, hasExactModel } from "./model-catalog.js";
 import { assertInsideWorkspace, resolveWorkspaceRoot } from "./spawner.js";
@@ -50,9 +53,10 @@ export type SkillExposure = "peer" | "gated";
 
 /**
  * What a skill needs on this machine to run: nothing, a managed
- * JobManager, or a recognised pi-subagents run layout.
+ * JobManager, a recognised pi-subagents run layout, or a recognised
+ * session layout.
  */
-export type SkillRequirement = "none" | "jobs" | "run-layout";
+export type SkillRequirement = "none" | "jobs" | "run-layout" | "sessions";
 
 export interface SkillClassification {
   exposure: SkillExposure;
@@ -75,6 +79,7 @@ export const SKILL_CLASSIFICATION: Record<Skill, SkillClassification> = {
   "session.read": { exposure: "peer", requires: "none" },
   "session.stream": { exposure: "peer", requires: "none" },
   "session.models": { exposure: "peer", requires: "none" },
+  "mesh.watch": { exposure: "peer", requires: "sessions" },
   "process.list": { exposure: "peer", requires: "jobs" },
   "process.stop": { exposure: "peer", requires: "jobs" },
   "session.abort": { exposure: "peer", requires: "jobs" },
@@ -135,6 +140,7 @@ export function isClassifiedExecutionSkill(skill: string): boolean {
 export interface SkillAvailability {
   jobsAvailable: boolean;
   runsAvailable: boolean;
+  sessionsAvailable: boolean;
 }
 
 /**
@@ -153,6 +159,12 @@ export function assertSkillRequirement(
   }
   if (requires === "run-layout" && !availability.runsAvailable) {
     throw new PiMeshError(-32004, `${skill} requires a recognised run layout`);
+  }
+  if (requires === "sessions" && !availability.sessionsAvailable) {
+    throw new PiMeshError(
+      -32004,
+      `${skill} requires a recognised session layout`,
+    );
   }
 }
 
@@ -298,6 +310,9 @@ export function createSkillRegistry(
   const availability: SkillAvailability = {
     jobsAvailable: options.jobs !== undefined,
     runsAvailable: hasRecognisedRunLayout(runsTmp),
+    sessionsAvailable: hasRecognisedSessionLayout(
+      options.sessionsRoot ?? defaultSessionsRoot(),
+    ),
   };
   const plane = createRunsPlane({
     tmp: runsTmp,
@@ -936,13 +951,23 @@ export function createSkillRegistry(
   skills.register("session.stream", async () => {
     throw new PiMeshError(-32004, "session.stream requires message/stream");
   });
+  // The watch is the second streamable skill (ADR 0022): inventory facts
+  // only, dispatched separately from session.stream - it takes no session id
+  // and must not reuse the session-stream iterator. A unary call is refused
+  // here; the stream is served by the transport.
+  skills.register("mesh.watch", async () => {
+    assertSkillRequirement("mesh.watch", availability);
+    throw new PiMeshError(-32004, "mesh.watch requires message/stream");
+  });
 
   // Runs-plane reads (ADR 0021 decisions 1 and 4): ungated peer skills that
   // need a recognised run layout instead of a job manager. Registered
   // unconditionally, exactly like process.spawn: a machine with no layout
   // must answer -32004 "requires a recognised run layout", never the
   // registry's own "not supported at all". Neither starts a process nor
-  // sends a signal; liveness is probed with kill(pid, 0) only.
+  // sends a signal; liveness is probed with kill(pid, 0) only. `mesh.watch`
+  // (ADR 0022) is the same shape for sessions: an ungated peer read that
+  // needs a recognised session layout instead of a job manager.
   skills.register("run.list", async () => {
     assertSkillRequirement("run.list", availability);
     return plane.listRuns();
@@ -961,7 +986,9 @@ export function createSkillRegistry(
  * `jobsAvailable` is whether a JobManager exists; `gateOpen` is the spawn policy
  * (ADR 0008); `runsAvailable` is whether a recognised pi-subagents run layout
  * exists on this machine (evaluated once at startup - a machine that installs
- * pi-subagents later needs an agent restart, docs/PROTOCOL.md). cli.ts constructs
+ * pi-subagents later needs an agent restart, docs/PROTOCOL.md); and
+ * `sessionsAvailable` is whether a recognised session layout exists (the
+ * sessions root is present - same restart rule, ADR 0022). cli.ts constructs
  * the manager iff the policy is enabled, so in production the first two always
  * agree - but the exported server constructor accepts them independently, and a
  * single flag made a server built with a manager and a closed policy advertise
@@ -979,12 +1006,14 @@ export function servedSkills(
   jobsAvailable = false,
   gateOpen = false,
   runsAvailable = false,
+  sessionsAvailable = false,
 ): Skill[] {
   const serves = (skill: Skill): boolean => {
     const entry = SKILL_CLASSIFICATION[skill]!;
     if (entry.exposure === "gated" && !gateOpen) return false;
     if (entry.requires === "jobs" && !jobsAvailable) return false;
     if (entry.requires === "run-layout" && !runsAvailable) return false;
+    if (entry.requires === "sessions" && !sessionsAvailable) return false;
     return true;
   };
   return (Object.keys(SKILL_CLASSIFICATION) as Skill[]).filter(serves);

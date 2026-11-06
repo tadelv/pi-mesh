@@ -284,12 +284,25 @@ describe("A2A HTTP server", () => {
         skills: { id: string }[];
       };
       const advertised = card.skills.map((skill) => skill.id).sort();
-      expect(advertised).toEqual([...servedSkills()].sort());
+      expect(advertised).toEqual(
+        [...servedSkills(false, false, false, true)].sort(),
+      );
 
       for (const skill of advertised) {
-        if (skill === "session.stream") {
+        if (skill === "session.stream" || skill === "mesh.watch") {
+          // Both streamable skills refuse a unary call and serve a stream;
+          // mesh.watch takes no session id and streams inventory facts.
+          const refused = await httpCallWith(
+            address.port,
+            call(skill, skill === "session.stream" ? { id: sessionId } : {}),
+            { "A2A-Version": "1.0" },
+          );
+          expect(JSON.parse(refused.body).error.code).toBe(-32004);
           const response = await streamCall(address.port, {
-            ...call(skill, { id: sessionId }),
+            ...call(
+              skill,
+              skill === "session.stream" ? { id: sessionId } : {},
+            ),
             method: "message/stream",
           });
           expect(response.status).toBe(200);

@@ -36,6 +36,7 @@ const homeDir = homedir();
 
 const ALWAYS_SKILLS = [
   "mesh.peers",
+  "mesh.watch",
   "session.list",
   "session.read",
   "session.stream",
@@ -261,6 +262,7 @@ const FULL_CODES: Record<string, number | "ok"> = {
   "process.spawn": -32105,
   "session.resume": -32602,
   "mesh.handoff": -32105,
+  "mesh.watch": -32004,
 };
 
 const allowAll = { allows: () => true, enabled: true };
@@ -331,14 +333,14 @@ async function cardSkills(port: number): Promise<string[]> {
 }
 
 describe("M8-5 capability honesty over the signed wire", () => {
-  it("honesty-advertised-minimal: with no jobs and no layout, exactly the five always skills are advertised", async () => {
+  it("honesty-advertised-minimal: with no jobs and no run layout, exactly the six always skills are advertised", async () => {
     await expect(
       cardSkills(minimalPort),
       "honesty-advertised-minimal: advertisement must be exactly the always-served set",
     ).resolves.toEqual([...ALWAYS_SKILLS].sort());
   });
 
-  it("honesty-advertised-full: with jobs, an open gate and a layout, all seventeen skills are advertised", async () => {
+  it("honesty-advertised-full: with jobs, an open gate and a layout, all eighteen skills are advertised", async () => {
     await expect(
       cardSkills(fullPort),
       "honesty-advertised-full: advertisement must be the full served set",
@@ -406,6 +408,21 @@ describe("M8-5 capability honesty over the signed wire", () => {
     expect(
       response.body,
       "honesty-full: advertised session.stream must stream a task",
+    ).toContain('"task"');
+  });
+
+  it("honesty-full: advertised mesh.watch streams inventory facts (never -32004)", async () => {
+    const response = await streamRpc(fullPort, {
+      ...call("mesh.watch", {}),
+      method: "message/stream",
+    });
+    expect(
+      response.status,
+      "honesty-full: advertised mesh.watch must stream",
+    ).toBe(200);
+    expect(
+      response.body,
+      "honesty-full: advertised mesh.watch must stream a task",
     ).toContain('"task"');
   });
 

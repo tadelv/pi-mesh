@@ -50,6 +50,7 @@ import {
   type SkillRegistry,
   type SkillRegistryOptions,
 } from "./skills.js";
+import { assertSkillRequirement } from "./skills.js";
 import { defaultRunsTmp, hasRecognisedRunLayout } from "./runs.js";
 import { PiRpcResponseError } from "./rpc.js";
 import {
@@ -57,7 +58,16 @@ import {
   type SessionStream,
   type SessionStreamOptions,
 } from "./stream.js";
+import {
+  sessionWatch,
+  SessionWatch,
+  type SessionWatchOptions,
+} from "./watch.js";
 import type { SessionReadRequest } from "./sessions.js";
+import {
+  defaultSessionsRoot,
+  hasRecognisedSessionLayout,
+} from "./sessions.js";
 import { TaskStore } from "./tasks.js";
 import { loadOrCreateIdentity, type PeerIdentity } from "./identity.js";
 import { loadSwarmKey } from "./swarm-key.js";
@@ -100,6 +110,18 @@ export interface AgentServerOptions extends SkillRegistryOptions {
     request: SessionReadRequest,
     options: SessionStreamOptions,
   ) => SessionStream;
+  /**
+   * Injectable inventory-watch factory, so a test can substitute a
+   * pre-seeded watch (or a bounded buffer) without touching the
+   * dispatch under test. Defaults to a live SessionWatch.
+   */
+  watch?: (options: SessionWatchOptions) => SessionWatch;
+  /** Fast-path stat interval for the inventory watch (ADR 0022). */
+  watchPollIntervalMs?: number;
+  /** Slow-path re-list interval for the inventory watch (ADR 0022). */
+  watchReconcileIntervalMs?: number;
+  /** Bounded buffer size for the inventory watch (ADR 0022). */
+  watchMaxBufferedFrames?: number;
   skillRegistry?: SkillRegistry;
   /**
    * The local execution policy (ADR 0008). Defaults to the value of
@@ -304,6 +326,13 @@ export class HttpAgentServer implements AgentServer {
    * a machine that gains a layout later needs a restart (docs/PROTOCOL.md).
    */
   private readonly runsAvailable: boolean;
+  /**
+   * Whether a recognised session layout exists on this machine (the
+   * sessions root is present), evaluated once at construction. `mesh.watch`
+   * (ADR 0022) is advertised and served only where this holds; a machine
+   * with no session layout answers -32004, naming what is missing.
+   */
+  private readonly sessionsAvailable: boolean;
   private readonly pendingHandshakes = new Map<
     string,
     { transcript: HandshakeTranscript; expiresAt: number }
@@ -320,6 +349,9 @@ export class HttpAgentServer implements AgentServer {
     this.skills = options.skillRegistry ?? createSkillRegistry(options);
     this.runsAvailable = hasRecognisedRunLayout(
       options.runsTmp ?? defaultRunsTmp(),
+    );
+    this.sessionsAvailable = hasRecognisedSessionLayout(
+      options.sessionsRoot ?? defaultSessionsRoot(),
     );
     this.spawnPolicy = options.spawnPolicy ?? parseSpawnPolicy();
     if (this.spawnPolicy.warning !== undefined) {
@@ -449,11 +481,13 @@ export class HttpAgentServer implements AgentServer {
       // cli.ts constructs the JobManager iff the spawn policy is enabled, so
       // these agree in production - they are passed separately because the
       // constructor accepts them independently. The run skills join the card
-      // only where a layout was recognised at startup (M8-5).
+      // only where a layout was recognised at startup (M8-5), and the
+      // inventory watch only where a session layout was recognised (ADR 0022).
       skills: servedSkills(
         this.options.jobs !== undefined,
         this.spawnPolicy.enabled,
         this.runsAvailable,
+        this.sessionsAvailable,
       ).map(skillInfo),
       signatures: [],
       iconUrl: "",
@@ -894,10 +928,18 @@ export class HttpAgentServer implements AgentServer {
       // gating only one of them would leave a silence hole the moment a gated
       // skill becomes streamable.
       this.gateExecution(call.skill, peerId);
+      // Two streamable skills, two dispatches (ADR 0022 supersedes the
+      // one-streamable-skill rule): `session.stream` takes a session id and
+      // replays transcript entries, while `mesh.watch` takes no session id
+      // and streams inventory facts only. They must not share an iterator.
+      if (call.skill === "mesh.watch") {
+        await this.streamWatch(call, peerId, incoming, response);
+        return;
+      }
       if (call.skill !== "session.stream")
         throw new RpcFailure(
           -32004,
-          "Streaming is only supported by session.stream",
+          "Streaming is only supported by session.stream and mesh.watch",
         );
       const input = call.input;
       if (
@@ -952,6 +994,88 @@ export class HttpAgentServer implements AgentServer {
       if (!response.headersSent)
         writeJson(response, 200, errorResponse(request.id, error));
       else response.destroy();
+    }
+  }
+
+  /**
+   * The inventory-watch dispatch (ADR 0022), deliberately separate from the
+   * session-stream path above: the watch takes no session id, streams
+   * inventory facts (never transcript entries) from its own iterator with
+   * its own bounded buffer, and needs no execution grant - watching is not
+   * executing, so the dispatch gate above is untouched beyond the shared
+   * peer check every dispatch path already performs.
+   */
+  private async streamWatch(
+    call: { skill: string; input: unknown; contextId?: string },
+    _peerId: string,
+    incoming: IncomingMessage,
+    response: ServerResponse,
+  ): Promise<void> {
+    const input = call.input;
+    if (
+      typeof input !== "object" ||
+      input === null ||
+      Array.isArray(input)
+    ) {
+      throw new PiMeshError(-32602, "mesh.watch input must be an object");
+    }
+    if ("id" in input) {
+      throw new PiMeshError(-32602, "mesh.watch takes no session id");
+    }
+    // Watching is not executing: no execution grant, no gate change. The
+    // only refusal is the shared availability one - a machine with no
+    // recognised session layout answers -32004, naming what is missing,
+    // exactly as a unary call through the registry would.
+    assertSkillRequirement("mesh.watch", {
+      jobsAvailable: this.options.jobs !== undefined,
+      runsAvailable: this.runsAvailable,
+      sessionsAvailable: this.sessionsAvailable,
+    });
+    const task = this.tasks.create(
+      call.contextId === undefined ? {} : { contextId: call.contextId },
+    );
+    const iterator = (this.options.watch ?? sessionWatch)({
+      ...(this.options.sessionsRoot === undefined
+        ? {}
+        : { sessionsRoot: this.options.sessionsRoot }),
+      ...(this.options.jobs === undefined
+        ? {}
+        : { jobs: this.options.jobs }),
+      ...(this.options.watchPollIntervalMs === undefined
+        ? {}
+        : { pollIntervalMs: this.options.watchPollIntervalMs }),
+      ...(this.options.watchReconcileIntervalMs === undefined
+        ? {}
+        : { reconcileIntervalMs: this.options.watchReconcileIntervalMs }),
+      ...(this.options.watchMaxBufferedFrames === undefined
+        ? {}
+        : { maxBufferedFrames: this.options.watchMaxBufferedFrames }),
+    });
+    let closed = false;
+    const stop = (): void => {
+      closed = true;
+      void iterator.stop();
+    };
+    incoming.once("aborted", stop);
+    response.once("close", stop);
+    response.writeHead(200, {
+      "A2A-Version": A2A_PROTOCOL_VERSION,
+      "Content-Type": "text/event-stream; charset=utf-8",
+      "Cache-Control": "no-cache",
+      Connection: "keep-alive",
+    });
+    writeSse(response, { task });
+    for (;;) {
+      const next = await iterator.next();
+      if (closed || next.done) break;
+      const event: StreamResponse = {
+        message: messageFrom(next.value, call.contextId, task.id),
+      };
+      writeSse(response, event);
+    }
+    if (!closed) {
+      this.tasks.update(task.id, "TASK_STATE_COMPLETED");
+      response.end();
     }
   }
 }

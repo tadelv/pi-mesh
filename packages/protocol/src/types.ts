@@ -18,6 +18,7 @@ export type Skill =
   | "process.stop"
   | "mesh.peers"
   | "mesh.handoff"
+  | "mesh.watch"
   | "run.list"
   | "run.findings";
 
@@ -97,6 +98,32 @@ export interface HandoffPayload {
   preferred_agent: string | null;
   deadline_ms: number;
 }
+
+/**
+ * A job as reported by the inventory watch: identity and lifecycle state
+ * only, never output or transcript content.
+ */
+export interface WatchJob {
+  job_id: string;
+  session_id: string | null;
+  state: string;
+}
+
+/**
+ * One `mesh.watch` inventory frame (ADR 0022). Every variant carries
+ * inventory facts only - session summaries or job states - and never
+ * transcript entries. `snapshot` is the bootstrap: one complete listing
+ * produced by the same code as sync. `dropped` marks a bounded-buffer
+ * overflow so a gap is stated, never silent.
+ */
+export type WatchFrame =
+  | { type: "snapshot"; sessions: SessionSummary[]; jobs: WatchJob[] }
+  | { type: "added"; session: SessionSummary }
+  | { type: "updated"; session: SessionSummary }
+  | { type: "removed"; id: string }
+  | { type: "job"; job: WatchJob }
+  | { type: "job-removed"; job_id: string }
+  | { type: "dropped"; reason: string; dropped: number };
 
 /** Wire shapes for GET /handshake, per docs/PROTOCOL.md. */
 export interface HandshakeRequest {

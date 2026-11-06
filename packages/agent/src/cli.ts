@@ -28,6 +28,7 @@ import {
 } from "./client.js";
 import { createAgentServer } from "./server.js";
 import { servedSkills } from "./skills.js";
+import { defaultSessionsRoot, hasRecognisedSessionLayout } from "./sessions.js";
 import { defaultRunsTmp, hasRecognisedRunLayout } from "./runs.js";
 import { parseSpawnPolicy, type SpawnPolicy } from "./spawn-policy.js";
 import { SessionStore } from "./sessions.js";
@@ -277,6 +278,9 @@ async function start(
         swarmKey,
         identity,
         registry,
+        ...(io.sessionsRoot === undefined
+          ? {}
+          : { sessionsRoot: io.sessionsRoot }),
         ...(jobs === undefined ? {} : { jobs }),
         ...(workspaceRoot === undefined ? {} : { workspaceRoot }),
         spawnPolicy,
@@ -293,6 +297,12 @@ async function start(
             jobs !== undefined,
             spawnPolicy.enabled,
             hasRecognisedRunLayout(defaultRunsTmp()),
+            // The same sessions root the server above serves: card, caps and
+            // dispatch agree by construction (ADR 0022), and a machine whose
+            // session layout is unrecognised advertises no mesh.watch.
+            hasRecognisedSessionLayout(
+              io.sessionsRoot ?? defaultSessionsRoot(),
+            ),
           ),
         },
         {
@@ -715,6 +725,7 @@ async function doctor(io: CliIO): Promise<number> {
         spawnPolicy.enabled,
         spawnPolicy.enabled,
         hasRecognisedRunLayout(defaultRunsTmp()),
+        hasRecognisedSessionLayout(defaultSessionsRoot()),
       ),
       piBinary: piBinary ?? null,
       workspaceRoot: workspaceRoot ?? null,

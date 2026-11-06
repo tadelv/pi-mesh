@@ -217,6 +217,28 @@ async function nextWatchEvent(
 }
 
 describe("watch server integration", () => {
+  it("populates capabilities and subscribes without a manual sync", async () => {
+    // serve() calls syncAll() once after listening. Capabilities live in
+    // memory, so without that call a restart would forget which agents serve
+    // mesh.watch and the operator would owe one sync click after every
+    // redeploy - the thing ADR 0022 removes. No /api/sync request is made in
+    // this test, so the assertion below cannot be satisfied through the route.
+    const { stub, base, headers, control } = await setup();
+    const before = await stateOf(base, headers);
+    expect(
+      before.agents[0]?.watch,
+      "an agent whose card has not been read is off, not live",
+    ).toBe("off");
+    await control.syncAll();
+    await waitFor("the card to be fetched", () => stub.counts.card >= 1);
+    await waitFor("the subscription to open", () => stub.openStreams >= 1);
+    const after = await stateOf(base, headers);
+    expect(
+      after.agents[0]?.watch,
+      "syncAll populates capabilities so the held subscription starts",
+    ).toBe("live");
+  });
+
   it("subscribes on advertisement and delivers pushed frames to browsers", async () => {
     const { stub, base, headers } = await setup();
     const synced = await fetch(`${base}/api/sync`, {

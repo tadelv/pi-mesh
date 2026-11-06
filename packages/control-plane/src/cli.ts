@@ -20,7 +20,10 @@ export interface CliIO {
   stderr: StreamLike;
   bonjour?: BonjourLike;
   store?: ControlStore;
-  server?: Pick<ControlServer, "start" | "stop" | "dashboardUrl">;
+  server?: Pick<ControlServer, "start" | "stop" | "dashboardUrl"> & {
+    /** Absent on a stub: a serve test asserts on its own traffic. */
+    readonly syncAll?: () => Promise<void>;
+  };
 }
 const usage =
   "Usage: pi-mesh-control-plane <serve|publish|token|help>\n" +
@@ -104,7 +107,10 @@ async function serve(io: CliIO, flags: string[]): Promise<number> {
     process.env.PI_MESH_ALLOW_INSECURE_EXECUTION === "1";
   let ownedStore: ControlStore | undefined;
   let server:
-    Pick<ControlServer, "start" | "stop" | "dashboardUrl"> | undefined;
+    | (Pick<ControlServer, "start" | "stop" | "dashboardUrl"> & {
+        readonly syncAll?: () => Promise<void>;
+      })
+    | undefined;
   let advertisement:
     Awaited<ReturnType<typeof publishControlPlane>> | undefined;
   try {
@@ -126,6 +132,10 @@ async function serve(io: CliIO, flags: string[]): Promise<number> {
         allowInsecureExecution: allowInsecure,
       });
     const listening = await server.start();
+    // Bootstrap the capability map and the held mesh.watch subscriptions
+    // without an operator click (ADR 0022 §5). Fire and forget: a node that is
+    // down keeps its stale mirror and reconnects on the next sync.
+    if (server.syncAll !== undefined) void server.syncAll();
     advertisement = await publishControlPlane(
       {
         id: store.controlId(),

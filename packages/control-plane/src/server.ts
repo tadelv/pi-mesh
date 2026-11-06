@@ -57,6 +57,8 @@ export interface ControlServerOptions {
 }
 export interface ControlServer {
   readonly server: Server;
+  /** One listing per paired agent; `serve` calls it after listening. */
+  syncAll(): Promise<void>;
   start(): Promise<{ address: string; port: number }>;
   stop(): Promise<void>;
   dashboardUrl(host?: string): string;
@@ -886,6 +888,23 @@ export function createControlServer(
 
   return {
     server,
+    /**
+     * One listing per paired agent. Capabilities live in memory, so a restart
+     * forgets which agents serve mesh.watch and the held subscriptions would
+     * never start - leaving the operator a mandatory sync click after every
+     * redeploy, which is what ADR 0022 removes. `serve` calls this once after
+     * listening; tests do not, because they assert on their own fetch traffic.
+     */
+    async syncAll(): Promise<void> {
+      for (const agent of store.listAgents()) {
+        try {
+          await syncAgent(agent);
+        } catch {
+          // A first sync that fails is not a startup failure: the mirror says
+          // it is stale and the next sync repairs it.
+        }
+      }
+    },
     async start() {
       await new Promise<void>((resolve, reject) => {
         const onError = (error: Error): void => {

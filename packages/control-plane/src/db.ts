@@ -175,7 +175,21 @@ export class ControlStore {
   }
 
   removeAgent(peerId: string): void {
-    this.db.prepare("DELETE FROM agents WHERE peer_id = ?").run(peerId);
+    // Unpairing evicts the whole mirror for that peer, not just the agent
+    // row: the jobs mirror is replaced wholesale on every sync (see
+    // replaceJobs), and the session mirror is pruned to the latest listing
+    // (see upsertSessions), so rows the agent no longer vouches for must not
+    // linger in the dashboard after the pairing is gone.
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare("DELETE FROM agents WHERE peer_id = ?").run(peerId);
+      this.db.prepare("DELETE FROM jobs WHERE agent_id = ?").run(peerId);
+      this.db.prepare("DELETE FROM sessions WHERE agent_id = ?").run(peerId);
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
     this.onAgentRemoved?.(peerId);
   }
 
@@ -209,6 +223,23 @@ export class ControlStore {
           session.updated_at,
           syncedAt,
         );
+      // The listing is the agent's full session list, so a mirrored row whose
+      // id is absent no longer exists there and is pruned. Only ids outside
+      // this listing are removed, and only for this agent: a session the
+      // agent still lists is never deleted. There is deliberately no lifecycle
+      // state on the row (see SessionSummary.updated_at in
+      // packages/protocol/src/types.ts); absence from the listing is the
+      // removal signal, the same way replaceJobs treats the jobs mirror.
+      if (sessions.length === 0) {
+        this.db.prepare("DELETE FROM sessions WHERE agent_id = ?").run(agentId);
+      } else {
+        const placeholders = sessions.map(() => "?").join(",");
+        this.db
+          .prepare(
+            `DELETE FROM sessions WHERE agent_id = ? AND session_id NOT IN (${placeholders})`,
+          )
+          .run(agentId, ...sessions.map((session) => session.id));
+      }
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");

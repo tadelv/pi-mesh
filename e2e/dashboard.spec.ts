@@ -1,10 +1,26 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import { expect, test } from "@playwright/test";
+import { expect, test, type Page } from "@playwright/test";
 import {
   ControlStore,
   createControlServer,
 } from "../packages/control-plane/dist/index.js";
+
+// Session groups default to closed: the scan view is the collapsed list of
+// project paths. A session button inside a closed group is not visible, so
+// every test that clicks a session first opens the group holding it. The
+// subsequent click and every assertion afterwards are unchanged.
+async function expandGroup(page: Page, projectPath: string): Promise<void> {
+  const group = page
+    .locator(
+      `#session-list details.session-group:has(> summary[title="${projectPath}"])`,
+    )
+    .first();
+  if ((await group.getAttribute("open")) === null) {
+    await group.locator("summary").click();
+  }
+  await expect(group).toHaveAttribute("open", "");
+}
 
 test("dashboard requires its token and connects with it", async ({
   browser,
@@ -197,8 +213,10 @@ test("selected-session ownership survives out-of-order transcript reads", async 
       page.locator("#transcript-panel"),
       "transcript is not announced wholesale",
     ).not.toHaveAttribute("aria-live", /.+/);
+    await expandGroup(page, "/work/a");
     await page.getByRole("button", { name: /Session A/ }).click();
     await expect(announcement).toHaveText("Loading session session-A.");
+    await expandGroup(page, "/work/b");
     await page.getByRole("button", { name: /Session B/ }).click();
     await expect(announcement).toHaveText("Loading session session-B.");
     resolveB();
@@ -242,11 +260,13 @@ test("selected-session ownership survives out-of-order transcript reads", async 
       await page.evaluate("document.activeElement?.textContent"),
       "stale session response does not move focus away from selected heading",
     ).toBe("Session B");
+    await expandGroup(page, "/work/a");
     await page.getByRole("button", { name: /Session A/ }).click();
     await expect(
       page.getByRole("button", { name: "Load earlier entries" }),
     ).toBeVisible();
     await page.getByRole("button", { name: "Load earlier entries" }).click();
+    await expandGroup(page, "/work/b");
     await page.getByRole("button", { name: /Session B/ }).click();
     await expect(
       page.getByRole("heading", { name: "Session B" }),
@@ -273,6 +293,7 @@ test("selected-session ownership survives out-of-order transcript reads", async 
       page.locator("#transcript-panel"),
       "selected-session ownership excludes stale earlier page from B transcript",
     ).not.toContainText("session-A older page");
+    await expandGroup(page, "/work/a");
     await page.getByRole("button", { name: /Session A/ }).click();
     await page.getByRole("button", { name: "Load earlier entries" }).click();
     await expect(page.locator("#transcript-panel")).toContainText(
@@ -578,6 +599,7 @@ test("session prompt sends only an explicit eligible job and keeps owner-scoped 
       page.getByRole("heading", { name: "Prompt Submission Control" }),
     ).toBeVisible();
     async function selectSession(name: string) {
+      await expandGroup(page, "/work/a");
       await page.getByRole("button", { name: new RegExp(name) }).click();
       await expect(
         page.getByRole("heading", { name: "Prompt this session" }),
@@ -1078,12 +1100,14 @@ test("prompt availability follows transcript and live-job evidence", async ({
     async function select(next: string) {
       scenario = next;
       await page.reload();
+      await expandGroup(page, "/work/a");
       await page.getByRole("button", { name: /Session A/ }).click();
       await expect(
         page.getByRole("heading", { name: "Prompt this session" }),
       ).toBeVisible();
     }
     const prompt = page.locator("#transcript-panel");
+    await expandGroup(page, "/work/a");
     await page.getByRole("button", { name: /Session A/ }).click();
     await expect(
       prompt,
@@ -1319,6 +1343,7 @@ test("prompt command hints come from the running job's Pi and never promise exec
     await expect(
       page.getByRole("heading", { name: "Command Hints Control" }),
     ).toBeVisible();
+    await expandGroup(page, "/work/a");
     await page.getByRole("button", { name: /Session A/ }).click();
     await expect(
       page.getByRole("heading", { name: "Prompt this session" }),
@@ -1478,6 +1503,7 @@ test("a TUI-only command is explained even when the agent does not advertise ses
       await route.fulfill({ status: 400, body: "unexpected request" });
     });
     await page.goto(baseURL);
+    await expandGroup(page, "/work/a");
     await page.getByRole("button", { name: /Session A/ }).click();
     await expect(
       page.getByRole("heading", { name: "Prompt this session" }),
@@ -1637,6 +1663,7 @@ test("command hints follow the selected job when several claim the session", asy
       await route.fulfill({ status: 400, body: "unexpected request" });
     });
     await page.goto(baseURL);
+    await expandGroup(page, "/work/a");
     await page.getByRole("button", { name: /Session A/ }).click();
     await expect(
       page.getByRole("heading", { name: "Prompt this session" }),
@@ -1803,6 +1830,7 @@ test("selecting another job clears the previous hints, and clearing the selectio
       await route.fulfill({ status: 400, body: "unexpected request" });
     });
     await page.goto(baseURL);
+    await expandGroup(page, "/work/a");
     await page.getByRole("button", { name: /Session A/ }).click();
     const card = page.locator("#transcript-panel");
     const choose = page.getByLabel("Choose a job");
@@ -2002,6 +2030,7 @@ test("session status shows the model and context Pi reports, and says unknown wh
       await route.fulfill({ status: 400, body: "unexpected request" });
     });
     await page.goto(baseURL);
+    await expandGroup(page, "/work/a");
     await page.getByRole("button", { name: /Session A/ }).click();
     const card = page.locator("#transcript-panel");
     await expect(card).toContainText("Model: Model A (provider-a)");
@@ -2163,6 +2192,7 @@ test("session status renders for an agent that advertises it but not steering", 
       await route.fulfill({ status: 400, body: "unexpected request" });
     });
     await page.goto(baseURL);
+    await expandGroup(page, "/work/a");
     await page.getByRole("button", { name: /Session A/ }).click();
     const card = page.locator("#transcript-panel");
     await expect(
@@ -2348,6 +2378,7 @@ test("a status response that arrives after a reload does not repopulate the card
       await route.fulfill({ status: 400, body: "unexpected request" });
     });
     await page.goto(baseURL);
+    await expandGroup(page, "/work/a");
     await page.getByRole("button", { name: /Session A/ }).click();
     const card = page.locator("#transcript-panel");
     // The first status read is in flight and held; a reload now supersedes it.
@@ -2572,6 +2603,7 @@ test("resume requires the inline corruption warning confirmation and syncs befor
     await page.goto(baseURL);
     const panel = page.locator("#transcript-panel");
     async function selectSession() {
+      await expandGroup(page, "/work/a");
       await page.getByRole("button", { name: /Saved session/ }).click();
       await expect(
         panel.getByRole("heading", { name: "Prompt this session" }),
@@ -3684,6 +3716,7 @@ test("selected-session model control is capability-, job-, and owner-bound", asy
       });
     });
     await page.goto(`http://127.0.0.1:${port}`);
+    await expandGroup(page, "/work/a");
     await page.getByRole("button", { name: /Session A/ }).click();
     const panel = page.locator("#transcript-panel");
     const modelControl = panel.locator(".session-meta details");
@@ -3715,8 +3748,10 @@ test("selected-session model control is capability-, job-, and owner-bound", asy
 
     scenario = "owner-race";
     await page.reload();
+    await expandGroup(page, "/work/a");
     await page.getByRole("button", { name: /Session A/ }).click();
     await modelsAStartedGate;
+    await expandGroup(page, "/work/b");
     await page.getByRole("button", { name: /Session B/ }).click();
     await expect(
       panel
@@ -3726,6 +3761,7 @@ test("selected-session model control is capability-, job-, and owner-bound", asy
     // Back to A while its FIRST catalog request is STILL PENDING. The shared
     // in-flight flag must not block A's retry, and the discarded request must
     // not strand the panel on "Loading…".
+    await expandGroup(page, "/work/a");
     await page.getByRole("button", { name: /Session A/ }).click();
     await expect(
       panel
@@ -3753,6 +3789,7 @@ test("selected-session model control is capability-, job-, and owner-bound", asy
     // new one.
     scenario = "ready";
     await page.reload();
+    await expandGroup(page, "/work/a");
     await page.getByRole("button", { name: /Session A/ }).click();
     await openModel();
     await selector.selectOption({ label: "Model A (provider-a)" });
@@ -3783,6 +3820,7 @@ test("selected-session model control is capability-, job-, and owner-bound", asy
     // before the reasons path returns.
     scenario = "ready";
     await page.reload();
+    await expandGroup(page, "/work/a");
     await page.getByRole("button", { name: /Session A/ }).click();
     await openModel();
     await selector.selectOption({ label: "Model A (provider-a)" });
@@ -3838,6 +3876,7 @@ test("selected-session model control is capability-, job-, and owner-bound", asy
     // A catalog nobody can choose from says so.
     scenario = "unusable";
     await page.reload();
+    await expandGroup(page, "/work/a");
     await page.getByRole("button", { name: /Session A/ }).click();
     await expect(panel).toContainText(
       "The agent reported models, but none with a usable id, provider and name.",
@@ -3847,12 +3886,14 @@ test("selected-session model control is capability-, job-, and owner-bound", asy
     // -32106 is a stated reason, not an empty selector.
     scenario = "catalog-unavailable";
     await page.reload();
+    await expandGroup(page, "/work/a");
     await page.getByRole("button", { name: /Session A/ }).click();
     await expect(panel).toContainText("Model catalog unavailable:");
     await expect(panel.getByLabel("Available model")).toHaveCount(0);
 
     scenario = "no-capability";
     await page.reload();
+    await expandGroup(page, "/work/a");
     await page.getByRole("button", { name: /Session A/ }).click();
     await expect(panel).toContainText(
       "This agent does not advertise model changes (session.set_model).",
@@ -3861,6 +3902,7 @@ test("selected-session model control is capability-, job-, and owner-bound", asy
 
     scenario = "no-job";
     await page.reload();
+    await expandGroup(page, "/work/a");
     await page.getByRole("button", { name: /Session A/ }).click();
     await expect(panel).toContainText(
       "No running job is known for this session.",
@@ -4039,6 +4081,7 @@ test("a running session's transcript updates live and announces only boundaries"
       });
     });
     await page.goto(`http://127.0.0.1:${port}`);
+    await expandGroup(page, "/work/a");
     await page
       .locator(".session-link")
       .filter({ hasText: "Session A" })
@@ -4233,6 +4276,7 @@ test("a not-live stream falls back to the durable page and names the reason", as
       });
     });
     await page.goto(`http://127.0.0.1:${port}`);
+    await expandGroup(page, "/work/a");
     await page
       .locator(".session-link")
       .filter({ hasText: "Session A" })
@@ -4399,11 +4443,13 @@ test("a live frame for session A never renders over session B", async ({
       });
     });
     await page.goto(`http://127.0.0.1:${port}`);
+    await expandGroup(page, "/work/a");
     await page
       .locator(".session-link")
       .filter({ hasText: "Session A" })
       .click();
     await expect.poll(() => aRequested).toBe(true);
+    await expandGroup(page, "/work/a");
     await page
       .locator(".session-link")
       .filter({ hasText: "Session B" })
@@ -4520,6 +4566,7 @@ test("an unverified agent's status says the capability is unknown, not absent", 
       });
     });
     await page.goto(`http://127.0.0.1:${port}`);
+    await expandGroup(page, "/work/a");
     await page.locator(".session-link").first().click();
     const card = page.locator("#transcript-panel");
     await expect(
@@ -4672,6 +4719,7 @@ test("a live view re-attaches after it ends, without re-opening the session", as
       });
     });
     await page.goto(`http://127.0.0.1:${port}`);
+    await expandGroup(page, "/work/a");
     await page.locator(".session-link").first().click();
     await expect
       .poll(() => page.evaluate("window.__m7live.opens"), {
@@ -4901,6 +4949,7 @@ test("a dropped live view reconnects on its own, bounded backoff", async ({
   const fixture = await mountLiveFixture(browser);
   try {
     await fixture.page.goto(fixture.base);
+    await expandGroup(fixture.page, "/work/a");
     await fixture.page.locator(".session-link").first().click();
     await expect
       .poll(fixture.opens, { message: "the first view opens" })
@@ -4942,6 +4991,7 @@ test("the transcript follows new output and holds position when scrolled up", as
   });
   try {
     await fixture.page.goto(fixture.base);
+    await expandGroup(fixture.page, "/work/a");
     await fixture.page.locator(".session-link").first().click();
     await expect
       .poll(fixture.opens, { message: "the live view opens" })
@@ -5004,6 +5054,143 @@ test("the transcript follows new output and holds position when scrolled up", as
       await fixture.control.stop();
     } finally {
       fixture.store.close();
+    }
+  }
+});
+
+test("sessions sharing a project path group under one collapsible basename header", async ({
+  browser,
+}) => {
+  const store = new ControlStore(":memory:");
+  store.controlName("Session Grouping Control");
+  const timestamp = new Date(0).toISOString();
+  store.upsertAgent({
+    peer_id: "peer-a",
+    name: "Agent A",
+    host: "127.0.0.1",
+    port: 1,
+    credential: "fixture-credential",
+    paired_at: timestamp,
+  });
+  store.upsertSessions(
+    "peer-a",
+    [
+      {
+        id: "aaaaaaaa-1111-2222-3333-444444444444",
+        project: "/work/myproj",
+        name: "First session",
+        started_at: timestamp,
+        updated_at: timestamp,
+      },
+      {
+        id: "bbbbbbbb-1111-2222-3333-444444444444",
+        project: "/work/myproj",
+        started_at: timestamp,
+        updated_at: timestamp,
+      },
+      {
+        id: "cccccccc-1111-2222-3333-444444444444",
+        project: "/work/other",
+        name: "Lone session",
+        started_at: timestamp,
+        updated_at: timestamp,
+      },
+    ],
+    timestamp,
+  );
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const page = await browser.newPage();
+  try {
+    const { port } = await control.start();
+    await page.addInitScript(
+      (dashboardToken) => localStorage.setItem("pi_mesh_token", dashboardToken),
+      store.dashboardToken(),
+    );
+    await page.goto(`http://127.0.0.1:${port}`);
+    await expect(
+      page.getByRole("heading", { name: "Session Grouping Control" }),
+    ).toBeVisible();
+    const groups = page.locator("#session-list details.session-group");
+    await expect(
+      groups,
+      "two sessions in one project path share a single collapsible group",
+    ).toHaveCount(2);
+    const myproj = page.locator(
+      '#session-list details.session-group:has(summary[title="/work/myproj"])',
+    );
+    await expect(myproj, "the full path keys exactly one group").toHaveCount(1);
+    const header = myproj.locator("summary");
+    await expect(header, "the header shows the basename").toContainText(
+      "myproj",
+    );
+    await expect(header, "the header shows the session count").toContainText(
+      "2",
+    );
+    await expect(
+      header,
+      "the header shows the basename, not the full path",
+    ).not.toContainText("/work/myproj");
+    await expect(header, "the full path is the header title").toHaveAttribute(
+      "title",
+      "/work/myproj",
+    );
+    await expect(myproj, "the group starts closed").not.toHaveAttribute(
+      "open",
+      "",
+    );
+    await expect(
+      header,
+      "the scan view shows the path even while the group is closed",
+    ).toBeVisible();
+    await expect(
+      myproj.getByRole("button", { name: /First session/ }),
+      "the scan view shows the path, not the session rows",
+    ).not.toBeVisible();
+    await expect(
+      myproj.getByRole("button", { name: /ago/ }),
+      "no session row is visible until the group is opened",
+    ).not.toBeVisible();
+    await header.click();
+    await expect(myproj, "the group expands").toHaveAttribute("open", "");
+    await expect(
+      myproj.getByRole("button", { name: /First session/ }),
+      "a named session keeps its name as the label",
+    ).toBeVisible();
+    await expect(
+      myproj,
+      "the unnamed session never reads as only a UUID",
+    ).not.toContainText("bbbbbbbb-1111-2222-3333-444444444444");
+    await expect(
+      myproj.getByRole("button", { name: /ago/ }),
+      "the unnamed session falls back to a readable age",
+    ).toBeVisible();
+    await header.click();
+    await expect(myproj, "the group collapses").not.toHaveAttribute("open", "");
+    await expect(
+      myproj.getByRole("button", { name: /First session/ }),
+      "collapsed sessions leave the visible list",
+    ).not.toBeVisible();
+    await header.click();
+    await expect(myproj, "the group expands again").toHaveAttribute("open", "");
+    await expect(
+      myproj.getByRole("button", { name: /First session/ }),
+      "expanded sessions return to the visible list",
+    ).toBeVisible();
+    await page.locator("#search").fill("first");
+    await expect(myproj, "a group matching the search opens").toHaveAttribute(
+      "open",
+      "",
+    );
+    await expect(
+      groups,
+      "the search filters out the non-matching project",
+    ).toHaveCount(1);
+  } finally {
+    await page.close();
+    try {
+      await control.stop();
+    } finally {
+      store.close();
     }
   }
 });

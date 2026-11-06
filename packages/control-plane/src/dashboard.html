@@ -149,6 +149,10 @@
     .session-name, .session-project { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .session-name { font-weight: 700; }
     .session-project, .session-age, .dim { color: var(--dim); }
+    .session-group { border-top: 1px solid var(--border); }
+    .session-group summary { padding: 9px 12px 4px; color: var(--muted); cursor: pointer; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .session-group summary:hover { color: var(--accent); }
+    .session-group .session-link { padding-left: 22px; }
     .agent-label { padding: 9px 12px 4px; color: var(--muted); border-top: 1px solid var(--border); }
     .empty { padding: 12px; color: var(--dim); }
     .content {
@@ -366,6 +370,11 @@
   }
   let state;
   let selected;
+  // Project groups the operator expanded. Groups default to closed, so the
+  // scan view is the collapsed list of paths; a group opens only while it
+  // holds the selected session, while a search term is non-blank, or while
+  // the operator's own expansion stands (remembered here across re-renders).
+  const expandedGroups = new Set();
   const relative = new Intl.RelativeTimeFormat(undefined, {numeric:'auto'});
   function ago(value) {
     const seconds = Math.round((Date.parse(value) - Date.now()) / 1000);
@@ -386,20 +395,50 @@
     if(!state) return;
     const sessions = visibleSessions();
     if(!sessions.length) { node('p', state.sessions.length ? 'No sessions match this search.' : 'No sessions synced yet.', sessionList).className = 'empty'; return; }
-    let lastAgent = '';
+    // Grouped by agent, then by the session's FULL project path: the full
+    // path is the group key because two checkouts can share a basename.
+    // Insertion order follows the recency sort, so the newest session's
+    // group comes first.
+    const agents = new Map();
     for(const session of sessions) {
-      if(session.agent_id !== lastAgent) {
-        lastAgent = session.agent_id;
-        const agent = state.agents.find(candidate => candidate.peer_id === lastAgent);
-        node('div', agent?.name || lastAgent, sessionList).className = 'agent-label';
+      if(!agents.has(session.agent_id)) agents.set(session.agent_id, new Map());
+      const projects = agents.get(session.agent_id);
+      if(!projects.has(session.project)) projects.set(session.project, []);
+      projects.get(session.project).push(session);
+    }
+    const term = document.querySelector('#search').value.trim();
+    for(const [agentId, projects] of agents) {
+      const agent = state.agents.find(candidate => candidate.peer_id === agentId);
+      node('div', agent?.name || agentId, sessionList).className = 'agent-label';
+      for(const [project, grouped] of projects) {
+        const details = node('details', undefined, sessionList);
+        details.className = 'session-group';
+        const key = agentId+'\0'+project;
+        const selectedInside = grouped.some(session => selected?.agentId === session.agent_id && selected?.sessionId === session.session_id);
+        // Open only while the group holds the selected session, while the
+        // operator is narrowing the list, or while the operator's own
+        // expansion stands. Selection never rewrites that memory: once the
+        // selection leaves, a group the operator did not expand closes again.
+        details.open = term !== '' || selectedInside || expandedGroups.has(key);
+        const summary = node('summary', basename(project)+' ('+grouped.length+')', details);
+        summary.title = project;
+        // Click runs before the default toggle, so details.open is still the
+        // pre-toggle state: open means the operator is collapsing. Keyboard
+        // Enter/Space on a summary fires click too, so this stays accessible.
+        summary.addEventListener('click', () => { if(details.open) expandedGroups.delete(key); else expandedGroups.add(key); });
+        for(const session of grouped) {
+          const button = node('button', undefined, details);
+          button.type = 'button';
+          button.className = 'session-link';
+          button.title = session.session_id;
+          button.setAttribute('aria-current', selected?.agentId === session.agent_id && selected?.sessionId === session.session_id ? 'true' : 'false');
+          // Never only a UUID: the name when the session has one, else a
+          // readable age. The short id stays visible as secondary text.
+          node('span', session.name || ago(session.updated_at), button).className = 'session-name';
+          node('span', session.session_id.slice(0, 8)+' \u00b7 '+basename(session.project), button).className = 'session-project';
+          button.addEventListener('click', () => void openSession(session.agent_id, session.session_id));
+        }
       }
-      const button = node('button', undefined, sessionList);
-      button.type = 'button';
-      button.className = 'session-link';
-      button.setAttribute('aria-current', selected?.agentId === session.agent_id && selected?.sessionId === session.session_id ? 'true' : 'false');
-      node('span', (session.name || session.session_id)+' - '+basename(session.project), button).className = 'session-name';
-      node('span', ago(session.updated_at), button).className = 'session-age';
-      button.addEventListener('click', () => void openSession(session.agent_id, session.session_id));
     }
   }
   function showMessage(parent, key) {

@@ -20,7 +20,9 @@ export type Skill =
   | "mesh.handoff"
   | "mesh.watch"
   | "run.list"
-  | "run.findings";
+  | "run.findings"
+  | "intercom.list"
+  | "intercom.send";
 
 export interface ControlTxtRecord {
   id: string;

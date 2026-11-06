@@ -4,6 +4,7 @@ import type { PeerSummary, Skill } from "@pi-mesh/protocol";
 import { isAbsolute, join, relative, sep } from "node:path";
 import { realpath, stat } from "node:fs/promises";
 import { ErrorCode, PiMeshError } from "@pi-mesh/shared";
+import { IntercomClient, type IntercomOptions } from "./intercom.js";
 import {
   createRunsPlane,
   defaultRulesPath,
@@ -13,9 +14,7 @@ import {
 import type { ProbeLivenessDeps } from "@pi-mesh/runs";
 import { PeerRegistry } from "./registry.js";
 import { SessionStore, type SessionStoreOptions } from "./sessions.js";
-import {
-  hasRecognisedSessionLayout,
-} from "./sessions.js";
+import { hasRecognisedSessionLayout } from "./sessions.js";
 import { JobStartTimeoutError, type JobManager } from "./jobs.js";
 import { ModelCatalog, hasExactModel } from "./model-catalog.js";
 import { assertInsideWorkspace, resolveWorkspaceRoot } from "./spawner.js";
@@ -46,6 +45,11 @@ export interface SkillRegistryOptions extends SessionStoreOptions {
   runsNow?: () => number;
   /** Liveness probe dependencies, so tests can inject the probe. */
   runsLiveness?: ProbeLivenessDeps;
+  /**
+   * Local intercom broker (ADR 0023). `available` is the startup health
+   * probe answer; card, caps and dispatch agree on it. Defaults to absent.
+   */
+  intercom?: IntercomOptions;
 }
 
 /** Who may call a skill: any swarm member, or only an execution grantee. */
@@ -56,7 +60,8 @@ export type SkillExposure = "peer" | "gated";
  * JobManager, a recognised pi-subagents run layout, or a recognised
  * session layout.
  */
-export type SkillRequirement = "none" | "jobs" | "run-layout" | "sessions";
+export type SkillRequirement =
+  "none" | "jobs" | "run-layout" | "sessions" | "intercom";
 
 export interface SkillClassification {
   exposure: SkillExposure;
@@ -92,6 +97,10 @@ export const SKILL_CLASSIFICATION: Record<Skill, SkillClassification> = {
   "mesh.handoff": { exposure: "gated", requires: "jobs" },
   "run.list": { exposure: "peer", requires: "run-layout" },
   "run.findings": { exposure: "peer", requires: "run-layout" },
+  // ADR 0023: live local liveness is a read (peer); sending into a session
+  // starts a model turn and is therefore execution (gated, ADR 0008).
+  "intercom.list": { exposure: "peer", requires: "intercom" },
+  "intercom.send": { exposure: "gated", requires: "intercom" },
 };
 
 function classified(
@@ -116,14 +125,18 @@ export const RUN_SKILLS: readonly Skill[] = classified("peer", "run-layout");
 
 /**
  * Skills that start or steer work, and so require the local spawn policy
- * (ADR 0008). This is the one list the dispatch gate reads, so a skill cannot
- * be named in the gate and forgotten here.
+ * (ADR 0008). Every gated skill, whatever its machine requirement: the gate
+ * is about WHO may execute, the requirement about WHAT this machine can do.
+ * `intercom.send` starts a model turn in a live session (ADR 0008:60-62),
+ * so it is here even though it needs a broker, not a JobManager.
  *
  * Stopping skills are deliberately absent: reducing activity is never the more
  * dangerous operation, so `session.abort` and `process.stop` are allowed to any
  * member (ADR 0008 decision 5).
  */
-export const EXECUTION_SKILLS: readonly Skill[] = classified("gated", "jobs");
+export const EXECUTION_SKILLS: readonly Skill[] = (
+  Object.keys(SKILL_CLASSIFICATION) as Skill[]
+).filter((skill) => SKILL_CLASSIFICATION[skill]!.exposure === "gated");
 
 /**
  * Whether a skill starts or steers work, and therefore meets the spawn gate
@@ -141,6 +154,7 @@ export interface SkillAvailability {
   jobsAvailable: boolean;
   runsAvailable: boolean;
   sessionsAvailable: boolean;
+  intercomAvailable: boolean;
 }
 
 /**
@@ -164,6 +178,15 @@ export function assertSkillRequirement(
     throw new PiMeshError(
       -32004,
       `${skill} requires a recognised session layout`,
+    );
+  }
+  // ADR 0023 decision 2: the socket must exist AND the health probe must
+  // have answered `pi-intercom` v1. Otherwise the skill refuses with this
+  // stated reason - never an empty list that looks like "no sessions".
+  if (requires === "intercom" && !availability.intercomAvailable) {
+    throw new PiMeshError(
+      -32004,
+      `${skill} requires the local intercom broker (absent socket, or the health probe did not answer)`,
     );
   }
 }
@@ -313,7 +336,13 @@ export function createSkillRegistry(
     sessionsAvailable: hasRecognisedSessionLayout(
       options.sessionsRoot ?? defaultSessionsRoot(),
     ),
+    // The broker probe answer the CLI passed in (ADR 0023 decision 2):
+    // card, caps and dispatch agree on this one flag, and a machine whose
+    // broker appears later needs a restart - the same rule as runs/sessions.
+    intercomAvailable: options.intercom?.available ?? false,
   };
+  const intercomOptions: IntercomOptions | undefined =
+    options.intercom === undefined ? undefined : { ...options.intercom };
   const plane = createRunsPlane({
     tmp: runsTmp,
     layoutRecognised: availability.runsAvailable,
@@ -977,18 +1006,63 @@ export function createSkillRegistry(
     return plane.evaluateFindings();
   });
 
+  // Intercom reads and sends (ADR 0023). Registered unconditionally, exactly
+  // like process.spawn: a machine with no live broker must answer -32004
+  // "requires the local intercom broker", never the registry's own "not
+  // supported at all" - and the gate must SEE intercom.send to refuse it
+  // with -32102 when closed. `intercom.send` is execution (it starts a model
+  // turn), so it goes through registerExecution like every other execution
+  // skill and meets the shared spawn gate; there is deliberately NO
+  // handler-local authorisation check here, because a second gate would be
+  // a second truth about who may execute. Listing is a read: the paired
+  // credential, no execution grant.
+  const intercomClient = (): IntercomClient =>
+    new IntercomClient(intercomOptions ?? {});
+  skills.register("intercom.list", async () => {
+    const client = intercomClient();
+    assertSkillRequirement("intercom.list", availability);
+    const sessions = await client.listSessions();
+    return {
+      sessions: sessions.map((session) => ({
+        id: session.id,
+        ...(session.name === undefined ? {} : { name: session.name }),
+        cwd: session.cwd,
+        model: session.model,
+        pid: session.pid,
+        started_at: new Date(session.startedAt).toISOString(),
+        last_activity: new Date(session.lastActivity).toISOString(),
+      })),
+    };
+  });
+  skills.registerExecution("intercom.send", async (input) => {
+    const to = requiredString(input, "to");
+    const message = requiredString(input, "message");
+    if (to.trim().length === 0 || message.trim().length === 0) {
+      throw new PiMeshError(
+        -32602,
+        "intercom.send to and message must be non-blank",
+      );
+    }
+    const client = intercomClient();
+    assertSkillRequirement("intercom.send", availability);
+    return client.sendMessage(to, message);
+  });
+
   return skills;
 }
 
 /**
- * What this agent advertises, as a function of three separate facts.
+ * What this agent advertises, as a function of five separate facts.
  *
  * `jobsAvailable` is whether a JobManager exists; `gateOpen` is the spawn policy
  * (ADR 0008); `runsAvailable` is whether a recognised pi-subagents run layout
  * exists on this machine (evaluated once at startup - a machine that installs
- * pi-subagents later needs an agent restart, docs/PROTOCOL.md); and
+ * pi-subagents later needs an agent restart, docs/PROTOCOL.md);
  * `sessionsAvailable` is whether a recognised session layout exists (the
- * sessions root is present - same restart rule, ADR 0022). cli.ts constructs
+ * sessions root is present - same restart rule, ADR 0022); and
+ * `intercomAvailable` is whether the local intercom broker socket exists AND
+ * answered the `pi-intercom` v1 health probe (same restart rule, ADR 0023).
+ * cli.ts constructs
  * the manager iff the policy is enabled, so in production the first two always
  * agree - but the exported server constructor accepts them independently, and a
  * single flag made a server built with a manager and a closed policy advertise
@@ -997,7 +1071,10 @@ export function createSkillRegistry(
  * EVERY execution skill needs the manager, `mesh.handoff` included: it does not
  * touch `options.jobs` directly, it delegates to the local `process.spawn`, so a
  * manager-less handoff fails with -32004 rather than being refused cleanly. That
- * indirection is why this was wrong twice. And no skill is advertised on an
+ * indirection is why this was wrong twice. The one exception is
+ * `intercom.send`: it is execution but needs a broker, not a manager, so its
+ * requirement is `intercom` and it fails with -32004 naming the broker.
+ * And no skill is advertised on an
  * assumption: each entry is served exactly when the classification table's
  * requirement for it holds, so a read needing no jobs is not hidden for want
  * of a manager, and nothing unservable is advertised.
@@ -1007,6 +1084,7 @@ export function servedSkills(
   gateOpen = false,
   runsAvailable = false,
   sessionsAvailable = false,
+  intercomAvailable = false,
 ): Skill[] {
   const serves = (skill: Skill): boolean => {
     const entry = SKILL_CLASSIFICATION[skill]!;
@@ -1014,6 +1092,7 @@ export function servedSkills(
     if (entry.requires === "jobs" && !jobsAvailable) return false;
     if (entry.requires === "run-layout" && !runsAvailable) return false;
     if (entry.requires === "sessions" && !sessionsAvailable) return false;
+    if (entry.requires === "intercom" && !intercomAvailable) return false;
     return true;
   };
   return (Object.keys(SKILL_CLASSIFICATION) as Skill[]).filter(serves);

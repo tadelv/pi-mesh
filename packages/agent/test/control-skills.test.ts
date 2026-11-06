@@ -584,6 +584,12 @@ describe("process and session control skills", () => {
     // mesh.handoff is the reason this test exists: it never mentions
     // options.jobs, it delegates to the local process.spawn, so a grep for the
     // manager finds nothing and the dependency is easy to miss.
+    //
+    // intercom.send is the decided exception (ADR 0023): it is execution but
+    // needs a live broker, not a manager, so its stated reason names the
+    // broker. The registry here has neither, and each skill must name its
+    // own missing requirement - a shared "requires a job manager" for a
+    // skill that never touches jobs would be the lie this test exists to catch.
     const skills = createSkillRegistry();
     const local = "11111111-1111-4111-8111-111111111111";
     const inputs: Record<string, unknown> = {
@@ -599,6 +605,10 @@ describe("process and session control skills", () => {
         deadline_ms: 1_000,
         _localPeerId: local,
       },
+      "intercom.send": { to: "some-session", message: "hi" },
+    };
+    const reasons: Record<string, string> = {
+      "intercom.send": "requires the local intercom broker",
     };
     for (const skill of EXECUTION_SKILLS) {
       // Registered, so the refusal below cannot be the registry's own "Skill is
@@ -607,10 +617,12 @@ describe("process and session control skills", () => {
       expect(skills.has(skill), `${skill} must be registered`).toBe(true);
       await expect(
         skills.invoke(skill, inputs[skill]),
-        `${skill} must need a job manager`,
+        `${skill} must name its missing requirement`,
       ).rejects.toMatchObject({
         code: -32004,
-        message: expect.stringContaining("requires a job manager"),
+        message: expect.stringContaining(
+          reasons[skill] ?? "requires a job manager",
+        ),
       });
     }
   });

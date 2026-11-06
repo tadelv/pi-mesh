@@ -27,6 +27,7 @@ import {
   streamSkill,
 } from "./client.js";
 import { createAgentServer } from "./server.js";
+import { probeIntercomBroker } from "./intercom.js";
 import { servedSkills } from "./skills.js";
 import { defaultSessionsRoot, hasRecognisedSessionLayout } from "./sessions.js";
 import { defaultRunsTmp, hasRecognisedRunLayout } from "./runs.js";
@@ -273,6 +274,12 @@ async function start(
       });
     }
     if (swarmKey !== undefined) {
+      // The intercom broker probe is the fifth advertisement fact (ADR 0023
+      // decision 2): the socket must exist AND answer `pi-intercom` v1, and
+      // the probe never throws - any failure is absence, reported as false.
+      // The same flag reaches the server (card) and the caps below, so the
+      // two advertisements and the dispatch gate agree by construction.
+      const intercomAvailable = await probeIntercomBroker();
       server = createAgentServer({
         port: configuredPort(),
         swarmKey,
@@ -284,6 +291,7 @@ async function start(
         ...(jobs === undefined ? {} : { jobs }),
         ...(workspaceRoot === undefined ? {} : { workspaceRoot }),
         spawnPolicy,
+        ...(intercomAvailable ? { intercom: { available: true } } : {}),
       });
       const listening = await server.start();
       advertisement = await publishAgent(
@@ -303,6 +311,7 @@ async function start(
             hasRecognisedSessionLayout(
               io.sessionsRoot ?? defaultSessionsRoot(),
             ),
+            intercomAvailable,
           ),
         },
         {
@@ -726,6 +735,10 @@ async function doctor(io: CliIO): Promise<number> {
         spawnPolicy.enabled,
         hasRecognisedRunLayout(defaultRunsTmp()),
         hasRecognisedSessionLayout(defaultSessionsRoot()),
+        // Live probe, like the run layout above: doctor reports what this
+        // machine would serve, and an intercom answer is a socket fact, not
+        // a constructed resource. Bounded and never throws.
+        await probeIntercomBroker(),
       ),
       piBinary: piBinary ?? null,
       workspaceRoot: workspaceRoot ?? null,

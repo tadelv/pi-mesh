@@ -64,10 +64,7 @@ import {
   type SessionWatchOptions,
 } from "./watch.js";
 import type { SessionReadRequest } from "./sessions.js";
-import {
-  defaultSessionsRoot,
-  hasRecognisedSessionLayout,
-} from "./sessions.js";
+import { defaultSessionsRoot, hasRecognisedSessionLayout } from "./sessions.js";
 import { TaskStore } from "./tasks.js";
 import { loadOrCreateIdentity, type PeerIdentity } from "./identity.js";
 import { loadSwarmKey } from "./swarm-key.js";
@@ -333,6 +330,12 @@ export class HttpAgentServer implements AgentServer {
    * with no session layout answers -32004, naming what is missing.
    */
   private readonly sessionsAvailable: boolean;
+  /**
+   * Whether the local intercom broker answered the health probe at startup
+   * (ADR 0023), from `options.intercom.available`. Card, caps and dispatch
+   * all read this one flag, so advertisement and serving cannot disagree.
+   */
+  private readonly intercomAvailable: boolean;
   private readonly pendingHandshakes = new Map<
     string,
     { transcript: HandshakeTranscript; expiresAt: number }
@@ -353,6 +356,7 @@ export class HttpAgentServer implements AgentServer {
     this.sessionsAvailable = hasRecognisedSessionLayout(
       options.sessionsRoot ?? defaultSessionsRoot(),
     );
+    this.intercomAvailable = options.intercom?.available ?? false;
     this.spawnPolicy = options.spawnPolicy ?? parseSpawnPolicy();
     if (this.spawnPolicy.warning !== undefined) {
       // stderr, not stdout: the CLI prints machine-readable JSON on stdout, and
@@ -481,13 +485,16 @@ export class HttpAgentServer implements AgentServer {
       // cli.ts constructs the JobManager iff the spawn policy is enabled, so
       // these agree in production - they are passed separately because the
       // constructor accepts them independently. The run skills join the card
-      // only where a layout was recognised at startup (M8-5), and the
-      // inventory watch only where a session layout was recognised (ADR 0022).
+      // only where a layout was recognised at startup (M8-5), the
+      // inventory watch only where a session layout was recognised (ADR 0022),
+      // and the intercom skills only where the broker answered the health
+      // probe (ADR 0023).
       skills: servedSkills(
         this.options.jobs !== undefined,
         this.spawnPolicy.enabled,
         this.runsAvailable,
         this.sessionsAvailable,
+        this.intercomAvailable,
       ).map(skillInfo),
       signatures: [],
       iconUrl: "",
@@ -1012,11 +1019,7 @@ export class HttpAgentServer implements AgentServer {
     response: ServerResponse,
   ): Promise<void> {
     const input = call.input;
-    if (
-      typeof input !== "object" ||
-      input === null ||
-      Array.isArray(input)
-    ) {
+    if (typeof input !== "object" || input === null || Array.isArray(input)) {
       throw new PiMeshError(-32602, "mesh.watch input must be an object");
     }
     if ("id" in input) {
@@ -1030,6 +1033,7 @@ export class HttpAgentServer implements AgentServer {
       jobsAvailable: this.options.jobs !== undefined,
       runsAvailable: this.runsAvailable,
       sessionsAvailable: this.sessionsAvailable,
+      intercomAvailable: this.intercomAvailable,
     });
     const task = this.tasks.create(
       call.contextId === undefined ? {} : { contextId: call.contextId },
@@ -1038,9 +1042,7 @@ export class HttpAgentServer implements AgentServer {
       ...(this.options.sessionsRoot === undefined
         ? {}
         : { sessionsRoot: this.options.sessionsRoot }),
-      ...(this.options.jobs === undefined
-        ? {}
-        : { jobs: this.options.jobs }),
+      ...(this.options.jobs === undefined ? {} : { jobs: this.options.jobs }),
       ...(this.options.watchPollIntervalMs === undefined
         ? {}
         : { pollIntervalMs: this.options.watchPollIntervalMs }),

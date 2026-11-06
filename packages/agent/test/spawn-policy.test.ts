@@ -106,6 +106,14 @@ async function executionServer(
     calls.push(input);
     return { accepted: true };
   });
+  // intercom.send is execution (ADR 0023, ADR 0008:60-62) and therefore in
+  // EXECUTION_SKILLS, so the gate test covers it here with the same stub.
+  // The stub returns without touching a broker: the gate fires first, and
+  // this harness proves exactly that - no call may reach the handler.
+  skills.registerExecution("intercom.send", async (input) => {
+    calls.push(input);
+    return { accepted: true };
+  });
   skills.registerExecution("session.resume", async (input) => {
     calls.push(input);
     return { accepted: true };

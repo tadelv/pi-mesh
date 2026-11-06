@@ -59,6 +59,8 @@ Each skill also declares its **exposure**:
 | `mesh.handoff` | **gated on the spawn policy** | `HandoffPayload` | `{ task_id, session_id, job_id }` on acceptance; `{ task: Task }` when rejected; refused with `-32102` when closed |
 | `run.list` | peer (ungated; read, recognised run layout required) | `{}` | `{ runs: [RunEntry], coverage, evaluated_at }` |
 | `run.findings` | peer (ungated; read, recognised run layout required) | `{}` | `{ findings: [Finding], config, coverage, evaluated_at }` |
+| `intercom.list` | peer (ungated; read, live local broker required) | `{}` | `{ sessions: [{ id, name?, cwd, model, pid, started_at, last_activity }] }` - which Pi sessions are **live right now** on this machine, not which transcript files exist; refused with `-32004` (naming the broker) when absent |
+| `intercom.send` | **gated on the spawn policy** (live local broker required) | `{ to, message }` | `{ delivery: delivered \| queued \| unknown \| failed, code?, reason?, injected, note? }`; refused with `-32102` when closed, `-32004` when the broker is absent |
 
 A peer exposure means the skill is reachable by any swarm member, and never
 means unauthenticated: every request carries a proof (below).
@@ -118,6 +120,18 @@ The status path never sends `set_model`.
 A `session.steer` message must be non-blank and at most 4096 UTF-8 bytes.
 The agent rejects an oversized direct skill call with `-32602` before sending it
 to Pi.
+
+`intercom.send` delivers through the local pi-intercom broker (ADR 0023), not
+through the mesh's own jobs: `to` names a live session the broker reports,
+and the result speaks the broker's delivery vocabulary - `delivered`, `queued`
+or `unknown`, with the broker's reason code passed through unchanged.
+`unknown` means the message may have arrived and must not be retried blindly.
+`injected` is true only when the recipient's own receipt arrives within a
+bounded wait; it is never inferred from `socket_delivered` or `queued`, and
+the dashboard must not render "steered" for anything weaker. `cwd`, `name`
+and `pid` in `intercom.list` are display data, never identity: the broker's
+trust model is a same-UID file permission. The broker never accepts a command
+from the mesh - nothing inbound over that socket is executed or relayed.
 
 Steering is gated with spawning because injected prompts cause tool
 execution. Stopping is not gated: `session.abort` and `process.stop` are

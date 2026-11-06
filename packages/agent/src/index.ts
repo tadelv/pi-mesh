@@ -23,3 +23,4 @@ export * from "./rpc.js";
 export * from "./jobs.js";
 export * from "./spawn-env.js";
 export * from "./spawner.js";
+export * from "./intercom.js";

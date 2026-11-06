@@ -22,6 +22,7 @@ import {
 import { dashboardHtml } from "./dashboard.js";
 import { agentControls } from "./controls.js";
 import { UpstreamRegistry, streamKey } from "./streams.js";
+import { WatchManager } from "./watch.js";
 
 const MAX_BODY_BYTES = 64 * 1024;
 /** A subscriber whose socket is this far behind is cut off, not buffered. */
@@ -96,8 +97,164 @@ export function createControlServer(
   const jobsListingSettled = new Map<string, number>();
   let jobsListingSeq = 0;
   const streams = new UpstreamRegistry();
+  // Watch subscribers: one SSE response per open browser, all fed by the
+  // per-agent subscriptions below. A slow reader is disconnected, never
+  // buffered without bound (the same rule as the session-stream route).
+  const watchSinks = new Set<ServerResponse>();
+  function broadcastWatch(agentId: string): void {
+    const data = JSON.stringify({ agent_id: agentId });
+    for (const sink of [...watchSinks]) {
+      if (sink.writableEnded || sink.destroyed) {
+        watchSinks.delete(sink);
+        continue;
+      }
+      if (sink.writableLength > MAX_SUBSCRIBER_BUFFER) {
+        watchSinks.delete(sink);
+        sink.destroy();
+        continue;
+      }
+      sink.write(`event: watch\ndata: ${data}\n\n`);
+    }
+  }
+  /**
+   * One agent's listing through the same code as the manual sync (ADR 0022
+   * §5): the watch's close-triggered re-list and the operator's click share
+   * this path, so a re-list cannot drift from what the button would do.
+   */
+  async function syncAgent(
+    agent: PairedAgent,
+  ): Promise<
+    | { peer_id: string; ok: true; count: number }
+    | { peer_id: string; ok: false; error: string }
+  > {
+    const target = {
+      peerId: agent.peer_id,
+      host: agent.host,
+      port: agent.port,
+      credential: agent.credential,
+    };
+    const callOptions = {
+      controlId: store.controlId(),
+      ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+    };
+    // One sequence number per agent per sync, taken BEFORE the card is
+    // fetched, so every path below - including a card that never arrives
+    // and a listing that fails - is ordered against the others. Without
+    // this an older sync that failed would erase the mark a newer sync
+    // had just established, and the label would say "cached" about rows
+    // that are exactly the agent's list.
+    const sequence = ++jobsListingSeq;
+    const superseded = (): boolean =>
+      (jobsListingSettled.get(agent.peer_id) ?? 0) > sequence;
+    // NOTE: capabilities are deliberately NOT ordered by `sequence`, only
+    // the jobs mirror is. An older sync's card can therefore overwrite or
+    // clear a newer one's for a moment, showing stale controls until the
+    // next sync. It cannot authorise anything - the agent's own gate and
+    // ADR 0014's transport check both still apply - and ordering it means
+    // one sequence governing every per-agent write, which is a refactor
+    // rather than a line. Recorded here because it is the same class of
+    // bug as the three the reviews found, and the next reader will be
+    // standing in this exact spot.
+    const card = await fetchAgentCard(target, callOptions);
+    if (card === undefined) agentCaps.delete(agent.peer_id);
+    else {
+      agentCaps.set(agent.peer_id, card.skills);
+      // The subscription follows the advertisement: only an agent whose card
+      // includes mesh.watch gets a held stream (ADR 0022 §7), and a withdrawn
+      // capability closes the stream the same way an unpair does. An
+      // UNREACHABLE card is not a withdrawal - the agent may simply be down,
+      // so the existing subscription (if any) stays and its own backoff
+      // reconnects.
+      watch.ensureAgent(agent, card.skills);
+    }
+    if (card?.skills.includes("process.list")) {
+      const writesAtStart = jobsWrites.get(agent.peer_id) ?? 0;
+      try {
+        const result = await callAgent<{
+          jobs: Array<{
+            job_id: string;
+            session_id: string | null;
+            pid: number | null;
+            project: string;
+            state: string;
+            started_at: string;
+          }>;
+        }>(target, "process.list", {}, callOptions);
+        // Two ways this answer can be stale: a row was written while the
+        // listing was in flight, or a later listing has already applied.
+        // Neither may overwrite the newer state, and neither withdraws a
+        // freshness claim that a newer listing established.
+        const overtakenByWrite =
+          (jobsWrites.get(agent.peer_id) ?? 0) !== writesAtStart;
+        if (!superseded()) {
+          if (!overtakenByWrite) {
+            store.replaceJobs(
+              agent.peer_id,
+              result.jobs.map((job) => ({
+                job_id: job.job_id,
+                session_id: job.session_id,
+                pid: job.pid,
+                project: job.project,
+                created_at: job.started_at,
+                state: job.state,
+              })),
+            );
+            jobsSyncedAt.set(agent.peer_id, (options.now ?? Date.now)());
+          }
+          jobsListingSettled.set(agent.peer_id, sequence);
+        }
+      } catch {
+        // A failure withdraws freshness and supersedes older attempts.
+        // The cached rows themselves are untouched.
+        if (!superseded()) {
+          jobsSyncedAt.delete(agent.peer_id);
+          jobsListingSettled.set(agent.peer_id, sequence);
+        }
+      }
+    } else if (!superseded()) {
+      // Without a process.list capability the cache is not a confirmed
+      // mirror; this also supersedes any older in-flight listing.
+      jobsSyncedAt.delete(agent.peer_id);
+      jobsListingSettled.set(agent.peer_id, sequence);
+    }
+    try {
+      const sessions = await fetchSessionList(target, callOptions);
+      store.upsertSessions(
+        agent.peer_id,
+        sessions,
+        new Date((options.now ?? Date.now)()).toISOString(),
+      );
+      return {
+        peer_id: agent.peer_id,
+        ok: true as const,
+        count: sessions.length,
+      };
+    } catch (error) {
+      return {
+        peer_id: agent.peer_id,
+        ok: false as const,
+        error: error instanceof Error ? error.message : String(error),
+      };
+    }
+  }
+  const watch = new WatchManager({
+    store,
+    controlId: store.controlId(),
+    ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
+    ...(options.now === undefined ? {} : { now: options.now }),
+    resyncAgent: async (peerId: string) => {
+      const agent = store.getAgent(peerId);
+      if (agent !== undefined) await syncAgent(agent);
+    },
+    listener: { onWatchEvent: (agentId: string) => broadcastWatch(agentId) },
+  });
   // Unpairing removes the agent row; the live views must not outlive it.
-  store.onAgentRemoved = (peerId) => streams.closeAgent(peerId);
+  // The watch subscription is explicit too: a held stream never reaches a
+  // "next request boundary", so deferring its close would leak it.
+  store.onAgentRemoved = (peerId) => {
+    watch.closeAgent(peerId);
+    streams.closeAgent(peerId);
+  };
   const confidential = options.confidential ?? isConfidential;
   const allowInsecure = options.allowInsecureExecution === true;
   const serveDashboard = options.dashboardHtml ?? dashboardHtml;
@@ -147,6 +304,11 @@ export function createControlServer(
               skills,
               controls: agentControls(skills),
               jobs_synced_at: jobsSyncedAt.get(agent.peer_id) ?? null,
+              // The watch subscription for this agent: live while the held
+              // mesh.watch stream is open, stale after any close until the
+              // re-list and reconnect complete, off when the agent does not
+              // advertise mesh.watch (ADR 0022 §7).
+              watch: watch.status(agent.peer_id),
             };
           }),
           sessions: store.listSessions(),
@@ -425,114 +587,44 @@ export function createControlServer(
           json(response, 400, { error: "invalid_json" });
           return;
         }
+        // The manual route stays (ADR 0022 §7): a mixed-version fleet keeps a
+        // working path for agents that do not advertise mesh.watch.
         const results = await Promise.all(
-          store.listAgents().map(async (agent) => {
-            const target = {
-              peerId: agent.peer_id,
-              host: agent.host,
-              port: agent.port,
-              credential: agent.credential,
-            };
-            const callOptions = {
-              controlId: store.controlId(),
-              ...(options.fetch === undefined ? {} : { fetch: options.fetch }),
-            };
-            // One sequence number per agent per sync, taken BEFORE the card is
-            // fetched, so every path below - including a card that never arrives
-            // and a listing that fails - is ordered against the others. Without
-            // this an older sync that failed would erase the mark a newer sync
-            // had just established, and the label would say "cached" about rows
-            // that are exactly the agent's list.
-            const sequence = ++jobsListingSeq;
-            const superseded = (): boolean =>
-              (jobsListingSettled.get(agent.peer_id) ?? 0) > sequence;
-            // NOTE: capabilities are deliberately NOT ordered by `sequence`, only
-            // the jobs mirror is. An older sync's card can therefore overwrite or
-            // clear a newer one's for a moment, showing stale controls until the
-            // next sync. It cannot authorise anything - the agent's own gate and
-            // ADR 0014's transport check both still apply - and ordering it means
-            // one sequence governing every per-agent write, which is a refactor
-            // rather than a line. Recorded here because it is the same class of
-            // bug as the three the reviews found, and the next reader will be
-            // standing in this exact spot.
-            const card = await fetchAgentCard(target, callOptions);
-            if (card === undefined) agentCaps.delete(agent.peer_id);
-            else agentCaps.set(agent.peer_id, card.skills);
-            if (card?.skills.includes("process.list")) {
-              const writesAtStart = jobsWrites.get(agent.peer_id) ?? 0;
-              try {
-                const result = await callAgent<{
-                  jobs: Array<{
-                    job_id: string;
-                    session_id: string | null;
-                    pid: number | null;
-                    project: string;
-                    state: string;
-                    started_at: string;
-                  }>;
-                }>(target, "process.list", {}, callOptions);
-                // Two ways this answer can be stale: a row was written while the
-                // listing was in flight, or a later listing has already applied.
-                // Neither may overwrite the newer state, and neither withdraws a
-                // freshness claim that a newer listing established.
-                const overtakenByWrite =
-                  (jobsWrites.get(agent.peer_id) ?? 0) !== writesAtStart;
-                if (!superseded()) {
-                  if (!overtakenByWrite) {
-                    store.replaceJobs(
-                      agent.peer_id,
-                      result.jobs.map((job) => ({
-                        job_id: job.job_id,
-                        session_id: job.session_id,
-                        pid: job.pid,
-                        project: job.project,
-                        created_at: job.started_at,
-                        state: job.state,
-                      })),
-                    );
-                    jobsSyncedAt.set(
-                      agent.peer_id,
-                      (options.now ?? Date.now)(),
-                    );
-                  }
-                  jobsListingSettled.set(agent.peer_id, sequence);
-                }
-              } catch {
-                // A failure withdraws freshness and supersedes older attempts.
-                // The cached rows themselves are untouched.
-                if (!superseded()) {
-                  jobsSyncedAt.delete(agent.peer_id);
-                  jobsListingSettled.set(agent.peer_id, sequence);
-                }
-              }
-            } else if (!superseded()) {
-              // Without a process.list capability the cache is not a confirmed
-              // mirror; this also supersedes any older in-flight listing.
-              jobsSyncedAt.delete(agent.peer_id);
-              jobsListingSettled.set(agent.peer_id, sequence);
-            }
-            try {
-              const sessions = await fetchSessionList(target, callOptions);
-              store.upsertSessions(
-                agent.peer_id,
-                sessions,
-                new Date((options.now ?? Date.now)()).toISOString(),
-              );
-              return {
-                peer_id: agent.peer_id,
-                ok: true as const,
-                count: sessions.length,
-              };
-            } catch (error) {
-              return {
-                peer_id: agent.peer_id,
-                ok: false as const,
-                error: error instanceof Error ? error.message : String(error),
-              };
-            }
-          }),
+          store.listAgents().map((agent) => syncAgent(agent)),
         );
         json(response, 200, { results });
+        return;
+      }
+      if (request.method === "GET" && url.pathname === "/api/watch/stream") {
+        // Browser delivery for the watch (ADR 0022 §5): one SSE stream fed by
+        // every agent subscription. The dashboard re-fetches /api/state on
+        // each event and re-renders, preserving the selected session, any
+        // unsent composer draft, and the list's scroll position. Watching is
+        // a read, so this needs no execution grant and no ADR 0014 gate.
+        response.writeHead(200, {
+          "content-type": "text/event-stream; charset=utf-8",
+          "cache-control": "no-cache",
+          connection: "keep-alive",
+          "x-accel-buffering": "no",
+        });
+        response.flushHeaders();
+        watchSinks.add(response);
+        let closed = false;
+        const heartbeat = setInterval(() => {
+          if (!response.writableEnded) response.write(": keep-alive\n\n");
+        }, STREAM_HEARTBEAT_MS);
+        const teardown = (): void => {
+          if (closed) return;
+          closed = true;
+          clearInterval(heartbeat);
+          watchSinks.delete(response);
+        };
+        request.once("close", teardown);
+        response.once("close", teardown);
+        // Keep the handler open until the browser leaves; a buffered
+        // reverse proxy is defeated above, and a slow reader is cut off on
+        // the next broadcast rather than buffered without bound.
+        await new Promise<void>((resolve) => response.once("close", resolve));
         return;
       }
       const streamMatch = /^\/api\/sessions\/([^/]+)\/([^/]+)\/stream$/.exec(
@@ -816,7 +908,10 @@ export function createControlServer(
     },
     async stop() {
       if (!server.listening) return;
-      // No upstream outlives the control plane, even one mid-turn.
+      // No upstream outlives the control plane, even one mid-turn. The watch
+      // subscriptions are held streams too: they never reach a "next request
+      // boundary", so shutdown closes them explicitly (ADR 0022 §5).
+      watch.closeAll();
       streams.closeAll();
       await new Promise<void>((resolve, reject) => {
         server.close((error) =>
@@ -834,6 +929,7 @@ export function createControlServer(
       return `http://${urlHost}:${actualPort}/`;
     },
     closeAgentStreams(peerId: string) {
+      watch.closeAgent(peerId);
       streams.closeAgent(peerId);
     },
   };

@@ -203,6 +203,153 @@ export class ControlStore {
           .all(agentId)) as unknown as CachedSession[];
   }
 
+  upsertSession(
+    agentId: string,
+    session: SessionSummary,
+    syncedAt: string,
+  ): void {
+    // A single inventory delta (ADR 0022): exactly one row, never a prune.
+    // Routing a delta through upsertSessions would treat it as a complete
+    // listing and delete every other mirrored session for this agent.
+    this.db
+      .prepare(
+        "INSERT INTO sessions(agent_id,session_id,project,name,started_at,updated_at,synced_at) VALUES(?,?,?,?,?,?,?) ON CONFLICT(agent_id,session_id) DO UPDATE SET project=excluded.project,name=excluded.name,started_at=excluded.started_at,updated_at=excluded.updated_at,synced_at=excluded.synced_at",
+      )
+      .run(
+        agentId,
+        session.id,
+        session.project,
+        session.name ?? null,
+        session.started_at,
+        session.updated_at,
+        syncedAt,
+      );
+  }
+
+  removeSession(agentId: string, sessionId: string): void {
+    // The removal half of a delta: exactly one row for this agent.
+    this.db
+      .prepare("DELETE FROM sessions WHERE agent_id = ? AND session_id = ?")
+      .run(agentId, sessionId);
+  }
+
+  removeJob(agentId: string, jobId: string): void {
+    // The removal half of a job delta: exactly one row for this agent.
+    this.db
+      .prepare("DELETE FROM jobs WHERE agent_id = ? AND job_id = ?")
+      .run(agentId, jobId);
+  }
+
+  /**
+   * Apply one inventory job fact (ADR 0022) without inferring absence.
+   * A watched job carries identity and lifecycle state only (WatchJob), not
+   * the full row sync reports, so an unknown job is inserted with the
+   * columns sync owns left blank for the next listing to fill in - and a
+   * known job keeps the columns the watch cannot see. Absence from a delta
+   * is never a removal signal: only `replaceJobs` and `replaceWatchJobs`
+   * treat their input as complete.
+   */
+  applyWatchJob(
+    agentId: string,
+    job: { job_id: string; session_id: string | null; state: string },
+    createdAtFallback: string,
+  ): void {
+    const existing = this.db
+      .prepare(
+        "SELECT project, pid, created_at FROM jobs WHERE agent_id = ? AND job_id = ?",
+      )
+      .get(agentId, job.job_id) as
+      { project: string; pid: number | null; created_at: string } | undefined;
+    if (existing === undefined) {
+      this.db
+        .prepare(
+          "INSERT INTO jobs(agent_id,job_id,session_id,pid,project,created_at,state) VALUES(?,?,?,?,?,?,?) ON CONFLICT(agent_id,job_id) DO UPDATE SET session_id=excluded.session_id,state=excluded.state",
+        )
+        .run(
+          agentId,
+          job.job_id,
+          job.session_id,
+          null,
+          "",
+          createdAtFallback,
+          job.state,
+        );
+    } else {
+      this.db
+        .prepare(
+          "UPDATE jobs SET session_id = ?, state = ? WHERE agent_id = ? AND job_id = ?",
+        )
+        .run(job.session_id, job.state, agentId, job.job_id);
+    }
+    // Per AGENT, matching upsertJob: the mirror never grows past the agent's
+    // own retention by way of this control plane's writes.
+    this.db
+      .prepare(
+        `DELETE FROM jobs WHERE agent_id = ? AND rowid NOT IN (SELECT rowid FROM jobs WHERE agent_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ${MAX_JOBS_PER_AGENT})`,
+      )
+      .run(agentId, agentId);
+  }
+
+  /**
+   * Apply a watch snapshot's job list as a COMPLETE listing (ADR 0022
+   * bootstrap): jobs absent from it are removed, exactly like `replaceJobs`.
+   * Columns the watch cannot see are carried over from the rows being
+   * replaced, so a snapshot never blanks what only sync reports.
+   */
+  replaceWatchJobs(
+    agentId: string,
+    jobs: ReadonlyArray<{
+      job_id: string;
+      session_id: string | null;
+      state: string;
+    }>,
+    createdAtFallback: string,
+  ): void {
+    const known = new Map<
+      string,
+      { pid: number | null; project: string; created_at: string }
+    >();
+    for (const row of this.db
+      .prepare(
+        "SELECT job_id, pid, project, created_at FROM jobs WHERE agent_id = ?",
+      )
+      .all(agentId) as Array<{
+      job_id: string;
+      pid: number | null;
+      project: string;
+      created_at: string;
+    }>) {
+      known.set(row.job_id, {
+        pid: row.pid,
+        project: row.project,
+        created_at: row.created_at,
+      });
+    }
+    const statement = this.db.prepare(
+      "INSERT INTO jobs(agent_id,job_id,session_id,pid,project,created_at,state) VALUES(?,?,?,?,?,?,?)",
+    );
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare("DELETE FROM jobs WHERE agent_id = ?").run(agentId);
+      for (const job of jobs) {
+        const prior = known.get(job.job_id);
+        statement.run(
+          agentId,
+          job.job_id,
+          job.session_id,
+          prior?.pid ?? null,
+          prior?.project ?? "",
+          prior?.created_at ?? createdAtFallback,
+          job.state,
+        );
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   upsertSessions(
     agentId: string,
     sessions: readonly SessionSummary[],

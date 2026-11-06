@@ -1574,6 +1574,17 @@
     const chip = node('span', agent.skills === null ? 'capability unknown' : capable ? 'execution enabled' : 'execution not advertised', head);
     chip.className = 'chip '+(agent.skills === null ? 'chip-unknown' : capable ? 'chip-on' : 'chip-off');
     if(jobs.length) node('span', jobs.length+(jobs.length === 1 ? ' job' : ' jobs'), head).className = 'chip';
+    // Per-agent sync (ADR 0022 §7): a held mesh.watch subscription replaces
+    // the click for an agent that advertises it; an agent that does not keeps
+    // a working button, so a mixed-version fleet is never left without one.
+    // The manual POST /api/sync route itself stays served either way.
+    if(Array.isArray(agent.skills) && agent.skills.includes('mesh.watch')) {
+      node('p', 'Watching live: sessions arrive without syncing.', section).className = 'dim';
+    } else {
+      const syncOne = node('button', 'Sync this agent', section);
+      syncOne.dataset.syncAgent = agent.peer_id;
+      syncOne.addEventListener('click', async()=>{ try { await sync(); document.querySelector('#status').textContent=''; document.querySelector('#status').removeAttribute('data-error'); } catch(e){ const status=document.querySelector('#status'); status.textContent=e.message; status.dataset.error='true'; } });
+    }
     if(!capable) {
       const controlLabel = node('label', 'Control id to copy ', section);
       controlLabel.className = 'control-copy';
@@ -1721,6 +1732,11 @@
   function render() {
     root.replaceChildren(); if(!state) return;
     document.querySelector('#title').textContent = state.control.name;
+    // The manual route stays for agents that do not advertise mesh.watch
+    // (ADR 0022 §7). The global button is offered while any agent still needs
+    // a click; agents with a live subscription get a per-card note instead.
+    const syncButton = document.querySelector('#sync');
+    if(syncButton) syncButton.hidden = state.agents.length > 0 && state.agents.every(agent => Array.isArray(agent.skills) && agent.skills.includes('mesh.watch'));
     showTransportNotice();
     renderSessions();
     if(selected) {
@@ -1752,7 +1768,17 @@
     // loop back into itself.
     if(!fromLiveView && selected === current) void maybeStartLiveView(current);
   }
-  async function load(){ invalidateSpawnModels(); invalidateCommandHints(); state=await api('/api/state'); render(); }
+  async function load(){
+    // A push re-render must not move the reader: save the list position
+    // across the rebuild (selection and composer drafts already live in
+    // memory outside the DOM, so they survive it unchanged).
+    const list = document.querySelector('#session-list');
+    const top = list ? list.scrollTop : 0;
+    invalidateSpawnModels(); invalidateCommandHints(); state=await api('/api/state'); render();
+    const after = document.querySelector('#session-list');
+    if(after) after.scrollTop = top;
+    maybeWatch();
+  }
   async function sync(){ await api('/api/sync','POST'); await load(); }
   document.querySelector('#search').addEventListener('input', renderSessions);
   document.querySelector('#sync').addEventListener('click', async()=>{ try { await sync(); document.querySelector('#status').textContent=''; document.querySelector('#status').removeAttribute('data-error'); } catch(e){ const status=document.querySelector('#status'); status.textContent=e.message; status.dataset.error='true'; } });
@@ -1762,6 +1788,40 @@
     if(!token) return;
     localStorage.setItem('pi_mesh_token', token); void connect();
   });
+  // Push re-render (ADR 0022 §5): the control plane notifies this stream
+  // whenever a watch subscription applies frames. Each event re-reads
+  // /api/state through load(), which preserves selection, drafts and scroll
+  // position. EventSource cannot send the dashboard token as a header, and
+  // the token never goes in a URL (ADR 0014) - so this reads the stream with
+  // fetch, which can. A dropped stream backs off and reconnects; the durable
+  // state already on screen stays until the next event or Sync.
+  let watching = false;
+  async function watchLoop() {
+    let delay = 1000;
+    for(;;) {
+      try {
+        const response = await fetch('/api/watch/stream', {headers:{'X-Pi-Mesh-Ui':token}});
+        if(response.status === 401) { watching = false; return; }
+        if(!response.ok) throw new Error('watch stream unavailable: '+response.status);
+        delay = 1000;
+        for await (const item of readSse(response.body, null)) {
+          if(item.name === 'watch') { try { await load(); } catch { /* a failed re-read keeps the last state */ } }
+        }
+      } catch { /* the last rendered state stays; retry below */ }
+      await new Promise(resolve => setTimeout(resolve, delay));
+      delay = Math.min(delay * 2, 15000);
+    }
+  }
+  // The stream is only opened while some paired agent advertises mesh.watch:
+  // without a subscription there is nothing to push, and an idle hanging GET
+  // would only surprise the request fixtures that assert exact API shapes.
+  function maybeWatch() {
+    if(watching || !state) return;
+    if(state.agents.some(agent => Array.isArray(agent.skills) && agent.skills.includes('mesh.watch'))) {
+      watching = true;
+      void watchLoop();
+    }
+  }
   async function connect() {
     try { await load(); document.querySelector('#auth').hidden = true; document.querySelector('#auth-note').textContent = ''; }
     catch(error) { if(error.status !== 401) { document.querySelector('#auth').hidden = true; root.textContent = error.message; } }

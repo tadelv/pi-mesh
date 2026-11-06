@@ -9,5 +9,6 @@ export * from "./controls.js";
 export * from "./pairing.js";
 export * from "./client.js";
 export * from "./streams.js";
+export * from "./watch.js";
 export * from "./server.js";
 export * from "./dashboard.js";

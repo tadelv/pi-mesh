@@ -76,9 +76,14 @@ async function setup() {
   store.setMeta("dashboard_token", token);
   let streamOpens = 0;
   const countingFetch: typeof globalThis.fetch = async (input, init) => {
+    // Session-stream opens only. The sync in these tests also starts the
+    // agent's mesh.watch subscription (ADR 0022), which is a different
+    // message/stream upstream with its own clause in watch.test.ts - counting
+    // it here would blame the session path for the watch's socket.
     if (
       typeof init?.body === "string" &&
-      init.body.includes('"message/stream"')
+      init.body.includes('"message/stream"') &&
+      init.body.includes('"session.stream"')
     )
       streamOpens += 1;
     return globalThis.fetch(input, init);
@@ -358,15 +363,38 @@ it("refuses a session whose jobs listing is not confirmed", async () => {
   expect(opens()).toBe(0);
 });
 
-it("refuses a stream with a stated reason when the agent is unreachable", async () => {
+it("marks the mirror stale and refuses the stream when the agent is unreachable", async () => {
   const { base, jobs, agent } = await setup();
   await jobs.start();
   await sync(base);
   await agent.stop();
+  // The held mesh.watch stream breaks with the agent (ADR 0022 §5): the close
+  // marks the mirror stale and the re-list against a stopped agent cannot
+  // confirm the jobs listing. The stream is therefore refused as unconfirmed -
+  // still a refusal with a stated reason, but 409 rather than the pre-watch
+  // 502, because no confirmed listing vouches for the cached running job.
+  const deadline = Date.now() + 5_000;
+  for (;;) {
+    const state = (await (
+      await fetch(`${base}/api/state`, {
+        headers: { "X-Pi-Mesh-Ui": token },
+      })
+    ).json()) as {
+      agents: Array<{ jobs_synced_at: number | null; watch: string }>;
+    };
+    if (
+      state.agents[0]?.watch === "stale" &&
+      state.agents[0]?.jobs_synced_at === null
+    )
+      break;
+    if (Date.now() > deadline)
+      throw new Error("the watch close did not mark the mirror stale");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
   const response = await openStream(base);
-  expect(response.status).toBe(502);
+  expect(response.status).toBe(409);
   expect(await response.json()).toMatchObject({
-    error: "stream_unavailable",
+    error: "jobs_unconfirmed",
     message: expect.any(String),
   });
 });

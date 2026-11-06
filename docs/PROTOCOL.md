@@ -482,6 +482,24 @@ last subscriber leaves, when the agent is unpaired, and on control-plane
 shutdown; a subscriber that stops reading is disconnected rather than buffered
 without bound.
 
+## Control-plane inventory push
+
+The control plane holds at most one `mesh.watch` subscription per agent per
+process (ADR 0022), fanned out like the session streams above, and applies its
+frames to the SQLite mirror: the bootstrap `snapshot` as a complete listing
+through the existing sync path, every later delta as an explicit per-row
+operation. `GET /api/watch/stream` feeds those applications to the dashboard
+as `text/event-stream` (authenticated like every other `/api/` route, with
+`X-Pi-Mesh-Ui`): each `watch` event carries `{ "agent_id": "…" }` and tells
+the dashboard to re-read `GET /api/state` and re-render, preserving the
+selected session, any unsent composer draft, and the session list's scroll
+position. Like the session stream it is a read: no execution grant, no ADR
+0014 transport gate. `GET /api/state` reports each agent's subscription as
+`watch: "live" | "stale" | "off"` - `off` when the agent does not
+advertise `mesh.watch`, `stale` after any close until the re-list and
+reconnect complete. `POST /api/sync` stays served for agents without the
+advertisement; the dashboard offers a per-agent sync button only for those.
+
 ## Task lifecycle
 
 Skills that answer immediately return an A2A `Message`. A `Task` is used only

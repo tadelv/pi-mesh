@@ -1,5 +1,6 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+import { createServer, type Server } from "node:http";
 import { expect, test, type Page } from "@playwright/test";
 import {
   ControlStore,
@@ -3796,7 +3797,7 @@ test("selected-session model control is capability-, job-, and owner-bound", asy
     await panel.getByRole("button", { name: "Review model change" }).click();
     await expect(panel).toContainText("Change to Model A (provider-a)?");
     scenario = "replaced";
-    await page.getByRole("button", { name: "Sync" }).click();
+    await page.getByRole("button", { name: "Sync", exact: true }).click();
     await expect(
       panel
         .getByLabel("Available model")
@@ -3828,7 +3829,7 @@ test("selected-session model control is capability-, job-, and owner-bound", asy
     await expect(panel).toContainText("Change to Model A (provider-a)?");
     holdTranscriptA = true;
     scenario = "no-job";
-    await page.getByRole("button", { name: "Sync" }).click();
+    await page.getByRole("button", { name: "Sync", exact: true }).click();
     await expect(page.locator("#agents")).toContainText(
       "No jobs reported by the agent.",
     );
@@ -3847,7 +3848,7 @@ test("selected-session model control is capability-, job-, and owner-bound", asy
     // was started against. Waiting on the agents panel makes that ordering
     // observable instead of a race with the next Sync.
     scenario = "replaced";
-    await page.getByRole("button", { name: "Sync" }).click();
+    await page.getByRole("button", { name: "Sync", exact: true }).click();
     await expect(page.locator("#agents")).toContainText("job-model-2");
     releaseTranscriptA();
     holdTranscriptA = false;
@@ -5191,6 +5192,404 @@ test("sessions sharing a project path group under one collapsible basename heade
       await control.stop();
     } finally {
       store.close();
+    }
+  }
+});
+
+test("watch delivers a streamed session while sync stays forbidden", async ({
+  browser,
+}) => {
+  // The discriminating clause (ADR 0022): with mesh.watch subscribed, a session
+  // created on the agent reaches the dashboard with NO sync call and NO
+  // session.list re-list for the duration. Delete the subscription code and the
+  // row cannot arrive - the sync fallback is forbidden and the list fallback is
+  // failed server-side, so the assertion fails by name rather than by timeout.
+  const timestamp = new Date(0).toISOString();
+  const project = "/work/watch";
+  const seed = (id: string, n: number) => ({
+    id,
+    project,
+    name: `Seed ${n}`,
+    started_at: timestamp,
+    updated_at: timestamp,
+  });
+  const sessions = Array.from({ length: 40 }, (_, i) =>
+    seed(i === 0 ? "session-a" : `session-seed-${i}`, i),
+  );
+  const counters = { card: 0, sessionList: 0, processList: 0, streams: 0 };
+  let failLists = false;
+  const watchPushers: Array<(frame: unknown) => void> = [];
+  const stub: Server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://stub");
+    if (
+      request.method === "GET" &&
+      url.pathname === "/.well-known/agent-card.json"
+    ) {
+      counters.card += 1;
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          name: "watch-agent",
+          skills: [
+            "mesh.watch",
+            "session.list",
+            "session.read",
+            "session.resume",
+            "session.steer",
+            "process.list",
+          ].map((id) => ({ id, name: id, description: "", tags: [] })),
+        }),
+      );
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/") {
+      let body = "";
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        const rpc = JSON.parse(body) as {
+          id: unknown;
+          method: string;
+          params?: {
+            message?: { parts?: Array<{ data?: { skill?: string } }> };
+          };
+        };
+        const reply = (result: unknown): void => {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: rpc.id,
+              result: { message: { parts: [{ data: { result } }] } },
+            }),
+          );
+        };
+        const skill = rpc.params?.message?.parts?.[0]?.data?.skill;
+        if (rpc.method === "message/send" && skill === "session.list") {
+          counters.sessionList += 1;
+          if (failLists) {
+            response.writeHead(500);
+            response.end("listing refused for the duration");
+            return;
+          }
+          reply({ sessions });
+          return;
+        }
+        if (rpc.method === "message/send" && skill === "process.list") {
+          counters.processList += 1;
+          if (failLists) {
+            response.writeHead(500);
+            response.end("listing refused for the duration");
+            return;
+          }
+          reply({
+            jobs: [
+              {
+                job_id: "job-a",
+                session_id: "session-a",
+                pid: 11,
+                project,
+                state: "running",
+                started_at: timestamp,
+              },
+            ],
+          });
+          return;
+        }
+        if (rpc.method === "message/send" && skill === "session.read") {
+          reply({ entries: [] });
+          return;
+        }
+        if (rpc.method === "message/stream" && skill === "mesh.watch") {
+          counters.streams += 1;
+          response.writeHead(200, {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-cache",
+            connection: "keep-alive",
+          });
+          const send = (payload: unknown): void => {
+            if (!response.destroyed)
+              response.write(`data: ${JSON.stringify(payload)}\n\n`);
+          };
+          send({ task: { id: "watch-task" } });
+          const push = (frame: unknown): void =>
+            send({ message: { parts: [{ data: { result: frame } }] } });
+          push({ type: "snapshot", sessions, jobs: [] });
+          watchPushers.push(push);
+          // The request's close fires when the POST body is consumed, not when
+          // the SSE leaves: only the response closing drops the pusher.
+          response.once("close", () => {
+            const index = watchPushers.indexOf(push);
+            if (index !== -1) watchPushers.splice(index, 1);
+          });
+          return;
+        }
+        reply({});
+      });
+      return;
+    }
+    response.writeHead(404);
+    response.end("unknown");
+  });
+  await new Promise<void>((resolve) => stub.listen(0, "127.0.0.1", resolve));
+  const stubPort = (stub.address() as { port: number }).port;
+  const store = new ControlStore(":memory:");
+  store.controlName("Watch Delivery Control");
+  store.upsertAgent({
+    peer_id: "peer-watch",
+    name: "Watch Agent",
+    host: "127.0.0.1",
+    port: stubPort,
+    credential: Buffer.alloc(32, 5).toString("base64"),
+    paired_at: timestamp,
+  });
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const page = await browser.newPage();
+  let syncCalls = 0;
+  let forbidSync = false;
+  try {
+    const { port } = await control.start();
+    const baseURL = `http://127.0.0.1:${port}`;
+    const token = store.dashboardToken();
+    await page.addInitScript(
+      (dashboardToken) => localStorage.setItem("pi_mesh_token", dashboardToken),
+      token,
+    );
+    await page.route("**/api/sync", async (route) => {
+      if (route.request().method() === "POST" && forbidSync) {
+        syncCalls += 1;
+        await route.fulfill({ status: 400, body: "sync forbidden" });
+        return;
+      }
+      await route.continue();
+    });
+    await page.goto(baseURL);
+    await expect(
+      page.getByRole("heading", { name: "Watch Delivery Control" }),
+    ).toBeVisible();
+    // The one allowed sync: it learns the advertisement and starts the held
+    // stream. Everything after it runs with the fallbacks forbidden.
+    await page.getByRole("button", { name: "Sync", exact: true }).click();
+    await expect(page.locator("#session-list")).toContainText("Seed 0");
+    const live = await page.evaluate(async () => {
+      const state = (await (
+        await fetch("/api/state", {
+          headers: { "X-Pi-Mesh-Ui": localStorage.getItem("pi_mesh_token")! },
+        })
+      ).json()) as { agents: Array<{ watch: string }> };
+      return state.agents[0]?.watch;
+    });
+    expect(
+      live,
+      "watch subscription clause: the sync advertisement opens the held stream",
+    ).toBe("live");
+    expect(counters.streams).toBe(1);
+    expect(
+      page.locator('[data-sync-agent="peer-watch"]'),
+      "the watched agent offers no per-agent sync button",
+    ).toHaveCount(0);
+    const baselineLists = counters.sessionList;
+    // Select a session and leave an unsent draft, with the list scrolled to
+    // the bottom: the pushed re-render must keep all three.
+    await expandGroup(page, project);
+    await page.getByRole("button", { name: /Seed 0/ }).click();
+    await expect(
+      page.getByRole("heading", { name: "Prompt this session" }),
+    ).toBeVisible();
+    const composer = page.getByRole("textbox", { name: "Message to session" });
+    await composer.fill("unsent draft");
+    const listBox = page.locator("#session-list");
+    await listBox.evaluate((list) => {
+      list.scrollTop = list.scrollHeight;
+    });
+    const scrolled = await listBox.evaluate((list) => list.scrollTop);
+    expect(
+      scrolled,
+      "positive control: the session list scrolls",
+    ).toBeGreaterThan(0);
+    // From here the fallbacks are forbidden: the browser sync 400s and counts,
+    // and the agent refuses every listing - only a pushed frame can add a row.
+    forbidSync = true;
+    failLists = true;
+    const streamed = {
+      id: "session-streamed",
+      project,
+      name: "Streamed session",
+      started_at: timestamp,
+      updated_at: timestamp,
+    };
+    sessions.push(streamed);
+    for (const push of [...watchPushers]) {
+      push({ type: "added", session: streamed });
+    }
+    await expect(
+      page.locator("#session-list"),
+      "watch delivery clause: the streamed session appears with no sync call",
+    ).toContainText("Streamed session");
+    expect(
+      syncCalls,
+      "watch delivery clause: no sync call was made for the duration",
+    ).toBe(0);
+    expect(
+      counters.sessionList,
+      "watch delivery clause: no session.list re-list ran for the duration",
+    ).toBe(baselineLists);
+    expect(
+      counters.processList,
+      "watch delivery clause: no process.list re-list ran for the duration",
+    ).toBe(1);
+    await expect(
+      page.getByRole("heading", { name: "Seed 0" }),
+      "watch delivery preserves the selected session",
+    ).toBeVisible();
+    await expect(
+      composer,
+      "watch delivery preserves the unsent composer draft",
+    ).toHaveValue("unsent draft");
+    const kept = await listBox.evaluate((list) => list.scrollTop);
+    expect(
+      Math.abs(kept - scrolled),
+      "watch delivery preserves the list scroll position",
+    ).toBeLessThanOrEqual(2);
+  } finally {
+    await page.close().catch(() => undefined);
+    try {
+      await control.stop();
+    } finally {
+      store.close();
+      await new Promise<void>((resolve) => stub.close(() => resolve()));
+    }
+  }
+});
+
+test("an agent without mesh.watch keeps a working sync button", async ({
+  browser,
+}) => {
+  // Positive control (ADR 0022 §7): no advertisement means no subscription and
+  // the manual path stays offered - the button must still be visible.
+  const timestamp = new Date(0).toISOString();
+  let streams = 0;
+  const stub: Server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://stub");
+    if (
+      request.method === "GET" &&
+      url.pathname === "/.well-known/agent-card.json"
+    ) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          name: "plain-agent",
+          skills: ["session.list", "process.list"].map((id) => ({
+            id,
+            name: id,
+            description: "",
+            tags: [],
+          })),
+        }),
+      );
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/") {
+      let body = "";
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        const rpc = JSON.parse(body) as {
+          id: unknown;
+          method: string;
+          params?: {
+            message?: { parts?: Array<{ data?: { skill?: string } }> };
+          };
+        };
+        if (rpc.method === "message/stream") {
+          streams += 1;
+          response.writeHead(400);
+          response.end("no watch here");
+          return;
+        }
+        const skill = rpc.params?.message?.parts?.[0]?.data?.skill;
+        const result =
+          skill === "session.list"
+            ? {
+                sessions: [
+                  {
+                    id: "session-plain",
+                    project: "/work/plain",
+                    name: "Plain session",
+                    started_at: timestamp,
+                    updated_at: timestamp,
+                  },
+                ],
+              }
+            : { jobs: [] };
+        response.writeHead(200, { "content-type": "application/json" });
+        response.end(
+          JSON.stringify({
+            jsonrpc: "2.0",
+            id: rpc.id,
+            result: { message: { parts: [{ data: { result } }] } },
+          }),
+        );
+      });
+      return;
+    }
+    response.writeHead(404);
+    response.end("unknown");
+  });
+  await new Promise<void>((resolve) => stub.listen(0, "127.0.0.1", resolve));
+  const stubPort = (stub.address() as { port: number }).port;
+  const store = new ControlStore(":memory:");
+  store.controlName("No Watch Control");
+  store.upsertAgent({
+    peer_id: "peer-plain",
+    name: "Plain Agent",
+    host: "127.0.0.1",
+    port: stubPort,
+    credential: Buffer.alloc(32, 6).toString("base64"),
+    paired_at: timestamp,
+  });
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const page = await browser.newPage();
+  try {
+    const { port } = await control.start();
+    await page.addInitScript(
+      (dashboardToken) => localStorage.setItem("pi_mesh_token", dashboardToken),
+      store.dashboardToken(),
+    );
+    await page.goto(`http://127.0.0.1:${port}`);
+    await expect(
+      page.getByRole("heading", { name: "No Watch Control" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Sync", exact: true }).click();
+    await expect(page.locator("#session-list")).toContainText("Plain session");
+    expect(
+      streams,
+      "capability clause: no stream opens without the advertisement",
+    ).toBe(0);
+    const state = await page.evaluate(async () => {
+      const value = (await (
+        await fetch("/api/state", {
+          headers: { "X-Pi-Mesh-Ui": localStorage.getItem("pi_mesh_token")! },
+        })
+      ).json()) as { agents: Array<{ watch: string }> };
+      return value.agents[0]?.watch;
+    });
+    expect(state, "capability clause: the agent reads off, not stale").toBe(
+      "off",
+    );
+    await expect(
+      page.locator('[data-sync-agent="peer-plain"]'),
+      "the unwatched agent keeps its per-agent sync button",
+    ).toBeVisible();
+  } finally {
+    await page.close().catch(() => undefined);
+    try {
+      await control.stop();
+    } finally {
+      store.close();
+      await new Promise<void>((resolve) => stub.close(() => resolve()));
     }
   }
 });

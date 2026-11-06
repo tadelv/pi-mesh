@@ -79,6 +79,17 @@ export class ControlStore {
       mkdirSync(directory, { recursive: true, mode: 0o700 });
     }
     this.db = new DatabaseSync(path);
+    // This database is a cache, never authority (ADR 0015), and the watch now
+    // writes a row per change. The default journal mode fsyncs twice per
+    // statement, which on a slow disk puts the whole process in D state: the
+    // control plane blocked in a journal commit and answered nothing until it
+    // was restarted. WAL with synchronous=NORMAL syncs at a checkpoint instead
+    // of per commit - the worst case is losing the last few mirror rows, which
+    // the next listing repairs.
+    if (path !== ":memory:") {
+      this.db.exec("PRAGMA journal_mode = WAL");
+      this.db.exec("PRAGMA synchronous = NORMAL");
+    }
     this.now = options.now ?? Date.now;
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL) STRICT;

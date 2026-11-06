@@ -96,6 +96,27 @@ describe("ControlStore", () => {
     `);
   });
 
+  it("uses WAL and drops per-commit fsyncs on a file-backed mirror", () => {
+    // The mirror is a cache (ADR 0015) and the watch writes a row per change.
+    // With the default journal mode, each statement fsyncs twice, which on a
+    // slow disk blocked the whole process in a journal commit and the dashboard
+    // answered nothing until it was restarted.
+    runDbCheck(`
+      import assert from 'node:assert/strict';
+      import { existsSync, mkdtempSync } from 'node:fs';
+      import { tmpdir } from 'node:os';
+      import { join } from 'node:path';
+      import { ControlStore } from ${JSON.stringify(resolve("dist/db.js"))};
+      const path = join(mkdtempSync(join(tmpdir(), 'pi-mesh-wal-')), 'mirror.db');
+      const store = new ControlStore(path);
+      store.controlId();
+      assert.ok(existsSync(path + '-wal'), 'a file-backed mirror runs in WAL mode');
+      const row = store.listAgents().length;
+      assert.equal(row, 0, 'positive control: the store is usable, not just open');
+      store.close();
+    `);
+  });
+
   it("persists identity and token in a private file database", () => {
     runDbCheck(`
       import assert from 'node:assert/strict';

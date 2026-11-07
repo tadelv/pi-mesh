@@ -87,6 +87,15 @@ async function executionServer(
   includeSpawn = true,
 ): Promise<{ port: number; calls: unknown[]; stop: () => Promise<void> }> {
   const sessionsRoot = await mkdtemp(join(tmpdir(), "pi-mesh-gate-"));
+  // M8-8 run-layout fact: the gate test must prove -32102 (gate closed),
+  // not -32004 (layout missing). A layout-less machine would still give
+  // -32102 here because the gate fires before any requirement - but the
+  // fact makes the fixture honest about what the harness proves, and keeps
+  // the run-skill stubs served for the same reason the other stubs exist.
+  const runsTmp = await mkdtemp(join(tmpdir(), "pi-mesh-gate-runs-"));
+  await mkdir(join(runsTmp, "pi-subagents-gate", "async-subagent-runs"), {
+    recursive: true,
+  });
   const calls: unknown[] = [];
   const skills = new SkillRegistry();
   // Registered precisely because it is an execution skill: the gate can only
@@ -118,6 +127,19 @@ async function executionServer(
     calls.push(input);
     return { accepted: true };
   });
+  // M8-8 run control (folded grant, run-layout fact): the one-gate test
+  // iterates EXECUTION_SKILLS, so both run skills need stubs here - and the
+  // run-layout fact below, or a windowed harness gap would answer -32004
+  // where the test claims to prove -32102. The stubs return without
+  // touching an inbox: the gate fires first, and no call may reach them.
+  skills.registerExecution("run.stop", async (input) => {
+    calls.push(input);
+    return { accepted: true };
+  });
+  skills.registerExecution("run.steer", async (input) => {
+    calls.push(input);
+    return { accepted: true };
+  });
   if (includeSpawn) {
     skills.registerExecution("process.spawn", async (input) => {
       calls.push(input);
@@ -134,6 +156,7 @@ async function executionServer(
     swarmKey: testKey,
     identity: testIdentity,
     sessionsRoot,
+    runsTmp,
     skillRegistry: skills,
     spawnPolicy: policy,
   });

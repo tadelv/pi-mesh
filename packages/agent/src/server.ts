@@ -169,6 +169,12 @@ function reasonFor(code: number): string | undefined {
     return "PI_MESH_CATALOG_UNAVAILABLE";
   }
   if (code === ErrorCode.JobNotRunning) return "PI_MESH_JOB_NOT_RUNNING";
+  // M8-8 run control codes (past the ADR 0013 -32107 range). Literal
+  // numbers: @pi-mesh/shared carries no M8-8 codes, and the wire split is
+  // settled in M8-8 - an implementation inventing a different one is wrong
+  // even if its tests pass.
+  if (code === -32108) return "PI_MESH_UNKNOWN_RUN";
+  if (code === -32109) return "PI_MESH_RUN_CONTROL_UNAVAILABLE";
   // A2A's own errors carry a reason too. The spec makes ErrorInfo a SHOULD for
   // the JSON-RPC binding (a MUST for gRPC and HTTP details), but emitting it
   // only for pi-mesh errors and not for A2A's would be an odd inconsistency,

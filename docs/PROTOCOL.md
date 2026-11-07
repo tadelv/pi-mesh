@@ -59,6 +59,8 @@ Each skill also declares its **exposure**:
 | `mesh.handoff` | **gated on the spawn policy** | `HandoffPayload` | `{ task_id, session_id, job_id }` on acceptance; `{ task: Task }` when rejected; refused with `-32102` when closed |
 | `run.list` | peer (ungated; read, recognised run layout required) | `{}` | `{ runs: [RunEntry], coverage, evaluated_at }` |
 | `run.findings` | peer (ungated; read, recognised run layout required) | `{}` | `{ findings: [Finding], config, coverage, evaluated_at }` |
+| `run.stop` | **gated on the spawn policy** (recognised run layout required) | `{ run_id }` | `{ run_id, request_id: string\|null, requested: boolean, observed_state: RunState }`; terminal run answers `requested:false, request_id:null` and writes nothing; refused with `-32102` when closed, `-32108` for an unknown run, `-32109` for `RUN_CONTROL_UNAVAILABLE`, `-32004` when no recognised layout exists at all |
+| `run.steer` | **gated on the spawn policy** (recognised run layout required) | `{ run_id, message (non-blank, ≤128 KiB UTF-8) }` | `{ run_id, request_id: string\|null, requested: boolean, observed_state: RunState }`; `request_id` is the committed filename without `.json` (no filesystem path is exposed); a terminal run is `-32109` naming the observed state; refused with `-32102` when closed, `-32004` when no recognised layout exists at all |
 | `intercom.list` | peer (ungated; read, live local broker required) | `{}` | `{ sessions: [{ id, name?, cwd, model, pid, started_at, last_activity }] }` - which Pi sessions are **live right now** on this machine, not which transcript files exist; refused with `-32004` (naming the broker) when absent |
 | `intercom.send` | **gated on the spawn policy** (live local broker required) | `{ to, message }` | `{ delivery: delivered \| queued \| unknown \| failed, code?, reason?, injected, note? }`; refused with `-32102` when closed, `-32004` when the broker is absent |
 
@@ -186,6 +188,50 @@ after the agent started neither advertises nor serves the run skills until
 the agent is restarted: calls answer `-32004` naming the missing layout.
 Advertisement and serving read the same startup fact, so they cannot
 disagree - but the fact is stale until a restart refreshes it.
+
+### Run control (`run.stop`, `run.steer`)
+
+Both skills are **gated on the spawn policy** and need a recognised run
+layout (M8-8, ADR 0021 decision 2). They join
+`AgentServer.call -> gateExecution -> assertExecutionAllowed ->
+skills.invoke` through `SkillRegistry.registerExecution`; there is no
+second authorisation check and no handler-local grant test. A machine with
+no recognised layout serves neither skill and advertises neither: a direct
+call answers `-32004` naming the missing layout (the framework's
+requirement refusal, applying to every skill alike).
+
+- `run.stop`: `{ run_id }`. `run.steer`: `{ run_id, message }`. Required
+  strings are non-blank; additional caller fields are rejected (`-32602`).
+  A steer message is trimmed and bounded at 128 KiB, mirroring the runner's
+  own validation. Never a path, a pid, a session principal, or writer
+options: the agent resolves the id uniquely under its configured run roots
+  and refuses an ambiguous id with `-32602` (`two runs claim it`) rather
+  than picking one. No path ever signals a pid for a run this agent did not
+  start; external-run control never routes through `JobManager.stop`.
+- The status read is fresh, after authorisation, before either writer; the
+  local writers do not implement terminal idempotence, so the agent
+  orchestrates it. The lookup is **unwindowed**: discovery omits old
+  terminal runs from listings, but a retained artifact outside the listing
+  window is still a known run, and a stop on it answers success with
+  `requested:false` and no write.
+- Writes go through what exists: stop via the public `requestAsyncStop`;
+  steer writes `<runDir>/control/steer-requests/<padded-ts>-<base64url(id)>.json`
+  with the upstream shape and re-checks the closed marker after writing.
+  Both publish by temp-file-plus-rename, so a killed process cannot leave a
+  partial **final** request; it can leave a hidden temporary file (see
+  `docs/GOTCHAS.md`).
+- Success: `{ run_id, request_id: string|null, requested: boolean,
+  observed_state: RunState }` where `request_id` is the committed filename
+  without `.json` (no filesystem path is exposed). A terminal run and a stop
+  answer `requested:false, request_id:null`; an accepted write answers
+  `requested:true` with an id. `observed_state` is an observation, never a
+  claimed outcome: no `stopped`, no `delivered`.
+- Codes, pinned per refusal: `-32102` gate closed; `-32108` unknown run;
+  `-32109` `RUN_CONTROL_UNAVAILABLE` (no inbox, closed inbox, an
+  unrecognised **per-run** shape, a terminal steer, or a version outside
+  the pin - a terminal steer message names the observed state); `-32004`
+  the machine-level requirement only; `-32602` malformed input or
+  ambiguity; `-32603` status or inbox I/O failure.
 
 ## Skill invocation
 
@@ -581,6 +627,18 @@ once a transport exists to carry it.
 | `-32105` | `PI_MESH_SPAWN_FAILED` | Process failed to start or become ready |
 | `-32106` | `PI_MESH_CATALOG_UNAVAILABLE` | The model catalog could not be obtained |
 | `-32107` | `PI_MESH_JOB_NOT_RUNNING` | The named job is tracked but not running |
+| `-32108` | `PI_MESH_UNKNOWN_RUN` | Unknown run id (no retained artifact claims it) |
+| `-32109` | `PI_MESH_RUN_CONTROL_UNAVAILABLE` | Run control unavailable: no inbox, closed inbox, an unrecognised **per-run** shape, a terminal steer, or an installed version outside the pin |
+
+The two run-control refusals are deliberately different. `-32004` is the
+machine-level requirement refusal: no recognised run layout exists at all,
+so the skill is not served (and not advertised) on this machine. `-32109`
+is the per-run refusal: the layout exists, but this run cannot be
+controlled (its inbox is missing or closed, its shape is unrecognised, it
+is terminal and steering was asked, or the installed pi-subagents version
+is outside the pinned release line). An ambiguous `run_id` (two retained
+artifacts claim it) is `-32602`, never resolved by picking one; status or
+inbox I/O failures are `-32603`.
 
 Two conditions are deliberately **not** error codes:
 

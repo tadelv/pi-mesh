@@ -313,3 +313,111 @@ export function discoverRuns(options: DiscoverRunsOptions): DiscoverRunsResult {
     return result;
   }
 }
+
+/**
+ * UNWINDOWED run-id lookup (M8-8). Discovery omits old terminal runs
+ * (`outside-window`), so a windowed lookup would answer -32108 for a run
+ * that plainly exists. A retained artifact outside the listing window is
+ * still a known run: this scans every `<tmp>/pi-subagents-...` run
+ * directory, reads its `status.json` and returns every directory whose
+ * `runId` equals the requested id - with no age filter. Never throws and
+ * never writes: unreadable or malformed artifacts are skipped, never
+ * fabricated. Sorted so ambiguity is deterministic.
+ */
+export function findRunDirsById(tmp: string, runId: string): string[] {
+  const matches: string[] = [];
+  try {
+    if (
+      typeof tmp !== "string" ||
+      tmp === "" ||
+      typeof runId !== "string" ||
+      runId === ""
+    ) {
+      return matches;
+    }
+    const scopes = readDirEntries(tmp);
+    if (scopes === undefined) {
+      return matches;
+    }
+    for (const scope of scopes) {
+      if (!scope.startsWith(RUNS_SCOPE_PREFIX)) {
+        continue;
+      }
+      const runsRoot = path.join(tmp, scope, RUNS_DIR_NAME);
+      const entries = readDirEntries(runsRoot);
+      if (entries === undefined) {
+        continue;
+      }
+      for (const entry of entries) {
+        const runDir = path.join(runsRoot, entry);
+        const raw = readStatusFile(runDir);
+        if (!isRecord(raw)) {
+          continue;
+        }
+        if ("__unreadable" in raw || "__malformed" in raw) {
+          continue;
+        }
+        const id = toNonEmptyString((raw as Record<string, unknown>)["runId"]);
+        if (id === runId) {
+          matches.push(runDir);
+        }
+      }
+    }
+    matches.sort();
+    return matches;
+  } catch {
+    return matches;
+  }
+}
+
+export type ReadRunStateResult =
+  | { ok: true; state: RunState }
+  | { ok: false; kind: "io"; message: string }
+  | { ok: false; kind: "unrecognised"; message: string };
+
+/**
+ * Fresh status read for control (M8-8): after authorisation, before either
+ * writer. I/O failures (`missing-status.json`, unreadable file) are `io`
+ * (-32603); a malformed file or an unknown state is `unrecognised`
+ * (-32109, the per-run shape). Never throws.
+ */
+export function readRunState(runDir: string): ReadRunStateResult {
+  try {
+    if (typeof runDir !== "string" || runDir === "") {
+      return { ok: false, kind: "io", message: "missing run directory" };
+    }
+    let raw: string;
+    try {
+      raw = fs.readFileSync(path.join(runDir, STATUS_FILE), "utf8");
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, kind: "io", message };
+    }
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      return { ok: false, kind: "unrecognised", message };
+    }
+    if (!isRecord(parsed)) {
+      return {
+        ok: false,
+        kind: "unrecognised",
+        message: "status.json is not an object",
+      };
+    }
+    const state = parsed["state"];
+    if (!isRunState(state)) {
+      return {
+        ok: false,
+        kind: "unrecognised",
+        message: "unrecognised run state",
+      };
+    }
+    return { ok: true, state };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { ok: false, kind: "io", message };
+  }
+}

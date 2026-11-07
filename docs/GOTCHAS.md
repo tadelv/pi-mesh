@@ -97,6 +97,7 @@ you do not know yet.
 
 ## Node / runtime
 
+- **Run-control writers can leave a hidden temporary file if the agent is SIGKILLed mid-write.** Both `requestAsyncStop` and the steer writer publish by temp-file-plus-rename in the target directory, so a killed process cannot leave a partial **final** request - but it can leave a hidden `.tmp.<pid>.*.tmp` file next to it. Measured in `packages/runs` control tests: the temp path is created with `wx` and removed in a `finally`, and SIGKILL between the two leaves it behind. The reader ignores dotfiles, so this is a documented limitation, not a claim in any DoD: control tests assert no leftover **final** request, never the absence of temp files after a kill.
 - **The SIGKILL-escalation test fails on Node 26 and passes in CI on Node 22.**
   `test/jobs.test.ts` reports `expected 'SIGTERM' to be 'SIGKILL'` on Node
   v26.12.0. It is neither the change under review nor the fixture: with HEAD's

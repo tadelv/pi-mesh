@@ -590,7 +590,16 @@ describe("process and session control skills", () => {
     // broker. The registry here has neither, and each skill must name its
     // own missing requirement - a shared "requires a job manager" for a
     // skill that never touches jobs would be the lie this test exists to catch.
-    const skills = createSkillRegistry();
+    // M8-8 run control is the second decided exception: execution needing a
+    // recognised run layout, not a manager (a run-layout fact, never a
+    // JobManager). A T12 that demanded a job manager for run.stop/run.steer
+    // would pass for the wrong reason - returning -32004 where it claims to
+    // prove the requirement - so both skills name the layout here.
+    // Pinned to an empty tmp: the default real-temp root is machine state,
+    // and a laptop that runs Pi with subagents would otherwise recognise a
+    // layout and serve the run skills instead of refusing them.
+    const emptyTmp = await mkdtemp(join(tmpdir(), "pi-mesh-t12-runs-"));
+    const skills = createSkillRegistry({ runsTmp: emptyTmp });
     const local = "11111111-1111-4111-8111-111111111111";
     const inputs: Record<string, unknown> = {
       "process.spawn": { project: "p", prompt: "hi" },
@@ -606,9 +615,13 @@ describe("process and session control skills", () => {
         _localPeerId: local,
       },
       "intercom.send": { to: "some-session", message: "hi" },
+      "run.stop": { run_id: "run-1" },
+      "run.steer": { run_id: "run-1", message: "hi" },
     };
     const reasons: Record<string, string> = {
       "intercom.send": "requires the local intercom broker",
+      "run.stop": "requires a recognised run layout",
+      "run.steer": "requires a recognised run layout",
     };
     for (const skill of EXECUTION_SKILLS) {
       // Registered, so the refusal below cannot be the registry's own "Skill is

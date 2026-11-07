@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import type { PeerSummary, Skill } from "@pi-mesh/protocol";
-import { isAbsolute, join, relative, sep } from "node:path";
+import { basename, isAbsolute, join, relative, sep } from "node:path";
 import { realpath, stat } from "node:fs/promises";
 import { ErrorCode, PiMeshError } from "@pi-mesh/shared";
 import { IntercomClient, type IntercomOptions } from "./intercom.js";
@@ -11,7 +11,15 @@ import {
   defaultRunsTmp,
   hasRecognisedRunLayout,
 } from "./runs.js";
-import type { ProbeLivenessDeps } from "@pi-mesh/runs";
+import {
+  MAX_STEER_MESSAGE_BYTES,
+  TERMINAL_RUN_STATES,
+  findRunDirsById,
+  readRunState,
+  stopRun,
+  writeSteerRequest,
+  type ProbeLivenessDeps,
+} from "@pi-mesh/runs";
 import { PeerRegistry } from "./registry.js";
 import { SessionStore, type SessionStoreOptions } from "./sessions.js";
 import { hasRecognisedSessionLayout } from "./sessions.js";
@@ -45,6 +53,25 @@ export interface SkillRegistryOptions extends SessionStoreOptions {
   runsNow?: () => number;
   /** Liveness probe dependencies, so tests can inject the probe. */
   runsLiveness?: ProbeLivenessDeps;
+  /**
+   * Installed pi-subagents version for the control version gate. Defaults
+   * to the package pin; inject another value to test the gate.
+   */
+  runsInstalledVersion?: string;
+  /** Deterministic steer request ids for tests; defaults to randomUUID. */
+  runsRandomId?: () => string;
+  /**
+   * Closed-inbox predicate for the steer writer (pre- and post-write
+   * check). Defaults to the real marker file; inject a sequence to test
+   * the post-write re-check deterministically.
+   */
+  runsIsInboxClosed?: (runDir: string) => boolean;
+  /**
+   * Test-only hook run after the fresh status read and before either
+   * writer, so a test can close the inbox in between deterministically.
+   * Production leaves it undefined.
+   */
+  runsBeforeWrite?: (runDir: string) => void;
   /**
    * Local intercom broker (ADR 0023). `available` is the startup health
    * probe answer; card, caps and dispatch agree on it. Defaults to absent.
@@ -97,6 +124,13 @@ export const SKILL_CLASSIFICATION: Record<Skill, SkillClassification> = {
   "mesh.handoff": { exposure: "gated", requires: "jobs" },
   "run.list": { exposure: "peer", requires: "run-layout" },
   "run.findings": { exposure: "peer", requires: "run-layout" },
+  // M8-8: run control behind the folded grant (ADR 0021 decision 2). Both
+  // verbs are gated execution that needs a recognised run layout - never a
+  // JobManager, and never a pid signal. Registered through
+  // registerExecution so they join the shared dispatch gate; there is
+  // deliberately NO handler-local grant check here.
+  "run.stop": { exposure: "gated", requires: "run-layout" },
+  "run.steer": { exposure: "gated", requires: "run-layout" },
   // ADR 0023: live local liveness is a read (peer); sending into a session
   // starts a model turn and is therefore execution (gated, ADR 0008).
   "intercom.list": { exposure: "peer", requires: "intercom" },
@@ -1004,6 +1038,237 @@ export function createSkillRegistry(
   skills.register("run.findings", async () => {
     assertSkillRequirement("run.findings", availability);
     return plane.evaluateFindings();
+  });
+
+  // M8-8 run control behind the folded grant (ADR 0021 decision 2). Both
+  // verbs are gated execution needing a recognised run layout - registered
+  // through registerExecution so they join
+  // AgentServer.call -> gateExecution -> assertExecutionAllowed ->
+  // skills.invoke. There is deliberately NO handler-local grant check here:
+  // a second gate would be a second truth about who may execute. There is
+  // deliberately NO JobManager use and NO pid signal here: pid existence
+  // proves no identity, so external-run control never routes through
+  // JobManager.stop.
+  const runControlTmp = runsTmp;
+  const runControlNow = options.runsNow ?? Date.now;
+  const runControlVersion = options.runsInstalledVersion;
+  const runControlRandomId = options.runsRandomId;
+  const runControlIsInboxClosed = options.runsIsInboxClosed;
+  const runControlBeforeWrite = options.runsBeforeWrite;
+  const rejectRunControlExtra = (
+    input: SkillInput,
+    allowed: readonly string[],
+    skill: string,
+  ): void => {
+    for (const key of Object.keys(input)) {
+      if (key.startsWith("_")) continue;
+      if (!(allowed as readonly string[]).includes(key)) {
+        throw new PiMeshError(
+          -32602,
+          `${skill} rejects unexpected field: ${key}`,
+        );
+      }
+    }
+  };
+  const requiredRunId = (input: SkillInput, skill: string): string => {
+    const value = input["run_id"];
+    if (typeof value !== "string" || value.trim().length === 0) {
+      throw new PiMeshError(
+        -32602,
+        `${skill} requires a non-blank string run_id`,
+      );
+    }
+    return value.trim();
+  };
+  const requiredSteerMessage = (input: SkillInput, skill: string): string => {
+    const value = input["message"];
+    if (typeof value !== "string" || value.trim().length === 0) {
+      throw new PiMeshError(
+        -32602,
+        `${skill} requires a non-blank string message`,
+      );
+    }
+    const trimmed = value.trim();
+    if (Buffer.byteLength(trimmed, "utf8") > MAX_STEER_MESSAGE_BYTES) {
+      throw new PiMeshError(
+        -32602,
+        `${skill} message exceeds ${MAX_STEER_MESSAGE_BYTES} UTF-8 bytes`,
+      );
+    }
+    return trimmed;
+  };
+  const resolveRunDirUnique = (runId: string): string => {
+    let matches: string[];
+    try {
+      matches = findRunDirsById(runControlTmp, runId);
+    } catch (error) {
+      throw new PiMeshError(
+        -32603,
+        `run control refused: cannot search runs under ${runControlTmp} (${error instanceof Error ? error.message : String(error)})`,
+      );
+    }
+    if (matches.length === 0) {
+      throw new PiMeshError(-32108, `Unknown run: ${runId}`);
+    }
+    if (matches.length > 1) {
+      throw new PiMeshError(
+        -32602,
+        `Ambiguous run id: two runs claim it: ${runId}`,
+      );
+    }
+    return matches[0]!;
+  };
+  const readObservedState = (runDir: string, runId: string): string => {
+    const read = readRunState(runDir);
+    if (read.ok) return read.state;
+    if (read.kind === "io") {
+      throw new PiMeshError(
+        -32603,
+        `run control refused: cannot read status for ${runId} (${read.message})`,
+      );
+    }
+    throw new PiMeshError(
+      -32109,
+      `RUN_CONTROL_UNAVAILABLE: unrecognised run shape for ${runId}`,
+    );
+  };
+  const requestIdFromPath = (requestPath: string, runId: string): string => {
+    const base = basename(requestPath);
+    if (!base.endsWith(".json") || base.length <= 5) {
+      throw new PiMeshError(
+        -32603,
+        `run control refused: writer returned an unusable path for ${runId}`,
+      );
+    }
+    const id = base.slice(0, -5);
+    if (id.length === 0 || id.includes("/") || id.includes("\\")) {
+      throw new PiMeshError(
+        -32603,
+        `run control refused: writer returned an unusable path for ${runId}`,
+      );
+    }
+    return id;
+  };
+  const isTerminalState = (state: string): boolean =>
+    (TERMINAL_RUN_STATES as readonly string[]).includes(state);
+  skills.registerExecution("run.stop", async (input) => {
+    assertSkillRequirement("run.stop", availability);
+    rejectRunControlExtra(input, ["run_id"], "run.stop");
+    const runId = requiredRunId(input, "run.stop");
+    const runDir = resolveRunDirUnique(runId);
+    const observed = readObservedState(runDir, runId);
+    if (isTerminalState(observed)) {
+      return {
+        run_id: runId,
+        request_id: null,
+        requested: false,
+        observed_state: observed,
+      };
+    }
+    runControlBeforeWrite?.(runDir);
+    let result: ReturnType<typeof stopRun>;
+    try {
+      result = stopRun(runDir, {
+        ...(runControlVersion === undefined
+          ? {}
+          : { installedVersion: runControlVersion }),
+        now: runControlNow,
+      });
+    } catch (error) {
+      throw new PiMeshError(
+        -32603,
+        `run control refused: stop write failed for ${runId} (${error instanceof Error ? error.message : String(error)})`,
+      );
+    }
+    if (result.ok) {
+      return {
+        run_id: runId,
+        request_id: requestIdFromPath(result.requestPath, runId),
+        requested: true,
+        observed_state: observed,
+      };
+    }
+    if (
+      result.code === "stop-inbox-closed" ||
+      result.code === "unsupported-version" ||
+      result.code === "unrecognised-layout"
+    ) {
+      throw new PiMeshError(
+        -32109,
+        `RUN_CONTROL_UNAVAILABLE: stop refused for ${runId} (${result.code}: ${result.message})`,
+      );
+    }
+    throw new PiMeshError(
+      -32603,
+      `run control refused: stop write failed for ${runId} (${result.code}: ${result.message})`,
+    );
+  });
+  skills.registerExecution("run.steer", async (input) => {
+    assertSkillRequirement("run.steer", availability);
+    rejectRunControlExtra(input, ["run_id", "message"], "run.steer");
+    const runId = requiredRunId(input, "run.steer");
+    const message = requiredSteerMessage(input, "run.steer");
+    const runDir = resolveRunDirUnique(runId);
+    const observed = readObservedState(runDir, runId);
+    if (isTerminalState(observed)) {
+      throw new PiMeshError(
+        -32109,
+        `RUN_CONTROL_UNAVAILABLE: run ${runId} is ${observed}; steering a terminal run is refused`,
+      );
+    }
+    runControlBeforeWrite?.(runDir);
+    let result: ReturnType<typeof writeSteerRequest>;
+    try {
+      result = writeSteerRequest(
+        runDir,
+        { message },
+        {
+          ...(runControlVersion === undefined
+            ? {}
+            : { installedVersion: runControlVersion }),
+          now: runControlNow,
+          ...(runControlRandomId === undefined
+            ? {}
+            : { randomId: runControlRandomId }),
+          ...(runControlIsInboxClosed === undefined
+            ? {}
+            : { isInboxClosed: runControlIsInboxClosed }),
+        },
+      );
+    } catch (error) {
+      throw new PiMeshError(
+        -32603,
+        `run control refused: steer write failed for ${runId} (${error instanceof Error ? error.message : String(error)})`,
+      );
+    }
+    if (result.ok) {
+      return {
+        run_id: runId,
+        request_id: requestIdFromPath(result.path, runId),
+        requested: true,
+        observed_state: observed,
+      };
+    }
+    if (
+      result.code === "steer-inbox-closed" ||
+      result.code === "unsupported-version" ||
+      result.code === "unrecognised-layout"
+    ) {
+      throw new PiMeshError(
+        -32109,
+        `RUN_CONTROL_UNAVAILABLE: steer refused for ${runId} (${result.code}: ${result.message})`,
+      );
+    }
+    if (result.code === "malformed-steer-request") {
+      throw new PiMeshError(
+        -32602,
+        `run.steer malformed request for ${runId}: ${result.message}`,
+      );
+    }
+    throw new PiMeshError(
+      -32603,
+      `run control refused: steer write failed for ${runId} (${result.code}: ${result.message})`,
+    );
   });
 
   // Intercom reads and sends (ADR 0023). Registered unconditionally, exactly

@@ -57,6 +57,10 @@ const EXECUTION_SKILLS = [
   "mesh.handoff",
 ];
 const RUN_SKILLS = ["run.list", "run.findings"];
+// M8-8 run control: gated execution needing a recognised run layout (never
+// a JobManager). Advertised only where the layout exists and the gate is
+// open - which is exactly the full fixture below.
+const RUN_CONTROL_SKILLS = ["run.stop", "run.steer"];
 
 const logger = {
   debug: () => undefined,
@@ -235,6 +239,10 @@ function inputFor(skill: string): Record<string, unknown> {
         preferred_agent: testIdentity.peerId,
         deadline_ms: 1000,
       };
+    case "run.stop":
+      return { run_id: "missing" };
+    case "run.steer":
+      return { run_id: "missing", message: "hi" };
     default:
       return {};
   }
@@ -263,6 +271,10 @@ const FULL_CODES: Record<string, number | "ok"> = {
   "session.resume": -32602,
   "mesh.handoff": -32105,
   "mesh.watch": -32004,
+  // Full fixture has a layout but no such run: unknown run proves the
+  // control handler ran (a -32004 here would mean the requirement failed).
+  "run.stop": -32108,
+  "run.steer": -32108,
 };
 
 const allowAll = { allows: () => true, enabled: true };
@@ -340,7 +352,7 @@ describe("M8-5 capability honesty over the signed wire", () => {
     ).resolves.toEqual([...ALWAYS_SKILLS].sort());
   });
 
-  it("honesty-advertised-full: with jobs, an open gate and a layout, all eighteen skills are advertised", async () => {
+  it("honesty-advertised-full: with jobs, an open gate and a layout, all twenty skills are advertised", async () => {
     await expect(
       cardSkills(fullPort),
       "honesty-advertised-full: advertisement must be the full served set",
@@ -350,11 +362,17 @@ describe("M8-5 capability honesty over the signed wire", () => {
         ...JOB_SKILLS,
         ...EXECUTION_SKILLS,
         ...RUN_SKILLS,
+        ...RUN_CONTROL_SKILLS,
       ].sort(),
     );
   });
 
-  for (const skill of [...JOB_SKILLS, ...EXECUTION_SKILLS, ...RUN_SKILLS]) {
+  for (const skill of [
+    ...JOB_SKILLS,
+    ...EXECUTION_SKILLS,
+    ...RUN_SKILLS,
+    ...RUN_CONTROL_SKILLS,
+  ]) {
     it(`honesty-minimal: unadvertised ${skill} answers -32004 with a stated reason`, async () => {
       const { parsed } = await postRpc(
         minimalPort,
@@ -364,7 +382,7 @@ describe("M8-5 capability honesty over the signed wire", () => {
         parsed.error?.code,
         `honesty-minimal: ${skill} is not advertised, so it must answer -32004 (got ${JSON.stringify(parsed).slice(0, 200)})`,
       ).toBe(-32004);
-      if (RUN_SKILLS.includes(skill)) {
+      if (RUN_SKILLS.includes(skill) || RUN_CONTROL_SKILLS.includes(skill)) {
         expect(
           parsed.error?.message,
           `honesty-minimal: ${skill} must name the missing run layout`,

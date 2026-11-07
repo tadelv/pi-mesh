@@ -21,6 +21,8 @@ export type Skill =
   | "mesh.watch"
   | "run.list"
   | "run.findings"
+  | "run.stop"
+  | "run.steer"
   | "intercom.list"
   | "intercom.send";
 

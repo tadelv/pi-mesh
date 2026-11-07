@@ -1,8 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import { readdir, readFile } from "node:fs/promises";
+import { readdir, readFile, realpath, stat } from "node:fs/promises";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { isAbsolute, join, relative, sep } from "node:path";
 import { statSync } from "node:fs";
 import type { Event, SessionSummary } from "@pi-mesh/protocol";
 import { decodeJsonl } from "./jsonl.js";
@@ -232,9 +232,7 @@ export function hasRecognisedSessionLayout(
 export function summarizeParsed(
   parsed: SessionParseResult,
   path: string,
-):
-  | { summary: SessionSummary }
-  | { skipped: string } {
+): { summary: SessionSummary } | { skipped: string } {
   const header = parsed.header;
   if (header === undefined) {
     return {
@@ -311,6 +309,238 @@ function isMissing(error: unknown): boolean {
   );
 }
 
+/**
+ * M8-6: a run's child transcript is a real Pi session file nested under the
+ * sessions root at
+ * `<root>/--<munged-cwd>--/<parent-session-stem>/<uuid>/run-0/session.jsonl`.
+ * Verified against retained runs under `~/.pi/agent/sessions` before coding:
+ * the `<parent-session-stem>` directory shares its stem with the parent's
+ * `<stem>.jsonl` file, and the child's header id is its own UUID - not the
+ * `<uuid>` directory name above it. Do not guess the depth from the issue
+ * text alone; this is the layout pi-subagents writes.
+ *
+ * The child is addressable over the existing session wire by that header id,
+ * resolved through the same code path as an ordinary session (see
+ * `SessionStore.findSessionPaths`). It is deliberately NOT listed: a listed
+ * id names a root transcript a job can own (ADR 0016), and promoting run
+ * detail into the listing would change discovery order and the addressability
+ * rules for ordinary sessions. Children are readable by id; never listed.
+ */
+const CHILD_TRANSCRIPT_FILENAME = "session.jsonl";
+
+/** Hard bound on the nested walk, so a symlink cycle cannot spin it. */
+const MAX_CHILD_SCAN_DEPTH = 8;
+
+export interface RefusedChildTranscript {
+  path: string;
+  reason: string;
+  /** The header id the file claimed, when it had a parsable one. */
+  claimedId?: string;
+}
+
+export interface ChildTranscriptScan {
+  files: string[];
+  refused: RefusedChildTranscript[];
+}
+
+/**
+ * Whether a discovered candidate resolves inside the sessions root. Both
+ * sides are realpathed, so a symlink - or a symlinked ancestor - pointing
+ * outside the root is refused, not clamped: a failed realpath fails closed
+ * and anything outside is skipped as if it did not exist. Deleting this
+ * check (or its call in the scan below) must fail the containment test by
+ * name (M8-6).
+ */
+export async function isWithinSessionsRoot(
+  sessionsRoot: string,
+  candidate: string,
+): Promise<boolean> {
+  let realRoot: string;
+  let realCandidate: string;
+  try {
+    realRoot = await realpath(sessionsRoot);
+    realCandidate = await realpath(candidate);
+  } catch {
+    return false;
+  }
+  const fileRelative = relative(realRoot, realCandidate);
+  return (
+    fileRelative !== "" &&
+    fileRelative !== ".." &&
+    !fileRelative.startsWith(`..${sep}`) &&
+    !isAbsolute(fileRelative)
+  );
+}
+
+/**
+ * Every validated-candidate child transcript under the sessions root: files
+ * named exactly `session.jsonl` nested at least two levels below a project
+ * directory (the real shape is
+ * `<project>/<parent-stem>/<uuid>/run-N/session.jsonl`). Files directly in
+ * a project directory are ordinary sessions and stay with `sessionFiles`;
+ * a flat `<root>/session.jsonl` (the `--session-dir` layout Pi writes past
+ * the reader, per docs/GOTCHAS.md) is not a nested child either.
+ *
+ * Candidates that resolve outside the root are reported in `refused`, never
+ * clamped into it. Content validation happens in the store, which owns the
+ * error reporting; this scan reports placement only.
+ */
+export async function childTranscriptFiles(
+  sessionsRoot: string,
+): Promise<ChildTranscriptScan> {
+  const files: string[] = [];
+  const refused: RefusedChildTranscript[] = [];
+  const seenDirs = new Set<string>();
+  let projectDirs;
+  try {
+    projectDirs = await readdir(sessionsRoot, { withFileTypes: true });
+  } catch (error) {
+    if (isMissing(error)) return { files, refused };
+    throw error;
+  }
+  for (const projectDir of projectDirs) {
+    if (!projectDir.isDirectory() && !projectDir.isSymbolicLink()) continue;
+    await collectChildTranscripts(
+      join(sessionsRoot, projectDir.name),
+      1,
+      sessionsRoot,
+      files,
+      refused,
+      seenDirs,
+    );
+  }
+  return { files: files.sort(), refused };
+}
+
+async function collectChildTranscripts(
+  directory: string,
+  depth: number,
+  sessionsRoot: string,
+  files: string[],
+  refused: RefusedChildTranscript[],
+  seenDirs: Set<string>,
+): Promise<void> {
+  if (depth > MAX_CHILD_SCAN_DEPTH) return;
+  let realDirectory: string;
+  try {
+    realDirectory = await realpath(directory);
+  } catch {
+    return;
+  }
+  if (seenDirs.has(realDirectory)) return;
+  seenDirs.add(realDirectory);
+  let children;
+  try {
+    children = await readdir(directory, { withFileTypes: true });
+  } catch {
+    // Pi's guard, mirrored one level down: one unreadable directory must
+    // not cost the whole discovery.
+    return;
+  }
+  for (const child of children) {
+    const fullPath = join(directory, child.name);
+    if (!child.isDirectory() && !child.isSymbolicLink()) {
+      if (child.isFile() && child.name === CHILD_TRANSCRIPT_FILENAME) {
+        await includeChildCandidate(
+          fullPath,
+          depth,
+          sessionsRoot,
+          files,
+          refused,
+        );
+      }
+      continue;
+    }
+    // A symlink is descended through with its unresolved path so the
+    // containment check below - not silent skipping - is what refuses an
+    // escape: never discovering the file would pass the escape test with
+    // the check deleted. A symlink that resolves to a file is fail-closed:
+    // it is never followed, so it can never become addressable.
+    let candidateStat;
+    try {
+      candidateStat = await stat(fullPath);
+    } catch {
+      continue;
+    }
+    if (candidateStat.isFile()) continue;
+    if (!candidateStat.isDirectory()) continue;
+    if (depth < MAX_CHILD_SCAN_DEPTH) {
+      await collectChildTranscripts(
+        fullPath,
+        depth + 1,
+        sessionsRoot,
+        files,
+        refused,
+        seenDirs,
+      );
+    }
+  }
+}
+
+async function includeChildCandidate(
+  fullPath: string,
+  depth: number,
+  sessionsRoot: string,
+  files: string[],
+  refused: RefusedChildTranscript[],
+): Promise<void> {
+  // Depth 1 is the project directory itself: a session.jsonl there is not a
+  // nested child.
+  if (depth < 2) return;
+  if (await isWithinSessionsRoot(sessionsRoot, fullPath)) {
+    files.push(fullPath);
+    return;
+  }
+  refused.push({
+    path: fullPath,
+    reason: `nested session file resolves outside the sessions root and is refused: ${fullPath}`,
+  });
+}
+
+/**
+ * Whether a nested candidate is a session the wire may serve. Ordinary
+ * sessions keep their historical tolerance (a malformed line is reported and
+ * the surviving entries are served); a nested file does not: it is refused
+ * rather than half-parsed, and it must never materialise as an empty
+ * session - a header-only file is mid-write or truncated, because Pi only
+ * writes the file once a turn persists something.
+ */
+function validateChildTranscript(
+  parsed: SessionParseResult,
+  path: string,
+): { valid: true } | { valid: false; reason: string; claimedId?: string } {
+  const header = parsed.header;
+  if (header === undefined) {
+    return {
+      valid: false,
+      reason: `nested session file has no complete header and is refused rather than half-parsed: ${path}`,
+    };
+  }
+  if (!isPlainUuid(header.id)) {
+    return {
+      valid: false,
+      reason: `nested session id is not a UUID and cannot be addressed: ${header.id} (${path})`,
+      claimedId: header.id,
+    };
+  }
+  if (parsed.errors.length > 0) {
+    const first = parsed.errors[0]!;
+    return {
+      valid: false,
+      reason: `nested session file is truncated or malformed and is refused rather than half-parsed: ${path} (line ${first.line}: ${first.message})`,
+      claimedId: header.id,
+    };
+  }
+  if (parsed.entries.length === 0) {
+    return {
+      valid: false,
+      reason: `nested session file has no entries and is refused rather than materialising as an empty session: ${path}`,
+      claimedId: header.id,
+    };
+  }
+  return { valid: true };
+}
+
 export class SessionStore {
   private readonly sessionsRoot: string;
   private readonly onError: ((error: SessionParseError) => void) | undefined;
@@ -325,6 +555,15 @@ export class SessionStore {
     return [...this.parseErrors];
   }
 
+  /**
+   * M8-6 decision: the listing enumerates ONLY ordinary top-level session
+   * files via `sessionFiles()`. A nested child transcript is detail of a
+   * run, not a top-level session: listing it would change discovery order
+   * and break the ADR 0016 rule that a listed id names a root transcript a
+   * job can own. Children are addressable by id through `read()` (and the
+   * shared `findSessionPaths` resolution below); listing one is wrong, so
+   * this method refuses to, by construction.
+   */
   async list(): Promise<SessionSummary[]> {
     this.parseErrors = [];
     const summaries: SessionSummary[] = [];
@@ -374,6 +613,25 @@ export class SessionStore {
   async findSessionPaths(
     sessionId: string,
   ): Promise<{ path: string; parsed: SessionParseResult }[]> {
+    return (await this.resolveSessionPaths(sessionId)).matches;
+  }
+
+  async findSessionPath(
+    sessionId: string,
+  ): Promise<{ path: string; parsed: SessionParseResult } | undefined> {
+    return (await this.findSessionPaths(sessionId))[0];
+  }
+
+  /**
+   * Ordinary sessions first (their order and precedence are unchanged),
+   * then validated nested child transcripts. A nested file that fails
+   * validation is recorded in `refusedNested` with its reason - never
+   * served, never listed, never an empty session.
+   */
+  private async resolveSessionPaths(sessionId: string): Promise<{
+    matches: { path: string; parsed: SessionParseResult }[];
+    refusedNested: RefusedChildTranscript[];
+  }> {
     const matches: { path: string; parsed: SessionParseResult }[] = [];
     for (const path of await sessionFiles(this.sessionsRoot)) {
       let parsed: SessionParseResult;
@@ -392,21 +650,78 @@ export class SessionStore {
       }
       if (parsed.header?.id === sessionId) matches.push({ path, parsed });
     }
-    return matches;
-  }
-
-  async findSessionPath(
-    sessionId: string,
-  ): Promise<{ path: string; parsed: SessionParseResult } | undefined> {
-    return (await this.findSessionPaths(sessionId))[0];
+    const scan = await childTranscriptFiles(this.sessionsRoot);
+    const refusedNested: RefusedChildTranscript[] = [...scan.refused];
+    for (const refusal of scan.refused) {
+      const error: SessionParseError = {
+        line: 0,
+        message: refusal.reason,
+        path: refusal.path,
+      };
+      this.parseErrors.push(error);
+      this.onError?.(error);
+    }
+    for (const path of scan.files) {
+      let parsed: SessionParseResult;
+      try {
+        // Parsed directly, not via parseFile: a nested file with line
+        // errors is refused as a whole (see validateChildTranscript), so
+        // its raw line errors are not reported as ordinary parse errors.
+        parsed = parseSession(await readFile(path), path);
+      } catch (error) {
+        if (!isMissing(error)) throw error;
+        const warning: SessionParseError = {
+          line: 0,
+          message: `session file disappeared before it could be read: ${path} (ENOENT)`,
+          path,
+        };
+        this.parseErrors.push(warning);
+        this.onError?.(warning);
+        continue;
+      }
+      const checked = validateChildTranscript(parsed, path);
+      if (!checked.valid) {
+        refusedNested.push({
+          path,
+          reason: checked.reason,
+          ...(checked.claimedId === undefined
+            ? {}
+            : { claimedId: checked.claimedId }),
+        });
+        const error: SessionParseError = {
+          line: 1,
+          message: checked.reason,
+          path,
+        };
+        this.parseErrors.push(error);
+        this.onError?.(error);
+        continue;
+      }
+      if (parsed.header?.id === sessionId) matches.push({ path, parsed });
+    }
+    return { matches, refusedNested };
   }
 
   async read(request: SessionReadRequest): Promise<Event[]> {
     assertPlainUuid(request.id);
     this.parseErrors = [];
 
-    const found = await this.findSessionPath(request.id);
+    const { matches, refusedNested } = await this.resolveSessionPaths(
+      request.id,
+    );
+    const found = matches[0];
     if (found === undefined) {
+      // A nested file that claimed this id but failed validation is a
+      // refusal with its stated reason, not an unknown id and never a
+      // half-parsed or empty session.
+      const claimed = refusedNested.find(
+        (refused) => refused.claimedId === request.id,
+      );
+      if (claimed !== undefined) {
+        throw new Error(
+          `Refusing to read session ${request.id}: ${claimed.reason}`,
+        );
+      }
       throw new Error(`Unknown session id: ${request.id}`);
     }
     const start =

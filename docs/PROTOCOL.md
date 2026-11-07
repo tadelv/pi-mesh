@@ -394,6 +394,14 @@ A session whose header `id` is not a UUID cannot be addressed and is not
 listed; that skip is reported rather than silent, because Pi permits a
 caller-supplied session id and such sessions are real.
 
+A run's child transcript (`<parent-session-stem>/<uuid>/run-0/session.jsonl`
+under the same `--*--` directory) is not listed: it is detail of a run, not
+a top-level session, and listing it would change discovery order and the rule
+that a listed id names a root transcript. It is addressable by its header id
+through `session.read`, which serves it only when fully valid (complete
+header, UUID id, no truncation, at least one entry) and otherwise refuses
+with the reason; a path resolving outside the sessions root is refused.
+
 There is deliberately no `status` and no `ended_at`. Pi's session format
 records no lifecycle state, so neither is derivable; a field that is always
 `"unknown"` looks like data while carrying none, which is the same defect as

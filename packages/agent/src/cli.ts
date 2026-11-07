@@ -333,6 +333,7 @@ async function start(
     browser = browsePeers(registry, {
       profile,
       ...(bonjour === undefined ? {} : { bonjour }),
+      log: (line) => io.stderr.write(`${line}\n`),
       onPeer: (peer: PeerRecord) =>
         io.stdout.write(`${JSON.stringify(peer)}\n`),
     });

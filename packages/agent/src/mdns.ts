@@ -148,6 +148,8 @@ export interface BrowseOptions {
   profile?: NetworkProfile;
   intervalMs?: number;
   onPeer?: (peer: PeerRecord) => void;
+  /** Every sighting, so "the peer is not there" can be told from "we never heard it". */
+  log?: (line: string) => void;
 }
 
 export interface BrowseHandle {
@@ -182,6 +184,9 @@ export function browsePeers(
       const browser = bonjour.find(
         { type: toBonjourServiceName(serviceType) },
         (service) => {
+          options.log?.(
+            `mdns: saw ${serviceType} name=${service.name ?? "?"} host=${service.host ?? "?"} port=${service.port ?? "?"} addresses=${(service.addresses ?? []).join("|") || "none"}`,
+          );
           const peer = discoveredPeer(service, peerServiceType);
           if (peer === undefined) {
             return;

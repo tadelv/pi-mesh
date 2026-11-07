@@ -42,6 +42,17 @@ export interface BonjourPublishOptions {
   txt: Record<string, string>;
 }
 
+/**
+ * What `publish()` returns when the library completed the announce: a
+ * bonjour-service `Service` emits `up` after its probe/announce round
+ * (`lib/registry.js:105`) and `down` when withdrawn. A publish that never
+ * reaches `up` is a machine that answers nobody - and until this was observed
+ * there was no way to tell that from a peer that simply was not there.
+ */
+export interface BonjourPublishedLike {
+  on?: (event: "up" | "down", listener: () => void) => void;
+}
+
 export interface BonjourDiscoveredService {
   name?: string;
   host?: string;
@@ -85,6 +96,8 @@ export async function publishAgent(
     bonjour?: BonjourLike;
     profile?: NetworkProfile;
     swarmKey?: Uint8Array;
+    /** Where the announce is reported; silence in this path used to be invisible. */
+    log?: (line: string) => void;
   } = {},
 ): Promise<{ stop: () => Promise<void> }> {
   const profile = options.profile ?? descriptor.profile ?? "lan";
@@ -97,14 +110,31 @@ export async function publishAgent(
   }
 
   const bonjour = options.bonjour ?? new Bonjour();
-  bonjour.publish({
+  const txt = buildAgentTxtRecord(descriptor);
+  const published = bonjour.publish({
     // bonjour-service composes `_<name>._<protocol>` itself. The DNS-SD
     // constant must therefore be converted to its bare service name.
     type: toBonjourServiceName(SERVICE_TYPE_MESH),
     name: descriptor.name,
     port: descriptor.port,
-    txt: buildAgentTxtRecord(descriptor),
-  });
+    txt,
+  }) as BonjourPublishedLike | undefined;
+  const log = options.log;
+  if (log !== undefined) {
+    log(
+      `mdns: published ${SERVICE_TYPE_MESH} name=${descriptor.name} port=${descriptor.port} caps=${descriptor.capabilities.length} txt=${Object.keys(txt).join(",")}`,
+    );
+    if (typeof published?.on === "function") {
+      published.on("up", () =>
+        log(`mdns: announced ${descriptor.name} (probe complete)`),
+      );
+      published.on("down", () => log(`mdns: withdrawn ${descriptor.name}`));
+    } else {
+      log(
+        `mdns: ${descriptor.name}: publish returned no event handle, so the announce cannot be observed`,
+      );
+    }
+  }
 
   return {
     stop: async () => {

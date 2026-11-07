@@ -66,6 +66,57 @@ const descriptor = {
 };
 
 describe("agent mDNS", () => {
+  it("reports the announce, so a mute advertiser is not invisible", async () => {
+    // artemis answered no mDNS query for 53 hours while its agent ran and served
+    // HTTP, and nothing in the log said so: publish() was called and its result
+    // was dropped. The announce event is the one fact that separates "this
+    // machine is announcing" from "this machine is silent".
+    const lines: string[] = [];
+    let announce: (() => void) | undefined;
+    const bonjour: BonjourLike = {
+      publish: () => ({
+        on: (event: "up" | "down", listener: () => void) => {
+          if (event === "up") announce = listener;
+        },
+      }),
+      find: () => new FakeBrowser(),
+      destroy: () => {},
+    };
+
+    await publishAgent(descriptor, {
+      bonjour,
+      swarmKey: new Uint8Array(32),
+      log: (line) => lines.push(line),
+    });
+    expect(lines[0]).toContain("mdns: published");
+    expect(lines[0]).toContain("caps=2");
+    expect(
+      lines.some((line) => line.includes("announced")),
+      "nothing claims an announce before the probe completes",
+    ).toBe(false);
+
+    expect(announce).toBeTypeOf("function");
+    announce?.();
+    expect(
+      lines.some((line) => line.includes("mdns: announced Agent 1")),
+      "the probe completing is reported",
+    ).toBe(true);
+  });
+
+  it("says so when the library gives no way to observe the announce", async () => {
+    const lines: string[] = [];
+    const bonjour = new FakeBonjour();
+    await publishAgent(descriptor, {
+      bonjour,
+      swarmKey: new Uint8Array(32),
+      log: (line) => lines.push(line),
+    });
+    expect(
+      lines.some((line) => line.includes("cannot be observed")),
+      "a library without an event handle is reported, not assumed fine",
+    ).toBe(true);
+  });
+
   it("publishes the mesh record using bonjour's bare service name", async () => {
     const bonjour = new FakeBonjour();
 

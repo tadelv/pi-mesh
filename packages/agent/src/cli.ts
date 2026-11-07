@@ -250,7 +250,14 @@ async function start(
   }
 
   const registry = io.registry ?? new PeerRegistry();
+  // One instance per job. Sharing one Bonjour between the advertisement and the
+  // browser is what a machine (artemis, 2026-11-07) was doing while it answered
+  // no query at all: a mute advertiser is indistinguishable from an absent peer,
+  // and the browse half kept working. An injected instance (tests) is used for
+  // both, because a fixture wants to observe the two paths together.
   const bonjour =
+    profile === "public" ? undefined : (io.bonjour ?? new Bonjour());
+  const publishBonjour =
     profile === "public" ? undefined : (io.bonjour ?? new Bonjour());
   let server: Awaited<ReturnType<typeof createAgentServer>> | undefined;
   let advertisement: Awaited<ReturnType<typeof publishAgent>> | undefined;
@@ -317,7 +324,8 @@ async function start(
         {
           profile,
           swarmKey,
-          ...(bonjour === undefined ? {} : { bonjour }),
+          ...(publishBonjour === undefined ? {} : { bonjour: publishBonjour }),
+          log: (line) => io.stderr.write(`${line}\n`),
         },
       );
     }

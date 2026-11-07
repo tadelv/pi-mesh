@@ -5593,3 +5593,486 @@ test("an agent without mesh.watch keeps a working sync button", async ({
     }
   }
 });
+
+// A stub agent serving the watch-driven session list. The pushed frames below
+// arrive as held-stream deltas, so every list change the tests observe came
+// down the watch broadcast rather than a sync or a re-list.
+async function startFlickerStub(
+  sessions: Array<{
+    id: string;
+    project: string;
+    name?: string;
+    started_at: string;
+    updated_at: string;
+  }>,
+) {
+  const watchPushers: Array<(frame: unknown) => void> = [];
+  const stub: Server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://stub");
+    if (
+      request.method === "GET" &&
+      url.pathname === "/.well-known/agent-card.json"
+    ) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          name: "flicker-agent",
+          skills: [
+            "mesh.watch",
+            "session.list",
+            "session.read",
+            "process.list",
+          ].map((id) => ({ id, name: id, description: "", tags: [] })),
+        }),
+      );
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/") {
+      let body = "";
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        const rpc = JSON.parse(body) as {
+          id: unknown;
+          method: string;
+          params?: {
+            message?: { parts?: Array<{ data?: { skill?: string } }> };
+          };
+        };
+        const reply = (result: unknown): void => {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: rpc.id,
+              result: { message: { parts: [{ data: { result } }] } },
+            }),
+          );
+        };
+        const skill = rpc.params?.message?.parts?.[0]?.data?.skill;
+        if (rpc.method === "message/send" && skill === "session.list") {
+          reply({ sessions });
+          return;
+        }
+        if (rpc.method === "message/send" && skill === "process.list") {
+          reply({ jobs: [] });
+          return;
+        }
+        if (rpc.method === "message/send" && skill === "session.read") {
+          reply({ entries: [] });
+          return;
+        }
+        if (rpc.method === "message/stream" && skill === "mesh.watch") {
+          response.writeHead(200, {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-cache",
+            connection: "keep-alive",
+          });
+          const send = (payload: unknown): void => {
+            if (!response.destroyed)
+              response.write(`data: ${JSON.stringify(payload)}\n\n`);
+          };
+          send({ task: { id: "watch-task" } });
+          const push = (frame: unknown): void =>
+            send({ message: { parts: [{ data: { result: frame } }] } });
+          push({ type: "snapshot", sessions, jobs: [] });
+          watchPushers.push(push);
+          response.once("close", () => {
+            const index = watchPushers.indexOf(push);
+            if (index !== -1) watchPushers.splice(index, 1);
+          });
+          return;
+        }
+        reply({});
+      });
+      return;
+    }
+    response.writeHead(404);
+    response.end("unknown");
+  });
+  await new Promise<void>((resolve) => stub.listen(0, "127.0.0.1", resolve));
+  return { stub, watchPushers };
+}
+
+test("a watch refresh keeps the hovered and selected rows as the same nodes", async ({
+  browser,
+}) => {
+  // The flicker clause: with ~15 watch events per second the old list rebuilt
+  // every row on every event, destroying the node under the cursor. Here one
+  // change for a DIFFERENT session arrives while session A is hovered,
+  // selected and text-selected; the row must still be the same connected
+  // node afterwards, still hovered, still selected, selection intact.
+  const timestamp = new Date(0).toISOString();
+  const project = "/work/flicker";
+  const sessions = [
+    {
+      id: "session-a",
+      project,
+      name: "Session A",
+      started_at: timestamp,
+      updated_at: timestamp,
+    },
+    {
+      id: "session-b",
+      project,
+      name: "Session B",
+      started_at: timestamp,
+      updated_at: timestamp,
+    },
+  ];
+  const { stub, watchPushers } = await startFlickerStub(sessions);
+  const stubPort = (stub.address() as { port: number }).port;
+  const store = new ControlStore(":memory:");
+  store.controlName("Flicker Control");
+  store.upsertAgent({
+    peer_id: "peer-flicker",
+    name: "Flicker Agent",
+    host: "127.0.0.1",
+    port: stubPort,
+    credential: Buffer.alloc(32, 5).toString("base64"),
+    paired_at: timestamp,
+  });
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const page = await browser.newPage();
+  try {
+    const { port } = await control.start();
+    await page.addInitScript(
+      (dashboardToken) => localStorage.setItem("pi_mesh_token", dashboardToken),
+      store.dashboardToken(),
+    );
+    await page.goto(`http://127.0.0.1:${port}`);
+    await expect(
+      page.getByRole("heading", { name: "Flicker Control" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Sync", exact: true }).click();
+    await expect(page.locator("#session-list")).toContainText("Session A");
+    await expandGroup(page, project);
+    const rowA = page.getByRole("button", { name: /Session A/ });
+    await rowA.click();
+    await expect(
+      page.getByRole("heading", { name: "Session A" }),
+    ).toBeVisible();
+    // Hover first: the mouse stays over the row for the rest of the test.
+    await rowA.hover();
+    expect(
+      await rowA.evaluate((el) => el.matches(":hover")),
+      "positive control: the row is hovered before the change",
+    ).toBe(true);
+    const before = await rowA.elementHandle();
+    expect(before, "positive control: the row handle exists").not.toBeNull();
+    // A text selection inside the row, as an operator copying a session id.
+    await page.evaluate(() => {
+      const name = document.querySelector(
+        'button.session-link[title="session-a"] .session-name',
+      );
+      const range = document.createRange();
+      range.selectNodeContents(name!);
+      const selection = document.getSelection();
+      selection?.removeAllRanges();
+      selection?.addRange(range);
+    });
+    expect(
+      await page.evaluate(() => document.getSelection()?.toString()),
+      "positive control: the selection is in the row before the change",
+    ).toBe("Session A");
+    // A change for a DIFFERENT session: session B is renamed over the watch.
+    // The rename keeps the same updated_at, so the recency order is stable
+    // and the hovered row has no reason to move: only B's text changes.
+    const renamed = {
+      id: "session-b",
+      project,
+      name: "Session B renamed",
+      started_at: timestamp,
+      updated_at: timestamp,
+    };
+    sessions[1] = renamed;
+    for (const push of [...watchPushers])
+      push({ type: "updated", session: renamed });
+    await expect(
+      page.locator("#session-list"),
+      "watch delivery clause: the other session refreshes the list",
+    ).toContainText("Session B renamed");
+    const connected = await before!.evaluate((el) => el.isConnected);
+    expect(
+      connected,
+      "flicker clause: the hovered row stays connected across a refresh",
+    ).toBe(true);
+    const same = await before!.evaluate(
+      (el) =>
+        el === document.querySelector('button.session-link[title="session-a"]'),
+    );
+    expect(
+      same,
+      "flicker clause: the hovered row is the same node after a refresh",
+    ).toBe(true);
+    expect(
+      await before!.evaluate((el) => el.matches(":hover")),
+      "flicker clause: hover survives the refresh",
+    ).toBe(true);
+    expect(
+      await before!.evaluate((el) => el.getAttribute("aria-current")),
+      "flicker clause: the selected row stays selected after a refresh",
+    ).toBe("true");
+    const selection = await page.evaluate(() => ({
+      text: document.getSelection()?.toString() ?? "",
+      connected: !!document.getSelection()?.anchorNode?.isConnected,
+    }));
+    expect(
+      selection.text,
+      "flicker clause: the text selection survives the refresh",
+    ).toBe("Session A");
+    expect(
+      selection.connected,
+      "flicker clause: the selection anchor stays connected",
+    ).toBe(true);
+  } finally {
+    await page.close().catch(() => undefined);
+    try {
+      await control.stop();
+    } finally {
+      store.close();
+      await new Promise<void>((resolve) => stub.close(() => resolve()));
+    }
+  }
+});
+
+test("a burst of watch frames costs far fewer browser refreshes than frames", async ({
+  browser,
+}) => {
+  // The event-rate clause: 20 frames pushed in one tick must not cost 20
+  // re-fetches. The server coalesces the burst into one broadcast and the
+  // client schedules one refresh per frame; the list still ends up exact.
+  const timestamp = new Date(0).toISOString();
+  const project = "/work/burst";
+  const sessions: Array<{
+    id: string;
+    project: string;
+    name: string;
+    started_at: string;
+    updated_at: string;
+  }> = [
+    {
+      id: "session-seed",
+      project,
+      name: "Seed session",
+      started_at: timestamp,
+      updated_at: timestamp,
+    },
+  ];
+  const { stub, watchPushers } = await startFlickerStub(sessions);
+  const stubPort = (stub.address() as { port: number }).port;
+  const store = new ControlStore(":memory:");
+  store.controlName("Burst Control");
+  store.upsertAgent({
+    peer_id: "peer-burst",
+    name: "Burst Agent",
+    host: "127.0.0.1",
+    port: stubPort,
+    credential: Buffer.alloc(32, 6).toString("base64"),
+    paired_at: timestamp,
+  });
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const page = await browser.newPage();
+  try {
+    const { port } = await control.start();
+    await page.addInitScript(
+      (dashboardToken) => localStorage.setItem("pi_mesh_token", dashboardToken),
+      store.dashboardToken(),
+    );
+    await page.addInitScript(() => {
+      (window as unknown as { __stateReads: number }).__stateReads = 0;
+      const original = window.fetch.bind(window);
+      window.fetch = (async (...args: Parameters<typeof fetch>) => {
+        const response = await original(...args);
+        try {
+          const raw = args[0];
+          const url = new URL(
+            typeof raw === "string" ? raw : raw.url,
+            location.href,
+          );
+          if (url.pathname === "/api/state")
+            (window as unknown as { __stateReads: number }).__stateReads += 1;
+        } catch {
+          // A relative-URL edge never blocks the wrapped fetch.
+        }
+        return response;
+      }) as typeof fetch;
+    });
+    await page.goto(`http://127.0.0.1:${port}`);
+    await expect(
+      page.getByRole("heading", { name: "Burst Control" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Sync", exact: true }).click();
+    await expect(page.locator("#session-list")).toContainText("Seed session");
+    await expandGroup(page, project);
+    // Let the subscribe-time broadcast flush through, then count only the
+    // burst: without the settle, the subscription's own live mark would
+    // spend the budget this burst owns.
+    await page.waitForTimeout(500);
+    await page.evaluate(() => {
+      (window as unknown as { __stateReads: number }).__stateReads = 0;
+    });
+    const burst = Array.from({ length: 20 }, (_, i) => ({
+      id: `burst-${i}`,
+      project,
+      name: `Burst ${i}`,
+      started_at: timestamp,
+      updated_at: timestamp,
+    }));
+    sessions.push(...burst);
+    for (const session of burst)
+      for (const push of [...watchPushers]) push({ type: "added", session });
+    await expect(
+      page.locator("#session-list"),
+      "burst clause: every pushed session lands in the list",
+    ).toContainText("Burst 19");
+    await expect(
+      page.locator("#session-list button.session-link"),
+      "burst clause: no rows lost or duplicated",
+    ).toHaveCount(21);
+    for (const sample of ["burst-0", "burst-7", "burst-19"])
+      await expect(
+        page.locator(`#session-list button.session-link[title="${sample}"]`),
+        `burst clause: ${sample} appears exactly once`,
+      ).toHaveCount(1);
+    const reads = await page.evaluate(
+      () => (window as unknown as { __stateReads: number }).__stateReads,
+    );
+    expect(
+      reads,
+      `burst clause: 20 frames in one tick cost far fewer than 20 re-fetches (cost ${reads})`,
+    ).toBeLessThanOrEqual(3);
+  } finally {
+    await page.close().catch(() => undefined);
+    try {
+      await control.stop();
+    } finally {
+      store.close();
+      await new Promise<void>((resolve) => stub.close(() => resolve()));
+    }
+  }
+});
+
+test("an added session appears and a removed one leaves without rebuilding rows", async ({
+  browser,
+}) => {
+  // The keyed-reuse clause: membership changes insert or remove only their
+  // own node. An existing row's handle stays the same connected node across
+  // both an add and a remove of other sessions.
+  const timestamp = new Date(0).toISOString();
+  const project = "/work/membership";
+  const sessions: Array<{
+    id: string;
+    project: string;
+    name: string;
+    started_at: string;
+    updated_at: string;
+  }> = [
+    {
+      id: "session-keep",
+      project,
+      name: "Kept session",
+      started_at: timestamp,
+      updated_at: timestamp,
+    },
+  ];
+  const { stub, watchPushers } = await startFlickerStub(sessions);
+  const stubPort = (stub.address() as { port: number }).port;
+  const store = new ControlStore(":memory:");
+  store.controlName("Membership Control");
+  store.upsertAgent({
+    peer_id: "peer-membership",
+    name: "Membership Agent",
+    host: "127.0.0.1",
+    port: stubPort,
+    credential: Buffer.alloc(32, 7).toString("base64"),
+    paired_at: timestamp,
+  });
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const page = await browser.newPage();
+  try {
+    const { port } = await control.start();
+    await page.addInitScript(
+      (dashboardToken) => localStorage.setItem("pi_mesh_token", dashboardToken),
+      store.dashboardToken(),
+    );
+    await page.goto(`http://127.0.0.1:${port}`);
+    await expect(
+      page.getByRole("heading", { name: "Membership Control" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Sync", exact: true }).click();
+    await expect(page.locator("#session-list")).toContainText("Kept session");
+    await expandGroup(page, project);
+    const kept = await page
+      .getByRole("button", { name: /Kept session/ })
+      .elementHandle();
+    const added = {
+      id: "session-added",
+      project,
+      name: "Added session",
+      started_at: timestamp,
+      updated_at: timestamp,
+    };
+    sessions.push(added);
+    for (const push of [...watchPushers])
+      push({ type: "added", session: added });
+    await expect(
+      page.locator("#session-list"),
+      "membership clause: the added session appears in its group",
+    ).toContainText("Added session");
+    expect(
+      await kept!.evaluate((el) => el.isConnected),
+      "membership clause: an existing row survives an add",
+    ).toBe(true);
+    expect(
+      await kept!.evaluate(
+        (el) =>
+          el ===
+          document.querySelector('button.session-link[title="session-keep"]'),
+      ),
+      "membership clause: an add does not rebuild an existing row",
+    ).toBe(true);
+    const addedHandle = await page
+      .getByRole("button", { name: /Added session/ })
+      .elementHandle();
+    const removedIndex = sessions.findIndex(
+      (session) => session.id === "session-added",
+    );
+    sessions.splice(removedIndex, 1);
+    for (const push of [...watchPushers])
+      push({ type: "removed", id: "session-added" });
+    await expect(
+      page.locator("#session-list"),
+      "membership clause: the removed session disappears",
+    ).not.toContainText("Added session");
+    await expect(
+      page.locator("#session-list"),
+      "membership clause: the kept session is still listed",
+    ).toContainText("Kept session");
+    expect(
+      await addedHandle!.evaluate((el) => el.isConnected),
+      "membership clause: the removed row is detached",
+    ).toBe(false);
+    expect(
+      await kept!.evaluate((el) => el.isConnected),
+      "membership clause: an existing row survives a remove",
+    ).toBe(true);
+    expect(
+      await kept!.evaluate(
+        (el) =>
+          el ===
+          document.querySelector('button.session-link[title="session-keep"]'),
+      ),
+      "membership clause: a remove does not rebuild an existing row",
+    ).toBe(true);
+  } finally {
+    await page.close().catch(() => undefined);
+    try {
+      await control.stop();
+    } finally {
+      store.close();
+      await new Promise<void>((resolve) => stub.close(() => resolve()));
+    }
+  }
+});

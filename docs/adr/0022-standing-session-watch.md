@@ -1,6 +1,6 @@
 # ADR 0022 - The control plane watches; the sync button stops being the operator's job
 
-Status: proposed, revised after a plan review (the review's findings and the
+Status: accepted (operator chose push over the polling fallback); revised after a plan review (the review's findings and the
 corrections are recorded in "Review corrections" below)
 
 ## Context

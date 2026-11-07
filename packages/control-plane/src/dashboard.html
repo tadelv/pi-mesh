@@ -390,11 +390,43 @@
       return (session.name+' '+session.session_id+' '+session.project+' '+(agent?.name || '')).toLowerCase().includes(term);
     }).sort((a,b) => Date.parse(b.updated_at) - Date.parse(a.updated_at));
   }
+  // Keyed session-list nodes, reused across re-renders so a watch burst does
+  // not destroy the node under the cursor: :hover, focus, text selection and
+  // the <details> open state survive a refresh that changes nothing under
+  // them, because only text that changed is rewritten and only rows that
+  // appeared or disappeared are inserted or removed.
+  const agentLabelById = new Map();
+  const sessionGroupByKey = new Map();
+  const sessionRowByKey = new Map();
+  let sessionEmptyNote = null;
+  // Move-only-when-needed: even appending an already-placed node counts as
+  // a DOM mutation and drops :hover and focus on it, so unchanged order
+  // costs zero mutations and the node under the cursor is never touched.
+  function placeAfter(parent, node, prev) {
+    const anchor = prev === null ? parent.firstChild : prev.nextSibling;
+    if(anchor !== node) parent.insertBefore(node, anchor);
+  }
   function renderSessions() {
-    sessionList.replaceChildren();
     if(!state) return;
     const sessions = visibleSessions();
-    if(!sessions.length) { node('p', state.sessions.length ? 'No sessions match this search.' : 'No sessions synced yet.', sessionList).className = 'empty'; return; }
+    if(sessionEmptyNote && !sessionEmptyNote.isConnected) sessionEmptyNote = null;
+    if(!sessions.length) {
+      for(const row of sessionRowByKey.values()) row.button.remove();
+      sessionRowByKey.clear();
+      for(const group of sessionGroupByKey.values()) group.details.remove();
+      sessionGroupByKey.clear();
+      for(const label of agentLabelById.values()) label.remove();
+      agentLabelById.clear();
+      if(!sessionEmptyNote) {
+        sessionEmptyNote = document.createElement('p');
+        sessionEmptyNote.className = 'empty';
+        sessionList.append(sessionEmptyNote);
+      }
+      const text = state.sessions.length ? 'No sessions match this search.' : 'No sessions synced yet.';
+      if(sessionEmptyNote.textContent !== text) sessionEmptyNote.textContent = text;
+      return;
+    }
+    if(sessionEmptyNote) { sessionEmptyNote.remove(); sessionEmptyNote = null; }
     // Grouped by agent, then by the session's FULL project path: the full
     // path is the group key because two checkouts can share a basename.
     // Insertion order follows the recency sort, so the newest session's
@@ -407,40 +439,107 @@
       projects.get(session.project).push(session);
     }
     const term = document.querySelector('#search').value.trim();
+    const seenLabels = new Set();
+    const seenGroups = new Set();
+    const seenRows = new Set();
+    let prevPlaced = null;
     for(const [agentId, projects] of agents) {
+      seenLabels.add(agentId);
       const agent = state.agents.find(candidate => candidate.peer_id === agentId);
-      node('div', agent?.name || agentId, sessionList).className = 'agent-label';
+      const labelText = agent?.name || agentId;
+      let label = agentLabelById.get(agentId);
+      if(!label || !label.isConnected) {
+        label = document.createElement('div');
+        label.className = 'agent-label';
+        agentLabelById.set(agentId, label);
+      }
+      if(label.textContent !== labelText) label.textContent = labelText;
+      // Iterating in recency order keeps the visible order without ever
+      // rebuilding the container; an already-placed node is not moved.
+      placeAfter(sessionList, label, prevPlaced);
+      prevPlaced = label;
       for(const [project, grouped] of projects) {
-        const details = node('details', undefined, sessionList);
-        details.className = 'session-group';
         const key = agentId+'\0'+project;
+        seenGroups.add(key);
+        let group = sessionGroupByKey.get(key);
+        if(!group || !group.details.isConnected) {
+          const details = document.createElement('details');
+          details.className = 'session-group';
+          const summary = document.createElement('summary');
+          // Click runs before the default toggle, so details.open is still
+          // the pre-toggle state: open means the operator is collapsing.
+          // Keyboard Enter/Space on a summary fires click too, so this stays
+          // accessible.
+          summary.addEventListener('click', () => { if(details.open) expandedGroups.delete(key); else expandedGroups.add(key); });
+          details.append(summary);
+          group = {details, summary};
+          sessionGroupByKey.set(key, group);
+        }
         const selectedInside = grouped.some(session => selected?.agentId === session.agent_id && selected?.sessionId === session.session_id);
         // Open only while the group holds the selected session, while the
         // operator is narrowing the list, or while the operator's own
         // expansion stands. Selection never rewrites that memory: once the
         // selection leaves, a group the operator did not expand closes again.
-        details.open = term !== '' || selectedInside || expandedGroups.has(key);
-        const summary = node('summary', basename(project)+' ('+grouped.length+')', details);
-        summary.title = project;
-        // Click runs before the default toggle, so details.open is still the
-        // pre-toggle state: open means the operator is collapsing. Keyboard
-        // Enter/Space on a summary fires click too, so this stays accessible.
-        summary.addEventListener('click', () => { if(details.open) expandedGroups.delete(key); else expandedGroups.add(key); });
+        const wantOpen = term !== '' || selectedInside || expandedGroups.has(key);
+        if(group.details.open !== wantOpen) group.details.open = wantOpen;
+        const headerText = basename(project)+' ('+grouped.length+')';
+        if(group.summary.textContent !== headerText) group.summary.textContent = headerText;
+        if(group.summary.title !== project) group.summary.title = project;
+        placeAfter(sessionList, group.details, prevPlaced);
+        prevPlaced = group.details;
+        let prevRow = group.summary;
         for(const session of grouped) {
-          const button = node('button', undefined, details);
-          button.type = 'button';
-          button.className = 'session-link';
-          button.title = session.session_id;
-          button.setAttribute('aria-current', selected?.agentId === session.agent_id && selected?.sessionId === session.session_id ? 'true' : 'false');
+          const rowKey = session.agent_id+'\0'+session.session_id;
+          seenRows.add(rowKey);
+          let row = sessionRowByKey.get(rowKey);
+          if(!row || !row.button.isConnected) {
+            const button = document.createElement('button');
+            button.type = 'button';
+            button.className = 'session-link';
+            const name = document.createElement('span');
+            name.className = 'session-name';
+            const secondary = document.createElement('span');
+            secondary.className = 'session-project';
+            button.append(name, secondary);
+            button.addEventListener('click', () => void openSession(session.agent_id, session.session_id));
+            row = {button, name, secondary};
+            sessionRowByKey.set(rowKey, row);
+          }
+          const wantCurrent = selected?.agentId === session.agent_id && selected?.sessionId === session.session_id ? 'true' : 'false';
+          if(row.button.getAttribute('aria-current') !== wantCurrent) row.button.setAttribute('aria-current', wantCurrent);
+          if(row.button.title !== session.session_id) row.button.title = session.session_id;
           // Never only a UUID: the name when the session has one, else a
           // readable age. The short id stays visible as secondary text.
-          node('span', session.name || ago(session.updated_at), button).className = 'session-name';
-          node('span', session.session_id.slice(0, 8)+' \u00b7 '+basename(session.project), button).className = 'session-project';
-          button.addEventListener('click', () => void openSession(session.agent_id, session.session_id));
+          // Only rewritten text disturbs a selection, so equal text is left
+          // alone; age fallbacks are refreshed by the slow ticker below.
+          const wantName = session.name || ago(session.updated_at);
+          if(row.name.textContent !== wantName) row.name.textContent = wantName;
+          // dataset writes are attribute writes: only assign when the value
+          // actually changed, or the hovered row is mutated on every refresh.
+          const wantFallback = session.name ? '' : '1';
+          if(row.button.dataset.ageFallback !== wantFallback) row.button.dataset.ageFallback = wantFallback;
+          if(row.button.dataset.updatedAt !== session.updated_at) row.button.dataset.updatedAt = session.updated_at;
+          const wantSecondary = session.session_id.slice(0, 8)+' \u00b7 '+basename(session.project);
+          if(row.secondary.textContent !== wantSecondary) row.secondary.textContent = wantSecondary;
+          placeAfter(group.details, row.button, prevRow);
+          prevRow = row.button;
         }
       }
     }
+    for(const [rowKey, row] of sessionRowByKey) if(!seenRows.has(rowKey)) { row.button.remove(); sessionRowByKey.delete(rowKey); }
+    for(const [groupKey, group] of sessionGroupByKey) if(!seenGroups.has(groupKey)) { group.details.remove(); sessionGroupByKey.delete(groupKey); }
+    for(const [agentId, label] of agentLabelById) if(!seenLabels.has(agentId)) { label.remove(); agentLabelById.delete(agentId); }
   }
+  // Relative ages ("2 hours ago") must not drive re-renders: one slow
+  // interval rewrites only the age fallback text nodes, never the structure.
+  setInterval(() => {
+    if(!state) return;
+    for(const row of sessionRowByKey.values()) {
+      if(!row.button.isConnected || row.button.dataset.ageFallback !== '1') continue;
+      const want = ago(row.button.dataset.updatedAt);
+      if(row.name.textContent !== want) row.name.textContent = want;
+    }
+  }, 30000);
   function showMessage(parent, key) {
     const message = messages.get(key);
     if(message) node('p', message.text, parent).className = 'result';
@@ -1789,13 +1888,52 @@
     localStorage.setItem('pi_mesh_token', token); void connect();
   });
   // Push re-render (ADR 0022 §5): the control plane notifies this stream
-  // whenever a watch subscription applies frames. Each event re-reads
-  // /api/state through load(), which preserves selection, drafts and scroll
-  // position. EventSource cannot send the dashboard token as a header, and
-  // the token never goes in a URL (ADR 0014) - so this reads the stream with
-  // fetch, which can. A dropped stream backs off and reconnects; the durable
-  // state already on screen stays until the next event or Sync.
+  // whenever a watch subscription applies frames. Events only record their
+  // agent ids; one scheduled refresh per frame re-reads /api/state through
+  // load(), which preserves selection, drafts and scroll position. A burst of
+  // events in one frame costs one refresh, and an event naming nothing
+  // relevant costs none. EventSource cannot send the dashboard token as a
+  // header, and the token never goes in a URL (ADR 0014) - so this reads the
+  // stream with fetch, which can. A dropped stream backs off and reconnects;
+  // the durable state already on screen stays until the next event or Sync.
   let watching = false;
+  const pendingWatchAgents = new Set();
+  let pendingWatchUnknown = false;
+  let watchRefreshScheduled = false;
+  let watchRefreshTimer = null;
+  function scheduleWatchRefresh() {
+    if(watchRefreshScheduled) return;
+    watchRefreshScheduled = true;
+    const fire = () => {
+      if(!watchRefreshScheduled) return;
+      watchRefreshScheduled = false;
+      if(watchRefreshTimer !== null) { clearTimeout(watchRefreshTimer); watchRefreshTimer = null; }
+      void refreshFromWatch();
+    };
+    // One refresh per animation frame, however many events arrived; the
+    // trailing timer fires it even if frames never run (background tab) or a
+    // burst keeps arriving, so a burst cannot starve the refresh.
+    if(typeof requestAnimationFrame === 'function') requestAnimationFrame(fire);
+    if(watchRefreshTimer !== null) clearTimeout(watchRefreshTimer);
+    watchRefreshTimer = setTimeout(fire, 250);
+  }
+  async function refreshFromWatch() {
+    if(pendingWatchAgents.size === 0 && !pendingWatchUnknown) return;
+    pendingWatchAgents.clear();
+    pendingWatchUnknown = false;
+    try { await load(); } catch { /* a failed re-read keeps the last state */ }
+  }
+  function noteWatchEvent(data) {
+    const ids = [];
+    if(data && Array.isArray(data.agent_ids)) for(const id of data.agent_ids) if(typeof id === 'string' && id) ids.push(id);
+    if(data && typeof data.agent_id === 'string' && data.agent_id) ids.push(data.agent_id);
+    const namesAnything = ids.length > 0;
+    const namesNothing = !!data && (Array.isArray(data.agent_ids) || typeof data.agent_id === 'string') && !namesAnything;
+    if(!data || (!namesAnything && !namesNothing)) pendingWatchUnknown = true;
+    for(const id of ids) pendingWatchAgents.add(id);
+    if(pendingWatchAgents.size === 0 && !pendingWatchUnknown) return;
+    scheduleWatchRefresh();
+  }
   async function watchLoop() {
     let delay = 1000;
     for(;;) {
@@ -1805,7 +1943,7 @@
         if(!response.ok) throw new Error('watch stream unavailable: '+response.status);
         delay = 1000;
         for await (const item of readSse(response.body, null)) {
-          if(item.name === 'watch') { try { await load(); } catch { /* a failed re-read keeps the last state */ } }
+          if(item.name === 'watch') noteWatchEvent(item.data);
         }
       } catch { /* the last rendered state stays; retry below */ }
       await new Promise(resolve => setTimeout(resolve, delay));

@@ -103,20 +103,43 @@ export function createControlServer(
   // per-agent subscriptions below. A slow reader is disconnected, never
   // buffered without bound (the same rule as the session-stream route).
   const watchSinks = new Set<ServerResponse>();
+  /**
+   * Coalesced browser broadcast. Sessions on a busy agent can apply frames at
+   * ~15/s, and one SSE event per frame made every browser re-fetch
+   * /api/state and rebuild the session list at that rate. Changed agent ids
+   * collect in a pending set flushed at most once per WATCH_BROADCAST_MS; a
+   * frame arriving while a flush is pending joins that flush, not a new one.
+   * `agent_id` repeats the first id so older readers keep working.
+   */
+  const WATCH_BROADCAST_MS = 150;
+  const watchPendingAgents = new Set<string>();
+  let watchFlushTimer: NodeJS.Timeout | null = null;
   function broadcastWatch(agentId: string): void {
-    const data = JSON.stringify({ agent_id: agentId });
-    for (const sink of [...watchSinks]) {
-      if (sink.writableEnded || sink.destroyed) {
-        watchSinks.delete(sink);
-        continue;
+    watchPendingAgents.add(agentId);
+    if (watchFlushTimer !== null) return;
+    watchFlushTimer = setTimeout(() => {
+      watchFlushTimer = null;
+      const changed = [...watchPendingAgents];
+      watchPendingAgents.clear();
+      if (changed.length === 0) return;
+      const data = JSON.stringify({
+        agent_ids: changed,
+        agent_id: changed[0],
+      });
+      for (const sink of [...watchSinks]) {
+        if (sink.writableEnded || sink.destroyed) {
+          watchSinks.delete(sink);
+          continue;
+        }
+        if (sink.writableLength > MAX_SUBSCRIBER_BUFFER) {
+          watchSinks.delete(sink);
+          sink.destroy();
+          continue;
+        }
+        sink.write(`event: watch\ndata: ${data}\n\n`);
       }
-      if (sink.writableLength > MAX_SUBSCRIBER_BUFFER) {
-        watchSinks.delete(sink);
-        sink.destroy();
-        continue;
-      }
-      sink.write(`event: watch\ndata: ${data}\n\n`);
-    }
+    }, WATCH_BROADCAST_MS);
+    watchFlushTimer.unref?.();
   }
   /**
    * One agent's listing through the same code as the manual sync (ADR 0022
@@ -932,6 +955,13 @@ export function createControlServer(
       // boundary", so shutdown closes them explicitly (ADR 0022 §5).
       watch.closeAll();
       streams.closeAll();
+      // A pending browser flush must not fire after shutdown into torn-down
+      // sockets; the next start re-arms the timer on the next frame.
+      if (watchFlushTimer !== null) {
+        clearTimeout(watchFlushTimer);
+        watchFlushTimer = null;
+      }
+      watchPendingAgents.clear();
       await new Promise<void>((resolve, reject) => {
         server.close((error) =>
           error === undefined ? resolve() : reject(error),

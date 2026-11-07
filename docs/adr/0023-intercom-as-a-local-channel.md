@@ -1,6 +1,6 @@
 # ADR 0023 - pi-intercom is a local channel, never a mesh transport
 
-Status: proposed (operator asked for intercom-based steering; this is the shape
+Status: accepted (operator asked for intercom-based steering; this is the shape
 the protocol actually supports)
 
 ## Context

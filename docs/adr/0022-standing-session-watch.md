@@ -141,6 +141,17 @@ The mirror is a cache, not authority (ADR 0015). Changing how it is refreshed do
 not make it authoritative, and nothing in the mesh depends on the control plane
 being present.
 
+## The runs and findings mirrors ride this watch (M8-7)
+
+M8-7 was written before this ADR and assumed the control plane would mirror runs
+and findings during a sync. Reusing this subscription instead is the operator's
+decision (2026-11-07): the bootstrap frame carries the agent's runs and findings
+with the sessions and jobs, run deltas are applied per row, and a findings frame
+replaces the previous set wholesale because it is the output of one evaluation
+pass and carries its `evaluated_at` and coverage. No second timer, no second
+subscription, no hidden re-list when the stream is down - an agent with no stream
+is unobserved, and the panel says so.
+
 ## Out of scope
 
 Transcript content in the browse view (ADR 0018's selected session), a findings

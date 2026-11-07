@@ -145,11 +145,47 @@ by name.
 shows runs with their liveness evidence and findings labelled with coverage and
 freshness. No control routes in this slice.
 
+**Decision (operator, 2026-11-07): reuse the watch plumbing, do not add a second
+refresh path.** This issue was written before ADR 0022 existed. The control plane
+already holds one `mesh.watch` subscription per agent, whose bootstrap frame is a
+complete snapshot and whose deltas are applied with per-row operations. Runs and
+findings ride that same subscription:
+
+- The bootstrap frame carries the agent's runs and findings alongside sessions and
+  jobs, so a newly connected agent needs no second round trip and no sync click.
+- Runs are **per-row** like sessions (`upsertRun`/`removeRun` semantics, never the
+  complete-listing path - the data-loss trap ADR 0022 §4 names).
+- Findings are a **set replaced wholesale per evaluation**, because they are
+  derived from one evaluation pass, and the frame carries that pass's
+  `evaluated_at` and per-agent coverage. A partial findings input must never be
+  read as "these are all the findings".
+- No new timer, no polling loop, no second subscription. If the watch stream is
+  unavailable for an agent, the panel says the agent is unobserved; it does not
+  fall back to a hidden re-list.
+- `run.list` and `run.findings` are ungated peer reads, so carrying them over the
+  watch adds no grant and no principal: the subscription is already signed with
+  the paired credential (ADR 0007) and watching is not executing (ADR 0022 §6).
+
+Implementation split, in the order that keeps each step testable:
+1. `packages/agent/src/watch.ts` + `packages/protocol`: extend the bootstrap frame
+   and add the run/findings frame type, with the same bounded-buffer discipline.
+2. `packages/control-plane`: per-row run application, whole-set findings
+   application, coverage and `evaluated_at` stored with the mirror.
+3. `dashboard.html`: the panel, keyed reuse (a refresh must not rebuild the rows -
+   the flicker fix applies here too), age and coverage rendered as facts.
+
 **DoD:** a mirrored snapshot is labelled with its age and coverage and never
 presented as current (a cached row cannot render as fresh - the test fails by name
 when the freshness stamp is removed); a run for agent A cannot render under agent
 B; an agent whose discovery failed renders as unobserved rather than healthy; the
 ADR 0013 guard test passes unchanged, and no control route exists yet.
+
+Plus, from the reuse decision: the panel is fed by the same subscription as the
+session list (a test fails if a second refresh mechanism appears); a run delta is
+applied without deleting the agent's other runs; a findings frame replaces the
+previous set and its absence is not rendered as "no findings"; and a refresh
+reuses the existing panel rows, so hovering or selecting one survives - the same
+clause the session list now has.
 
 ### M8-8 - run control behind the folded grant
 

@@ -190,6 +190,22 @@ were condensed here; the operational lessons that came out of them are in
 Things the documents describe or the ADRs decided, but that the code does not
 do. Listed so a design is not read as a capability.
 
+- **Row deltas instead of "something changed, re-read it"** — the dashboard's
+  watch stream coalesces to at most one event per 150ms and patches the list in
+  place, so it is smooth, but each event still carries only *which agent
+  changed*: the browser answers by fetching the whole `/api/state` (690 sessions,
+  60-90ms) and diffing it against what it last rendered. On one trusted LAN at
+  this size that is invisible. The next step is to put the delta in the event -
+  the session row that appeared, changed or was removed, plus a monotonic
+  sequence number so a gap forces one full refetch - and let the client patch
+  without a request at all. Measured need: 311 changes in 20s from one busy node
+  before coalescing; the refetch rate is bounded now, the payload is not small.
+  Worth doing when a fleet is busy enough that the bound is hit continuously, or
+  when a node's session count makes a full state read expensive. ADR 0022's
+  frame vocabulary (`snapshot`/`added`/`updated`/`removed`) already carries the
+  shape; what is missing is a browser-facing sequence and the client's
+  apply-and-patch path.
+
 - **`public` network profile** — a laptop on a hostile network (coffee shop,
   hotel, conference) participating without advertising or accepting inbound,
   finding peers through a trusted control plane (ADR 0004). Not implemented:

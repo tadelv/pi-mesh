@@ -158,9 +158,72 @@ where the grant is open, with the request semantics and code mapping of ADR 0021
 decision 2: status read first, a request id rather than a claimed outcome, and
 `-32109` for a closed inbox rather than an unhandled throw.
 
-**DoD:** with execution closed, both calls are `-32102` and **no file appears in
-any inbox** (positive control: with the grant open, exactly one request); a stop on
-a terminal run returns success and leaves the inbox untouched (positive control: a
+Refined after an independent review (plan-reviewer, 2026-11-07); the wire shape
+and the code split below are settled, and an implementation that invents a
+different one is wrong even if its tests pass.
+
+#### The contract
+
+- `run.stop`: `{ run_id: string }`. `run.steer`: `{ run_id: string, message: string }`.
+  Required strings non-blank, additional caller fields rejected. A steer message
+  is trimmed and bounded at 128 KiB, mirroring the runner's own validation
+  (`packages/runs/src/control.ts:177-193`). Never a path, a pid, a session
+  principal, or writer options.
+- Success: `{ run_id, request_id: string | null, requested: boolean, observed_state: RunState }`
+  where `request_id` is the committed filename without `.json` and no filesystem
+  path is exposed. A terminal run and a stop answer `requested:false,
+  request_id:null`; an accepted write answers `requested:true` with an id.
+  `observed_state` is an observation (`packages/runs/src/types.ts:13-28`), never a
+  claimed outcome: no `stopped`, no `delivered`.
+- Codes, pinned per refusal - and the two families are deliberately different:
+  - `-32102` execution grant closed (the existing gate);
+  - `-32108` unknown run;
+  - `-32109` `RUN_CONTROL_UNAVAILABLE`: no inbox, closed inbox, an unrecognised
+    **per-run** shape, a terminal steer, or an installed version outside the pin
+    (ADR 0021's table). Terminal-steer messages name the observed state;
+  - `-32004` the machine-level requirement: no recognised run layout at all, so
+    the skill is not served. This is the framework's requirement refusal and
+    applies to every skill alike; the skill should not be advertised in that
+    state, and a direct call reaching it gets the framework answer;
+  - `-32602` malformed input, and an ambiguous `run_id` ("two runs claim it") -
+    never resolved by picking one, the rule ADR 0016 already sets elsewhere;
+  - `-32603` status or inbox I/O failure.
+
+  ADR 0021's own entry lumps "unrecognised layout" into `-32109`, which reads as
+  the per-run shape; M8-10 must state this split in `PROTOCOL.md` so the two codes
+  stop looking interchangeable. If an implementer reads the ADR the other way,
+  that is an ADR correction, not a code decision.
+
+#### The gate, the lookup and the write
+
+- Both skills are `{ exposure: "gated", requires: "run-layout" }`, registered
+  through `SkillRegistry.registerExecution` (`packages/agent/src/skills.ts:81,265-273`)
+  so they join `AgentServer.call -> gateExecution -> assertExecutionAllowed ->
+  skills.invoke` (`server.ts:833-844,902`). No second authorisation check; no
+  handler-local grant test.
+- The status read is fresh, after authorisation, before either writer; the local
+  writers do not implement terminal idempotence themselves.
+- The lookup is **unwindowed**: discovery currently omits old terminal runs
+  (`packages/runs/src/discover.ts:166-169`), and a windowed lookup would answer
+  `-32108` for a run that plainly exists. A retained artifact outside the listing
+  window is still a known run.
+- Writing: resolve the id uniquely under the configured run roots, never build a
+  path from caller text. Stop goes through the public `requestAsyncStop`
+  (`control.ts:128-143`); steer writes
+  `<runDir>/control/steer-requests/<padded-ts>-<base64url(id)>.json` and re-checks
+  the closed marker after writing (`control.ts:253-294`). Both publish by
+  temp-file-plus-rename, so a killed process cannot leave a partial **final**
+  request; it can leave a hidden temporary file, which is a documented limitation
+  (record it in `docs/GOTCHAS.md`) and not a claim to make in the DoD.
+- No path signals a pid for a run this agent did not start. Pid existence proves no
+  identity (ADR 0021:95-96), and external-run control must never route through
+  `JobManager.stop` (`packages/agent/src/jobs.ts:576-600`).
+
+#### DoD
+
+With execution closed, both calls are `-32102` and **no file appears in any
+inbox** (positive control: with the grant open, exactly one request); a stop on a
+terminal run returns success and leaves the inbox untouched (positive control: a
 live run writes exactly one request), and deleting the status-first check fails
 that test by name; the response names a request id and the observed state and
 never `stopped`/`delivered`; a closed steer inbox and the public stop API's
@@ -168,6 +231,39 @@ closed-inbox throw both become `-32109` with no leftover file; an unknown run id
 `-32108`; no code path signals a pid for a run the agent did not start (a test
 fails if a signal is sent); refusals are results with the agent's code preserved,
 not transport errors.
+
+Named tests, one per clause, each failing for its own reason:
+
+1. `closed-grant-writes-nothing` - both verbs return exactly `-32102`; every inbox
+   stays empty. Positive control: open grant, exactly one file per isolated call.
+2. `terminal-stop-status-first` - parameterised over every terminal state
+   including an old retained artifact: success, null id, zero writer calls, zero
+   files. Deleting the status-first branch must fail the named zero-write
+   assertion, with an open inbox so the refusal cannot come from the gate.
+3. `request-not-outcome` - exact result keys and types, the id matches the
+   committed filename, and no outcome is claimed.
+4. `closed-inboxes-preserve-code` - the steer marker and the real public stop
+   throw both become `-32109` with no leftovers.
+5. `unknown-run-preserves-code` - `-32108`, no writes.
+6. `external-run-never-signalled` - an unrelated live pid is recorded; the call
+   must send no non-zero signal and the fixture must keep running.
+7. `refusal-is-not-transport` - assert the JSON-RPC `error.code` and then the
+   preserved `AgentSkillError.code`; a disconnected agent must instead produce
+   `AgentUnreachableError`. A refusal is an application result, never a 502.
+8. `exit-between-status-and-write` - closure injected after observation: `-32109`
+   and no request. Without observed closure, success means "requested", not
+   "consumed".
+9. `two-controls-distinct-requests` - two independently signed, authorised callers
+   produce two distinct complete requests, not one shared request or a claimed
+   outcome.
+10. Ambiguity, malformed input, unsupported version, and interrupted publication
+    each get their own case.
+
+The one-gate assertion stays unchanged, but its fixture must add both skill stubs
+and the run-layout fact (`test/spawn-policy.test.ts:82-141`), and T12's inputs
+must require the run layout rather than a job manager
+(`test/control-skills.test.ts:578-626`) - otherwise both pass for the wrong reason,
+returning `-32004` where the test claims to prove `-32102`.
 
 ### M8-9 - findings across the fleet
 

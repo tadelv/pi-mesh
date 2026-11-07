@@ -123,6 +123,16 @@ async function observe(gate: string | undefined): Promise<Observation> {
   const oldWorkspace = process.env.PI_MESH_WORKSPACE;
   const oldPiBinary = process.env.PI_MESH_PI_BINARY;
   const oldRunsTmp = process.env.PI_MESH_RUNS_TMP;
+  const oldAgentDir = process.env.PI_CODING_AGENT_DIR;
+  // Pin the intercom socket the same way the runs and sessions roots are
+  // pinned: the broker is machine state, so a laptop that has pi-intercom
+  // installed would advertise intercom.list and every expectation below would
+  // be about that laptop instead of about the gate. A machine with the package
+  // installed made this file fail while CI stayed green - the exact trap the
+  // runs and sessions pins already avoid.
+  process.env.PI_CODING_AGENT_DIR = await mkdtemp(
+    join(tmpdir(), "pi-mesh-caps-agent-"),
+  );
   process.env.PI_MESH_PORT = String(port);
   process.env.PI_MESH_WORKSPACE = process.cwd();
   process.env.PI_MESH_PI_BINARY = PI_BINARY;
@@ -196,6 +206,8 @@ async function observe(gate: string | undefined): Promise<Observation> {
     else process.env.PI_MESH_PI_BINARY = oldPiBinary;
     if (oldRunsTmp === undefined) delete process.env.PI_MESH_RUNS_TMP;
     else process.env.PI_MESH_RUNS_TMP = oldRunsTmp;
+    if (oldAgentDir === undefined) delete process.env.PI_CODING_AGENT_DIR;
+    else process.env.PI_CODING_AGENT_DIR = oldAgentDir;
   }
 }
 

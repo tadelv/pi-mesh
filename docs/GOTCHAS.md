@@ -9,6 +9,20 @@ loses ten minutes instead.
 a commit. "This seemed flaky" is not an entry. If you cannot say how you know,
 you do not know yet.
 
+## The local gate
+
+- **Vitest passing is not the gate. `pnpm typecheck` and `pnpm format:check` are,
+  and they ran after the browser tests in CI for two weeks while every push went
+  red at the step nobody ran locally.** Playwright never failed: run 42459330021
+  shows `test:browser` green and `typecheck` failing on 29 errors - explicit
+  `undefined` assigned to optional properties under `exactOptionalPropertyTypes`,
+  a `.ts` import, a `never` from an untyped `let`, browser globals in the e2e tree
+  (which needs its own DOM lib), and two test files that existed only as untracked
+  files in someone's working tree. Before claiming a change is done, run the
+  sequence the workflow runs: `pnpm -r build`, `pnpm test:browser`,
+  `pnpm typecheck`, `pnpm -r --if-present test`, `pnpm -r --if-present lint`,
+  `pnpm format:check`.
+
 ## Discovery
 
 - **An mDNS TXT string is capped at 255 bytes, and passing it makes a machine

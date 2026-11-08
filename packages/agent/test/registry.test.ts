@@ -47,4 +47,15 @@ describe("peer registry", () => {
     expect(registry.prune(34)).toEqual([]);
     expect(registry.prune(35)).toHaveLength(1);
   });
+
+  it("removes a withdrawn peer by service and id", () => {
+    const registry = new PeerRegistry();
+    registry.add(peer);
+    registry.add({ ...peer, serviceType: "control" });
+
+    expect(registry.remove("mesh", peer.id)).toBe(true);
+    expect(registry.get("mesh", peer.id)).toBeUndefined();
+    expect(registry.get("control", peer.id)).toBeDefined();
+    expect(registry.remove("mesh", peer.id)).toBe(false);
+  });
 });

@@ -9,52 +9,113 @@ import {
   SERVICE_TYPE_MESH,
 } from "../src/index.js";
 import type {
-  BonjourBrowserLike,
-  BonjourDiscoveredService,
   BonjourLike,
   BonjourPublishOptions,
+  MdnsQuestion,
+  MdnsResponder,
+  MdnsResponse,
+  MdnsResponseHandler,
+  MdnsSocketLike,
 } from "../src/index.js";
-
-class FakeBrowser implements BonjourBrowserLike {
-  stopped = false;
-  stop(): void {
-    this.stopped = true;
-  }
-}
 
 class FakeBonjour implements BonjourLike {
   published: BonjourPublishOptions[] = [];
-  finds: {
-    type: string;
-    onup?: (service: BonjourDiscoveredService) => void;
-  }[] = [];
   destroyed = false;
-  browsers: FakeBrowser[] = [];
 
   publish(options: BonjourPublishOptions): void {
     this.published.push(options);
-  }
-
-  find(
-    options: { type: string },
-    onup?: (service: BonjourDiscoveredService) => void,
-  ): FakeBrowser {
-    // exactOptionalPropertyTypes: an explicit undefined is not assignable to an
-    // optional property, so only set the key when there is a handler.
-    this.finds.push(
-      onup === undefined
-        ? { type: options.type }
-        : { type: options.type, onup },
-    );
-    const browser = new FakeBrowser();
-    this.browsers.push(browser);
-    return browser;
   }
 
   destroy(): void {
     this.destroyed = true;
   }
 }
+
+/**
+ * A multicast-dns socket stand-in: records every query and replays canned
+ * response packets on demand, so the browser is driven without a socket.
+ */
+class FakeMdnsSocket implements MdnsSocketLike {
+  queries: MdnsQuestion[][] = [];
+  destroyed = false;
+  private handlers: MdnsResponseHandler[] = [];
+
+  constructor(private readonly onQuery?: (socket: FakeMdnsSocket) => void) {}
+
+  query(questions: readonly MdnsQuestion[]): void {
+    this.queries.push([...questions]);
+    this.onQuery?.(this);
+  }
+
+  on(event: "response", handler: MdnsResponseHandler): void {
+    if (event === "response") {
+      this.handlers.push(handler);
+    }
+  }
+
+  destroy(): void {
+    this.destroyed = true;
+  }
+
+  respond(response: MdnsResponse, rinfo: MdnsResponder = {}): void {
+    for (const handler of [...this.handlers]) {
+      handler(response, rinfo);
+    }
+  }
+}
+
+interface DnsRecord {
+  name: string;
+  type: string;
+  ttl: number;
+  data: unknown;
+}
+
+const ptr = (service: string, instance: string, ttl = 120): DnsRecord => ({
+  name: `${service}.local`,
+  type: "PTR",
+  ttl,
+  data: `${instance}.${service}.local`,
+});
+
+const srv = (
+  service: string,
+  instance: string,
+  target: string,
+  port: number,
+  ttl = 120,
+): DnsRecord => ({
+  name: `${instance}.${service}.local`,
+  type: "SRV",
+  ttl,
+  data: { port, target },
+});
+
+const txt = (
+  service: string,
+  instance: string,
+  entries: string[],
+  ttl = 120,
+): DnsRecord => ({
+  name: `${instance}.${service}.local`,
+  type: "TXT",
+  ttl,
+  data: entries.map((entry) => Buffer.from(entry)),
+});
+
+const a = (target: string, address: string, ttl = 120): DnsRecord => ({
+  name: target,
+  type: "A",
+  ttl,
+  data: address,
+});
+
+const aaaa = (target: string, address: string, ttl = 120): DnsRecord => ({
+  name: target,
+  type: "AAAA",
+  ttl,
+  data: address,
+});
 
 const descriptor = {
   id: "agent-1",
@@ -79,7 +140,6 @@ describe("agent mDNS", () => {
           if (event === "up") announce = listener;
         },
       }),
-      find: () => new FakeBrowser(),
       destroy: () => {},
     };
 
@@ -186,137 +246,306 @@ describe("agent mDNS", () => {
     expect(bonjour.destroyed).toBe(false);
   });
 
-  it("browses mesh and control using bare bonjour names and records peers", async () => {
+  it("queries both service types on the wire and records two peers", async () => {
+    // One packet carries PTR+SRV+TXT+A for a mesh instance and a control
+    // instance. The TXT `port` deliberately disagrees with the SRV port, so
+    // this clause names the SRV as the port's source: resolving the port
+    // from anywhere else must fail this test.
     let now = 100;
     const registry = new PeerRegistry({ ttlMs: 30, now: () => now });
-    const bonjour = new FakeBonjour();
-    const handle = browsePeers(registry, { bonjour });
-
-    expect(bonjour.finds.map((find) => find.type)).toEqual([
-      "pi-mesh",
-      "pi-mesh-control",
-    ]);
-    bonjour.finds[0]?.onup?.({
-      name: "Agent 1",
-      host: "agent.local",
-      port: 7330,
-      txt: { id: "agent-1", name: "Agent 1", port: "7330" },
+    const mdns = new FakeMdnsSocket();
+    const seen: string[] = [];
+    const lines: string[] = [];
+    const handle = browsePeers(registry, {
+      createMdns: () => mdns,
+      log: (line) => lines.push(line),
+      onPeer: (peer) => seen.push(`${peer.serviceType}:${peer.id}`),
     });
-    expect(registry.peers[0]).toMatchObject({
+
+    expect(mdns.queries).toEqual([
+      [
+        { name: "_pi-mesh._tcp.local", type: "PTR" },
+        { name: "_pi-mesh-control._tcp.local", type: "PTR" },
+      ],
+    ]);
+    mdns.respond(
+      {
+        answers: [
+          ptr("_pi-mesh._tcp", "agent-1"),
+          srv("_pi-mesh._tcp", "agent-1", "agent-1.local", 7330),
+          txt("_pi-mesh._tcp", "agent-1", [
+            "id=agent-1",
+            "name=Agent 1",
+            "port=9999",
+            "caps=mesh.peers",
+          ]),
+          a("agent-1.local", "192.168.12.101"),
+          ptr("_pi-mesh-control._tcp", "ctrl-1"),
+          srv("_pi-mesh-control._tcp", "ctrl-1", "ctrl-1.local", 8443),
+          txt("_pi-mesh-control._tcp", "ctrl-1", [
+            "id=ctrl-1",
+            "name=Control 1",
+          ]),
+          a("ctrl-1.local", "192.168.12.102"),
+        ],
+      },
+      { address: "192.168.12.100" },
+    );
+
+    expect(registry.get("mesh", "agent-1")).toMatchObject({
       id: "agent-1",
+      name: "Agent 1",
       serviceType: "mesh",
-      host: "agent.local",
+      host: "192.168.12.101",
       port: 7330,
+      txt: {
+        id: "agent-1",
+        name: "Agent 1",
+        port: "9999",
+        caps: "mesh.peers",
+      },
       lastSeen: 100,
     });
+    expect(registry.get("control", "ctrl-1")).toMatchObject({
+      id: "ctrl-1",
+      name: "Control 1",
+      serviceType: "control",
+      host: "192.168.12.102",
+      port: 8443,
+    });
+    expect(seen.sort()).toEqual(["control:ctrl-1", "mesh:agent-1"]);
+    expect(
+      lines.some((line) =>
+        line.includes(
+          "mdns: saw _pi-mesh._tcp name=Agent 1 host=192.168.12.101 port=7330 addresses=192.168.12.101",
+        ),
+      ),
+    ).toBe(true);
+    expect(
+      lines.some((line) =>
+        line.includes(
+          "mdns: saw _pi-mesh-control._tcp name=Control 1 host=192.168.12.102 port=8443",
+        ),
+      ),
+    ).toBe(true);
     now = 131;
     registry.prune();
     expect(registry.peers).toEqual([]);
     await handle.stop();
-    expect(bonjour.destroyed).toBe(true);
-    expect(bonjour.browsers.every((browser) => browser.stopped)).toBe(true);
+    expect(mdns.destroyed).toBe(true);
     expect(SERVICE_TYPE_MESH).toBe("_pi-mesh._tcp");
     expect(SERVICE_TYPE_CONTROL).toBe("_pi-mesh-control._tcp");
   });
 
-  it("dials a discovered service by address, not by its unresolvable SRV hostname", async () => {
-    // A DNS-SD SRV host is relative to the `.local` domain, so bonjour reports
-    // it as a bare label like "artemis", which does not resolve on its own.
-    // The record also carries usable addresses, and preferring the hostname
-    // meant every discovered peer was described correctly and then failed to
-    // connect with ENOTFOUND - on the one path that matters, reaching an agent
-    // on another machine. Every existing test used an already-dotted
-    // "agent.local", which is why this survived from M0 through M1-11.
+  it("assembles pieces arriving in separate packets, in any order, and emits once", async () => {
+    // The pieces of one instance arrive SRV-first, then TXT+A, then PTR last
+    // across three packets. Nothing is emitted until the PTR completes the
+    // set, and the re-answered PTR after that is a quiet liveness refresh.
     const registry = new PeerRegistry();
-    const bonjour = new FakeBonjour();
-    const handle = browsePeers(registry, { bonjour });
-    const up = bonjour.finds[0]?.onup;
-    const base = {
-      name: "B",
-      port: 7330,
-      txt: { id: "b", name: "B", port: "7330" },
+    const mdns = new FakeMdnsSocket();
+    let emissions = 0;
+    const handle = browsePeers(registry, {
+      createMdns: () => mdns,
+      onPeer: () => {
+        emissions += 1;
+      },
+    });
+    const service = "_pi-mesh._tcp";
+
+    mdns.respond({ answers: [srv(service, "b", "b.local", 7331)] });
+    expect(registry.peers).toEqual([]);
+    mdns.respond({
+      answers: [
+        txt(service, "b", ["id=b", "name=B"]),
+        a("b.local", "192.168.12.103"),
+      ],
+    });
+    expect(registry.peers).toEqual([]);
+    mdns.respond({ answers: [ptr(service, "b")] });
+    expect(registry.get("mesh", "b")).toMatchObject({
+      host: "192.168.12.103",
+      port: 7331,
+    });
+    expect(emissions).toBe(1);
+
+    mdns.respond({ answers: [ptr(service, "b")] });
+    expect(emissions).toBe(1);
+    await handle.stop();
+  });
+
+  it("emits nothing without an SRV, and names the reason when TXT lacks id", async () => {
+    // An instance with TXT but no SRV has no target and no port, so it is
+    // not a peer. An instance whose TXT lacks `id` is skipped with a logged
+    // reason - never emitted as an unnamed peer whose TXT could then be
+    // mistaken for identity (ADR 0007).
+    const registry = new PeerRegistry();
+    const mdns = new FakeMdnsSocket();
+    const lines: string[] = [];
+    let emissions = 0;
+    const handle = browsePeers(registry, {
+      createMdns: () => mdns,
+      log: (line) => lines.push(line),
+      onPeer: () => {
+        emissions += 1;
+      },
+    });
+    const service = "_pi-mesh._tcp";
+
+    mdns.respond({
+      answers: [
+        ptr(service, "nosrv"),
+        txt(service, "nosrv", ["id=nosrv", "name=No SRV"]),
+      ],
+    });
+    expect(registry.peers).toEqual([]);
+    expect(emissions).toBe(0);
+
+    mdns.respond({
+      answers: [
+        ptr(service, "noid"),
+        srv(service, "noid", "noid.local", 7332),
+        txt(service, "noid", ["name=No Id"]),
+        a("noid.local", "192.168.12.104"),
+      ],
+    });
+    expect(registry.get("mesh", "noid")).toBeUndefined();
+    expect(registry.peers).toEqual([]);
+    expect(emissions).toBe(0);
+    expect(
+      lines.some((line) => line.includes("noid") && line.includes("no id")),
+      `expected a logged reason naming the missing id, saw: ${lines.join("\n")}`,
+    ).toBe(true);
+    await handle.stop();
+  });
+
+  it("removes a previously emitted peer on a TTL-0 goodbye", async () => {
+    // Withdrawing an advertisement must disappear from the registry now, not
+    // only when the TTL prune happens to age it out. Dropping the removal
+    // must fail this clause.
+    const registry = new PeerRegistry();
+    const mdns = new FakeMdnsSocket();
+    const lines: string[] = [];
+    const handle = browsePeers(registry, {
+      createMdns: () => mdns,
+      log: (line) => lines.push(line),
+    });
+    const service = "_pi-mesh._tcp";
+    const full = [
+      ptr(service, "gone"),
+      srv(service, "gone", "gone.local", 7333),
+      txt(service, "gone", ["id=gone", "name=Gone"]),
+      a("gone.local", "192.168.12.105"),
+    ];
+    mdns.respond({ answers: full });
+    expect(registry.get("mesh", "gone")).toBeDefined();
+
+    mdns.respond({ answers: [ptr(service, "gone", 0)] });
+    expect(registry.get("mesh", "gone")).toBeUndefined();
+    expect(registry.peers).toEqual([]);
+    expect(
+      lines.some((line) => line.includes("goodbye")),
+      `expected a logged goodbye, saw: ${lines.join("\n")}`,
+    ).toBe(true);
+    await handle.stop();
+  });
+
+  it("skips an AAAA-only instance with a reason instead of guessing a host", async () => {
+    // The SRV target has an AAAA record and the responder speaks IPv6, so
+    // there is no IPv4 host to dial. Emitting the peer with the AAAA literal
+    // or the hostname would certify an address this record cannot carry.
+    const registry = new PeerRegistry();
+    const mdns = new FakeMdnsSocket();
+    const lines: string[] = [];
+    let emissions = 0;
+    const handle = browsePeers(registry, {
+      createMdns: () => mdns,
+      log: (line) => lines.push(line),
+      onPeer: () => {
+        emissions += 1;
+      },
+    });
+    const service = "_pi-mesh._tcp";
+    mdns.respond(
+      {
+        answers: [
+          ptr(service, "v6"),
+          srv(service, "v6", "v6.local", 7334),
+          txt(service, "v6", ["id=v6", "name=V6"]),
+          aaaa("v6.local", "fe80::1"),
+        ],
+      },
+      { address: "fe80::2" },
+    );
+    expect(registry.peers).toEqual([]);
+    expect(emissions).toBe(0);
+    expect(
+      lines.some((line) => line.includes("v6") && line.includes("AAAA")),
+      `expected a logged AAAA-only reason, saw: ${lines.join("\n")}`,
+    ).toBe(true);
+    await handle.stop();
+  });
+
+  it("prefers the SRV target's A record and otherwise dials the responder", async () => {
+    // An address needs no name resolution, so the A record wins. With no A
+    // record the responder's address - the one observed source - is the
+    // host. An AAAA record is never selected, even when it is the only
+    // address record and the responder answers over IPv4.
+    const registry = new PeerRegistry();
+    const mdns = new FakeMdnsSocket();
+    const handle = browsePeers(registry, { createMdns: () => mdns });
+    const service = "_pi-mesh._tcp";
+    const announce = (
+      instance: string,
+      target: string,
+      extra: DnsRecord[],
+      responder: string,
+    ): void => {
+      mdns.respond(
+        {
+          answers: [
+            ptr(service, instance),
+            srv(service, instance, target, 7330),
+            txt(service, instance, [`id=${instance}`, `name=${instance}`]),
+            ...extra,
+          ],
+        },
+        { address: responder },
+      );
     };
 
-    // An address needs no name resolution, so it wins over the SRV hostname.
-    up?.({
-      ...base,
-      host: "artemis",
-      addresses: ["192.168.12.100", "fe80::1"],
-    });
-    expect(registry.get("mesh", "b")?.host).toBe("192.168.12.100");
+    announce("a", "a.local", [a("a.local", "192.168.12.100")], "10.0.0.9");
+    expect(registry.get("mesh", "a")?.host).toBe("192.168.12.100");
 
-    // With no address, a bare label is a `.local` name and must be completed.
-    up?.({ ...base, host: "artemis", addresses: [] });
-    expect(registry.get("mesh", "b")?.host).toBe("artemis.local");
+    announce("b", "b.local", [], "10.0.0.9");
+    expect(registry.get("mesh", "b")?.host).toBe("10.0.0.9");
 
-    // IPv6-only answers must use the SRV hostname rather than an undialable
-    // literal from the responder's UDP source.
-    up?.({
-      ...base,
-      host: "artemis",
-      addresses: ["fe80::1"],
-      referer: { address: "fe80::1" },
-    });
-    expect(registry.get("mesh", "b")?.host).toBe("artemis.local");
-
-    // IPv6 literals are never selected as direct addresses; the hostname is
-    // used instead. This makes the assertion distinguish the selected value.
-    up?.({ ...base, host: "artemis", addresses: ["fe80::1"] });
-    expect(registry.get("mesh", "b")?.host).toBe("artemis.local");
-
-    // A zone suffix cannot be carried inside a bracketed URL host.
-    up?.({ ...base, host: "fe80::1%en0", addresses: ["fe80::1"] });
-    expect(registry.get("mesh", "b")?.host).toBe("fe80::1");
-
-    // A fully-qualified SRV name can carry a trailing root label.
-    up?.({ ...base, host: "artemis.", addresses: [] });
-    expect(registry.get("mesh", "b")?.host).toBe("artemis.local");
-
-    // Loopback, APIPA, and other junk IPv4 values must not bypass hostname
-    // resolution, and a junk address must not beat a usable one.
-    for (const address of ["127.0.0.1", "169.254.1.2", "999.999.999.999"]) {
-      up?.({ ...base, host: "artemis", addresses: [address] });
-      expect(registry.get("mesh", "b")?.host).toBe("artemis.local");
-    }
-    up?.({
-      ...base,
-      host: "artemis",
-      addresses: ["127.0.0.1", "192.168.12.101"],
-    });
-    expect(registry.get("mesh", "b")?.host).toBe("192.168.12.101");
-
-    // An already-qualified name is left alone.
-    up?.({ ...base, host: "agent.local", addresses: [] });
-    expect(registry.get("mesh", "b")?.host).toBe("agent.local");
-
-    // A usable referer wins even when addresses also contain a usable value.
-    up?.({
-      ...base,
-      host: "artemis",
-      addresses: ["192.168.12.101"],
-      referer: { address: "10.0.0.5" },
-    });
-    expect(registry.get("mesh", "b")?.host).toBe("10.0.0.5");
-
-    // No dialable address or hostname means the peer is omitted entirely.
-    up?.({
-      ...base,
-      host: "",
-      addresses: ["127.0.0.1", "169.254.1.2"],
-      txt: { id: "c", name: "C", port: "7330" },
-    });
-    expect(registry.get("mesh", "c")).toBeUndefined();
-
-    // Multi-label SRV names are already qualified and must not gain a second
-    // suffix; a usable address remains preferred when present.
-    up?.({
-      ...base,
-      host: "macbook.lan",
-      addresses: [],
-    });
-    expect(registry.get("mesh", "b")?.host).toBe("macbook.lan");
+    announce("c", "c.local", [aaaa("c.local", "fe80::1")], "10.0.0.10");
+    expect(registry.get("mesh", "c")?.host).toBe("10.0.0.10");
 
     await handle.stop();
+  });
+
+  it("stop() ends the query interval and destroys the socket", () => {
+    // Fake timers own the interval: after stop() no further query may go
+    // out, however far the clock advances.
+    vi.useFakeTimers();
+    try {
+      const mdns = new FakeMdnsSocket();
+      const handle = browsePeers(new PeerRegistry(), {
+        createMdns: () => mdns,
+        intervalMs: 1_000,
+      });
+      expect(mdns.queries).toHaveLength(1);
+      vi.advanceTimersByTime(5_000);
+      expect(mdns.queries).toHaveLength(6);
+      const stopped = handle.stop();
+      expect(mdns.destroyed).toBe(true);
+      vi.advanceTimersByTime(5_000);
+      expect(mdns.queries).toHaveLength(6);
+      return stopped;
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it("refreshes a live peer on re-query and ages out a silent one", () => {
@@ -324,36 +553,46 @@ describe("agent mDNS", () => {
     // callback, and a responder does not re-announce an unchanged record, so a
     // blind TTL prune removed peers that were still running. Verified live
     // before this fix - a peer alive for the whole run vanished at ~30s.
+    // Here the re-query itself is the liveness signal: every interval emits
+    // a query, and only an answered one refreshes.
     vi.useFakeTimers();
     try {
       let now = 0;
       const registry = new PeerRegistry({ ttlMs: 30, now: () => now });
-      const bonjour = new FakeBonjour();
-      const handle = browsePeers(registry, { bonjour, intervalMs: 10 });
-      const service = {
-        name: "Agent 1",
-        host: "agent.local",
-        port: 7330,
-        txt: { id: "agent-1", name: "Agent 1", port: "7330" },
-      };
-      const newestMeshBrowser = ():
-        ((service: BonjourDiscoveredService) => void) | undefined =>
-        bonjour.finds.at(-2)?.onup;
-
-      bonjour.finds[0]?.onup?.(service);
+      const service = "_pi-mesh._tcp";
+      let answering = true;
+      const mdns = new FakeMdnsSocket((socket) => {
+        if (answering) {
+          socket.respond({
+            answers: [
+              ptr(service, "agent-1"),
+              srv(service, "agent-1", "agent-1.local", 7330),
+              txt(service, "agent-1", ["id=agent-1", "name=Agent 1"]),
+              a("agent-1.local", "192.168.12.101"),
+            ],
+          });
+        }
+      });
+      const handle = browsePeers(registry, {
+        createMdns: () => mdns,
+        intervalMs: 10,
+      });
       expect(registry.peers).toHaveLength(1);
+      const queryCount = mdns.queries.length;
+      expect(queryCount).toBeGreaterThan(0);
 
       // Three cycles: each re-query is answered, so the peer stays despite
       // having outlived its TTL in wall-clock terms.
       for (let cycle = 0; cycle < 3; cycle += 1) {
         now += 20;
         vi.advanceTimersByTime(10);
-        const onup = newestMeshBrowser();
-        onup?.(service);
       }
       expect(registry.peers).toHaveLength(1);
+      expect(mdns.queries.length).toBeGreaterThan(queryCount);
 
-      // Now it goes silent: no further answers, so it ages out.
+      // Now it goes silent: queries still go out, but no answer refreshes
+      // lastSeen, so it ages out.
+      answering = false;
       now += 31;
       vi.advanceTimersByTime(10);
       expect(registry.peers).toEqual([]);
@@ -364,13 +603,16 @@ describe("agent mDNS", () => {
     }
   });
 
-  it("does not browse in the public profile", () => {
-    const bonjour = new FakeBonjour();
+  it("issues no query at all in the public profile", async () => {
+    let factories = 0;
     const handle = browsePeers(new PeerRegistry(), {
-      bonjour,
+      createMdns: () => {
+        factories += 1;
+        return new FakeMdnsSocket();
+      },
       profile: "public",
     });
-    expect(bonjour.finds).toEqual([]);
-    return handle.stop();
+    expect(factories).toBe(0);
+    await handle.stop();
   });
 });

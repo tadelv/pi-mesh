@@ -12,10 +12,18 @@ import {
   servedSkills,
   signedHeaders,
   type BonjourLike,
+  type MdnsResponseHandler,
+  type MdnsSocketLike,
 } from "../src/index.js";
 
-class PeerBonjour implements BonjourLike {
+/**
+ * A discovery socket that answers every PTR query with one canned peer, so
+ * `sessions --peer` / `call` / `stream` resolve through the real DNS-SD
+ * assembly instead of a stubbed `find()` callback.
+ */
+class AnsweringMdns implements MdnsSocketLike {
   destroyed = false;
+  private handlers: MdnsResponseHandler[] = [];
 
   constructor(
     private readonly peer: {
@@ -24,25 +32,54 @@ class PeerBonjour implements BonjourLike {
     },
   ) {}
 
-  publish(): void {}
-
-  find(
-    options: { type: string },
-    onup?: (service: {
-      host: string;
-      port: number;
-      txt: Record<string, string>;
-    }) => void,
-  ): { stop(): void } {
-    if (options.type === "pi-mesh") {
-      onup?.({
-        host: "127.0.0.1",
-        port: this.peer.port,
-        txt: { id: this.peer.id, name: "peer-b", port: String(this.peer.port) },
-      });
+  query(): void {
+    const instance = "peer-b._pi-mesh._tcp.local";
+    const response = {
+      answers: [
+        {
+          name: "_pi-mesh._tcp.local",
+          type: "PTR",
+          ttl: 120,
+          data: instance,
+        },
+        {
+          name: instance,
+          type: "SRV",
+          ttl: 120,
+          data: { port: this.peer.port, target: "peer-b.local" },
+        },
+        {
+          name: instance,
+          type: "TXT",
+          ttl: 120,
+          data: [Buffer.from(`id=${this.peer.id}`), Buffer.from("name=peer-b")],
+        },
+        { name: "peer-b.local", type: "A", ttl: 120, data: "127.0.0.1" },
+      ],
+    };
+    for (const handler of [...this.handlers]) {
+      handler(response, { address: "127.0.0.1" });
     }
-    return { stop: () => undefined };
   }
+
+  on(event: "response", handler: MdnsResponseHandler): void {
+    if (event === "response") {
+      this.handlers.push(handler);
+    }
+  }
+
+  destroy(): void {
+    this.destroyed = true;
+  }
+}
+
+/** A discovery socket that never answers, for tests that observe publishing. */
+class InertMdns implements MdnsSocketLike {
+  destroyed = false;
+
+  query(): void {}
+
+  on(): void {}
 
   destroy(): void {
     this.destroyed = true;
@@ -126,7 +163,11 @@ describe("agent CLI", () => {
     });
 
     await expect(
-      run(["peers", "--timeout", "0"], { ...captured.io, registry }),
+      run(["peers", "--timeout", "0"], {
+        ...captured.io,
+        registry,
+        createMdns: () => new InertMdns(),
+      }),
     ).resolves.toBe(0);
 
     const { stdout, stderr } = captured.read();
@@ -372,10 +413,11 @@ describe("agent CLI", () => {
     const captured = output();
     const io = {
       ...captured.io,
-      bonjour: new PeerBonjour({
-        id: peerIdentity.peerId,
-        port: listening.port,
-      }),
+      createMdns: () =>
+        new AnsweringMdns({
+          id: peerIdentity.peerId,
+          port: listening.port,
+        }),
       identity: {
         peerId: "33333333-3333-4333-8333-333333333333",
         name: "peer-a",
@@ -575,6 +617,7 @@ describe("agent CLI", () => {
       const denied = run(["start"], {
         ...output().io,
         bonjour: deniedBonjour,
+        createMdns: () => new InertMdns(),
         identity,
         swarmKey: key,
       });
@@ -588,6 +631,7 @@ describe("agent CLI", () => {
       const allowed = run(["start", "--allow-execution"], {
         ...output().io,
         bonjour: allowedBonjour,
+        createMdns: () => new InertMdns(),
         identity,
         swarmKey: key,
       });
@@ -626,6 +670,7 @@ describe("agent CLI", () => {
       const running = run(["start"], {
         ...captured.io,
         bonjour,
+        createMdns: () => new InertMdns(),
         identity: {
           peerId: "22222222-2222-4222-8222-222222222222",
           name: "agent",

@@ -26,6 +26,7 @@ import {
   signedHeaders,
   type BonjourLike,
   type BonjourPublishOptions,
+  type MdnsSocketLike,
 } from "../src/index.js";
 
 const SESSION_ID = "123e4567-e89b-42d3-a456-426614174099";
@@ -613,9 +614,18 @@ class PublishedBonjour implements BonjourLike {
     this.published.push(options);
   }
 
-  find(): { stop(): void } {
-    return { stop: () => undefined };
-  }
+  destroy(): void {}
+}
+
+/**
+ * Discovery is inert here: this fixture observes publishing only, and the
+ * browse half must not open a socket. (Browsing no longer consults the
+ * publish instance at all.)
+ */
+class InertMdns implements MdnsSocketLike {
+  query(): void {}
+
+  on(): void {}
 
   destroy(): void {}
 }
@@ -671,6 +681,7 @@ async function observeCapabilities(
     stdout: { write: () => true },
     stderr: { write: () => true },
     bonjour,
+    createMdns: () => new InertMdns(),
     identity: serverIdentity,
     swarmKey: KEY,
   });

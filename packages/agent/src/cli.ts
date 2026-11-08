@@ -12,6 +12,7 @@ import { configuredMeshPort, isDirectInvocation, sleep } from "@pi-mesh/shared";
 import {
   browsePeers,
   type BonjourLike,
+  type MdnsFactory,
   type NetworkProfile,
   publishAgent,
 } from "./mdns.js";
@@ -49,6 +50,8 @@ export type CliIO = {
   stdout: Pick<NodeJS.WritableStream, "write">;
   stderr: Pick<NodeJS.WritableStream, "write">;
   bonjour?: BonjourLike;
+  /** Factory for the discovery query socket; a real multicast-dns client by default. */
+  createMdns?: MdnsFactory;
   registry?: PeerRegistry;
   identity?: PeerIdentity;
   swarmKey?: Uint8Array;
@@ -198,11 +201,9 @@ async function peers(
   io: CliIO,
 ): Promise<number> {
   const registry = io.registry ?? new PeerRegistry();
-  const bonjour =
-    profile === "public" ? undefined : (io.bonjour ?? new Bonjour());
   const browser = browsePeers(registry, {
     profile,
-    ...(bonjour === undefined ? {} : { bonjour }),
+    ...(io.createMdns === undefined ? {} : { createMdns: io.createMdns }),
   });
 
   const emit = (): void => {
@@ -250,13 +251,12 @@ async function start(
   }
 
   const registry = io.registry ?? new PeerRegistry();
-  // One instance per job. Sharing one Bonjour between the advertisement and the
-  // browser is what a machine (artemis, 2026-11-07) was doing while it answered
-  // no query at all: a mute advertiser is indistinguishable from an absent peer,
-  // and the browse half kept working. An injected instance (tests) is used for
-  // both, because a fixture wants to observe the two paths together.
-  const bonjour =
-    profile === "public" ? undefined : (io.bonjour ?? new Bonjour());
+  // Publishing (bonjour-service) and browsing (multicast-dns) never share an
+  // instance: a machine (artemis, 2026-11-07) advertising through a shared
+  // browser answered no query at all, and a mute advertiser is
+  // indistinguishable from an absent peer. An injected instance (tests) is
+  // still honoured per path, because a fixture wants to observe publish and
+  // browse together.
   const publishBonjour =
     profile === "public" ? undefined : (io.bonjour ?? new Bonjour());
   let server: Awaited<ReturnType<typeof createAgentServer>> | undefined;
@@ -332,7 +332,7 @@ async function start(
 
     browser = browsePeers(registry, {
       profile,
-      ...(bonjour === undefined ? {} : { bonjour }),
+      ...(io.createMdns === undefined ? {} : { createMdns: io.createMdns }),
       log: (line) => io.stderr.write(`${line}\n`),
       onPeer: (peer: PeerRecord) =>
         io.stdout.write(`${JSON.stringify(peer)}\n`),
@@ -626,8 +626,9 @@ async function discover(
   signal?: AbortSignal,
 ): Promise<PeerRecord | undefined> {
   const registry = io.registry ?? new PeerRegistry();
-  const bonjour = io.bonjour ?? new Bonjour();
-  const browser = browsePeers(registry, { bonjour });
+  const browser = browsePeers(registry, {
+    ...(io.createMdns === undefined ? {} : { createMdns: io.createMdns }),
+  });
   const deadline = Date.now() + timeoutMs;
   let onAbort: (() => void) | undefined;
   const abortPromise =

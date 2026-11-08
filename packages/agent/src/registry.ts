@@ -43,6 +43,11 @@ export class PeerRegistry {
     return this.add(peer);
   }
 
+  /** Remove a peer withdrawn over the wire (TTL-0 goodbye); false when absent. */
+  remove(serviceType: PeerServiceType, id: string): boolean {
+    return this.records.delete(`${serviceType}:${id}`);
+  }
+
   prune(at = this.now()): PeerRecord[] {
     const expired: PeerRecord[] = [];
     for (const [key, peer] of this.records) {

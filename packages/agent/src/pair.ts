@@ -8,7 +8,6 @@ import {
   pairingProof,
   verifyPairingProof,
 } from "@pi-mesh/protocol";
-import Bonjour from "bonjour-service";
 import { sleep } from "@pi-mesh/shared";
 import type { CliIO } from "./cli.js";
 import { browsePeers } from "./mdns.js";
@@ -127,7 +126,7 @@ async function discoverControl(
 ): Promise<{ host: string; port: number }> {
   const registry = new PeerRegistry();
   const browser = browsePeers(registry, {
-    bonjour: io.bonjour ?? new Bonjour(),
+    ...(io.createMdns === undefined ? {} : { createMdns: io.createMdns }),
   });
   const deadline = Date.now() + timeoutMs;
   try {

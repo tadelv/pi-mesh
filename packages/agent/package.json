@@ -27,6 +27,7 @@
     "@pi-mesh/protocol": "workspace:*",
     "@pi-mesh/runs": "workspace:*",
     "@pi-mesh/shared": "workspace:*",
-    "bonjour-service": "^1.2.1"
+    "bonjour-service": "^1.2.1",
+    "multicast-dns": "7.2.5"
   }
 }

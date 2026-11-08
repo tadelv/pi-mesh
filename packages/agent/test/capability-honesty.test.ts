@@ -7,7 +7,11 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it, vi } from "vitest";
 import type { AgentCard } from "@pi-mesh/protocol";
-import type { BonjourLike, BonjourPublishOptions } from "../src/index.js";
+import type {
+  BonjourLike,
+  BonjourPublishOptions,
+  MdnsSocketLike,
+} from "../src/index.js";
 
 // The gate cannot OPEN without a resolvable `pi`: cli.ts calls resolvePiBinary()
 // before the listener starts, so on a machine with no `pi` - every CI runner -
@@ -52,13 +56,22 @@ class PublishedBonjour implements BonjourLike {
     this.published.push(options);
   }
 
-  find(): { stop(): void } {
-    return { stop: () => undefined };
-  }
-
   destroy(): void {
     this.destroyed = true;
   }
+}
+
+/**
+ * Discovery is inert here: this fixture observes publishing only, and the
+ * browse half must not open a socket. (Browsing no longer consults the
+ * publish instance at all.)
+ */
+class InertMdns implements MdnsSocketLike {
+  query(): void {}
+
+  on(): void {}
+
+  destroy(): void {}
 }
 
 type Observation = {
@@ -161,6 +174,7 @@ async function observe(gate: string | undefined): Promise<Observation> {
       },
     },
     bonjour,
+    createMdns: () => new InertMdns(),
     identity: {
       peerId: "22222222-2222-4222-8222-222222222222",
       name: "capability-honesty-test",

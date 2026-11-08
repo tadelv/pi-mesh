@@ -50,6 +50,9 @@ importers:
       bonjour-service:
         specifier: ^1.2.1
         version: 1.4.4
+      multicast-dns:
+        specifier: 7.2.5
+        version: 7.2.5
 
   packages/control-plane:
     dependencies:

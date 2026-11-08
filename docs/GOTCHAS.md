@@ -21,6 +21,15 @@ you do not know yet.
   userspace queriers parse an oversized string happily, so the fault only shows
   between a Mac and anything that validates. `caps` is now chunked
   (docs/PROTOCOL.md) and a test asserts every emitted TXT value fits.
+- **A third userspace mDNS socket is a liar about whether a peer answers.** After
+  the 255-byte fix, a probe socket on phobos got zero answers from artemis while
+  artemis's own agent logged ~200 sightings of phobos in 25 seconds, and phobos's
+  agent logged ~200 of artemis. Twelve minutes of soak (restart both, sample every
+  30s) never changed that: the agents always saw each other, the outside probe was
+  answered on 3 of 24 ticks. On macOS several sockets can sit on :5353 with
+  SO_REUSEPORT and a query or its answer is delivered to one of them, so "the peer
+  never answered me" from a short-lived script says nothing about the mesh. Ask an
+  agent (`mesh.peers`), not a probe.
 
 ## Verification
 

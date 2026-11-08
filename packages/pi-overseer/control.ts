@@ -62,12 +62,21 @@ export function callSubagentRpc(
     };
     const unsubscribe = bus.on(SUBAGENT_RPC_REPLY_PREFIX + requestId, (raw) => {
       const reply = raw as
-        | { success?: boolean; data?: unknown; error?: { code?: string; message?: string } }
+        | {
+            success?: boolean;
+            data?: unknown;
+            error?: { code?: string; message?: string };
+          }
         | undefined;
       if (reply?.success) {
         finish({ ok: true, detail: summarize(reply.data), data: reply.data });
       } else {
-        finish({ ok: false, detail: reply?.error?.message ?? "pi-subagents RPC failed without a message" });
+        finish({
+          ok: false,
+          detail:
+            reply?.error?.message ??
+            "pi-subagents RPC failed without a message",
+        });
       }
     });
     const timer = setTimeout(
@@ -78,19 +87,36 @@ export function callSubagentRpc(
         }),
       timeoutMs,
     );
-    bus.emit(SUBAGENT_RPC_REQUEST, { version: SUBAGENT_RPC_VERSION, requestId, method, params });
+    bus.emit(SUBAGENT_RPC_REQUEST, {
+      version: SUBAGENT_RPC_VERSION,
+      requestId,
+      method,
+      params,
+    });
   });
 }
 
 /** RPC params per verb (rpc.js: steer needs a message; stop/interrupt take a target). */
-export function rpcParams(verb: Verb, runId: string, text?: string): Record<string, unknown> {
+export function rpcParams(
+  verb: Verb,
+  runId: string,
+  text?: string,
+): Record<string, unknown> {
   if (verb === "steer") return { id: runId, message: (text ?? "").trim() };
   return { id: runId };
 }
 
-export function executeLocalControl(bus: EventBus, verb: Verb, runId: string, text?: string): Promise<RpcResult> {
+export function executeLocalControl(
+  bus: EventBus,
+  verb: Verb,
+  runId: string,
+  text?: string,
+): Promise<RpcResult> {
   if (verb === "steer" && !(text ?? "").trim()) {
-    return Promise.resolve({ ok: false, detail: "steer requires a non-empty message" });
+    return Promise.resolve({
+      ok: false,
+      detail: "steer requires a non-empty message",
+    });
   }
   return callSubagentRpc(bus, verb, rpcParams(verb, runId, text));
 }

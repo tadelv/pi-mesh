@@ -299,10 +299,7 @@ describe("A2A HTTP server", () => {
           );
           expect(JSON.parse(refused.body).error.code).toBe(-32004);
           const response = await streamCall(address.port, {
-            ...call(
-              skill,
-              skill === "session.stream" ? { id: sessionId } : {},
-            ),
+            ...call(skill, skill === "session.stream" ? { id: sessionId } : {}),
             method: "message/stream",
           });
           expect(response.status).toBe(200);

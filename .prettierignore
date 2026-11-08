@@ -1,5 +1,9 @@
 node_modules
 **/node_modules
+
+# Local harness state (subagent runs, council scripts, caches). It is this
+# machine's scratch space, not repository content, and it is not committed.
+.pi/
 dist
 **/dist
 pnpm-lock.yaml

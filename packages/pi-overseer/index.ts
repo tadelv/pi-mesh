@@ -22,15 +22,34 @@
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import type {
+  ExtensionAPI,
+  ExtensionContext,
+} from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
-import { createControlChannel, type ControlChannel, type ControlChannelStatus, type ControlCommand } from "./channel.ts";
+import {
+  createControlChannel,
+  type ControlChannel,
+  type ControlChannelStatus,
+  type ControlCommand,
+} from "./channel.ts";
 import { executeMeshAction, type MeshToolDetails } from "./mesh.ts";
 import { executeLocalControl, isVerb, type Verb } from "./control.ts";
-import { attentionRuns, buildFleet, findRun, type RunRecord } from "./discovery.ts";
+import {
+  attentionRuns,
+  buildFleet,
+  findRun,
+  type RunRecord,
+} from "./discovery.ts";
 import { fmtAge, fmtDuration, fmtTokens, fmtUsd, shortPath } from "./format.ts";
 import { OverseerPanel, type PanelData } from "./panel.ts";
-import { DEFAULT_RULES, evaluateRules, type Action, type RulesConfig, type Severity } from "./rules.ts";
+import {
+  DEFAULT_RULES,
+  evaluateRules,
+  type Action,
+  type RulesConfig,
+  type Severity,
+} from "./rules.ts";
 
 interface OverseerConfig {
   /** how far back to scan session transcripts and run artifacts */
@@ -47,7 +66,10 @@ const DEFAULT_CONFIG: OverseerConfig = {
   rules: DEFAULT_RULES,
 };
 
-const CONFIG_FILE = join(homedir(), ".pi/agent/extensions/overseer/config.json");
+const CONFIG_FILE = join(
+  homedir(),
+  ".pi/agent/extensions/overseer/config.json",
+);
 
 /**
  * Subagent child sessions load this extension too. They must register for
@@ -55,16 +77,24 @@ const CONFIG_FILE = join(homedir(), ".pi/agent/extensions/overseer/config.json")
  * scan or fire rule notifications on every child turn.
  */
 const IS_CHILD_SESSION = Boolean(
-  process.env.PI_SUBAGENT_CHILD || process.env.PI_SUBAGENT_RUN_ID || process.env.PI_SUBAGENT_ORCHESTRATOR_TARGET,
+  process.env.PI_SUBAGENT_CHILD ||
+  process.env.PI_SUBAGENT_RUN_ID ||
+  process.env.PI_SUBAGENT_ORCHESTRATOR_TARGET,
 );
 
 function loadConfig(): OverseerConfig {
   try {
-    const parsed = JSON.parse(readFileSync(CONFIG_FILE, "utf8")) as Partial<OverseerConfig>;
+    const parsed = JSON.parse(
+      readFileSync(CONFIG_FILE, "utf8"),
+    ) as Partial<OverseerConfig>;
     return {
-      maxAgeHours: typeof parsed.maxAgeHours === "number" ? parsed.maxAgeHours : DEFAULT_CONFIG.maxAgeHours,
+      maxAgeHours:
+        typeof parsed.maxAgeHours === "number"
+          ? parsed.maxAgeHours
+          : DEFAULT_CONFIG.maxAgeHours,
       autoSteerMessage:
-        typeof parsed.autoSteerMessage === "string" && parsed.autoSteerMessage.trim()
+        typeof parsed.autoSteerMessage === "string" &&
+        parsed.autoSteerMessage.trim()
           ? parsed.autoSteerMessage
           : DEFAULT_CONFIG.autoSteerMessage,
       rules: { ...DEFAULT_RULES, ...(parsed.rules ?? {}) },
@@ -85,19 +115,33 @@ const MeshParams = Type.Object({
     ],
     {
       description:
-        'peers: list the fleet. handoff: hand one task to a peer. follow: read that session. steer/stop: redirect or end its job.',
+        "peers: list the fleet. handoff: hand one task to a peer. follow: read that session. steer/stop: redirect or end its job.",
     },
   ),
-  peer: Type.Optional(Type.String({ description: "Peer id from action peers" })),
-  task: Type.Optional(Type.String({ description: "The work to hand off (handoff)" })),
-  project: Type.Optional(Type.String({ description: "Project path on the destination (handoff)" })),
-  context: Type.Optional(
-    Type.Record(Type.String(), Type.Unknown(), { description: "Extra context appended to the task (handoff)" }),
+  peer: Type.Optional(
+    Type.String({ description: "Peer id from action peers" }),
   ),
-  session: Type.Optional(Type.String({ description: "Session id from a handoff (follow)" })),
-  job: Type.Optional(Type.String({ description: "Job id from a handoff (steer/stop)" })),
+  task: Type.Optional(
+    Type.String({ description: "The work to hand off (handoff)" }),
+  ),
+  project: Type.Optional(
+    Type.String({ description: "Project path on the destination (handoff)" }),
+  ),
+  context: Type.Optional(
+    Type.Record(Type.String(), Type.Unknown(), {
+      description: "Extra context appended to the task (handoff)",
+    }),
+  ),
+  session: Type.Optional(
+    Type.String({ description: "Session id from a handoff (follow)" }),
+  ),
+  job: Type.Optional(
+    Type.String({ description: "Job id from a handoff (steer/stop)" }),
+  ),
   message: Type.Optional(Type.String({ description: "Steering text (steer)" })),
-  since: Type.Optional(Type.String({ description: "Entry id to resume from (follow)" })),
+  since: Type.Optional(
+    Type.String({ description: "Entry id to resume from (follow)" }),
+  ),
 });
 
 const OverseerParams = Type.Object({
@@ -111,38 +155,56 @@ const OverseerParams = Type.Object({
       Type.Literal("stop"),
       Type.Literal("interrupt"),
     ],
-    { description: "Read: summary | runs | sessions | findings. Control: steer | stop | interrupt (needs runId)." },
+    {
+      description:
+        "Read: summary | runs | sessions | findings. Control: steer | stop | interrupt (needs runId).",
+    },
   ),
-  runId: Type.Optional(Type.String({ description: "Run id for steer/stop/interrupt" })),
-  message: Type.Optional(Type.String({ description: "Steering text for steer" })),
+  runId: Type.Optional(
+    Type.String({ description: "Run id for steer/stop/interrupt" }),
+  ),
+  message: Type.Optional(
+    Type.String({ description: "Steering text for steer" }),
+  ),
 });
 
 function scan(config: OverseerConfig): PanelData {
   const fleet = buildFleet({ maxAgeMs: config.maxAgeHours * 3_600_000 });
-  return { fleet, findings: config.rules.enabled ? evaluateRules(fleet, config.rules) : [] };
+  return {
+    fleet,
+    findings: config.rules.enabled ? evaluateRules(fleet, config.rules) : [],
+  };
 }
 
 function runGlyph(run: RunRecord): string {
   if (run.live) return "●";
-  if (run.liveness.state === "unknown") return `◐ unknown(${run.liveness.reason})`;
+  if (run.liveness.state === "unknown")
+    return `◐ unknown(${run.liveness.reason})`;
   return "○";
 }
 
 function summaryText(data: PanelData): string {
   const { fleet, findings } = data;
   const now = fleet.generatedAt;
-  const unknown = fleet.runs.filter((r) => r.liveness.state === "unknown").length;
+  const unknown = fleet.runs.filter(
+    (r) => r.liveness.state === "unknown",
+  ).length;
   const out: string[] = [
     `${fleet.liveRuns.length} live run(s)${unknown ? ` · ${unknown} unknown` : ""} · ${fleet.sessions.length} session(s) in window (${fleet.liveSessions.length} live) · ${fmtUsd(fleet.totals.cost)} · ${fmtTokens(fleet.totals.tokens)} tok`,
   ];
-  for (const f of findings) out.push(`[${f.severity}] ${f.rule}: ${f.label} ${f.message} → ${f.action}`);
+  for (const f of findings)
+    out.push(
+      `[${f.severity}] ${f.rule}: ${f.label} ${f.message} → ${f.action}`,
+    );
   for (const r of attentionRuns(fleet)) {
     out.push(
       `  ${runGlyph(r)} ${r.agent ?? "agent"} ${r.runId.slice(0, 8)} ${r.state} ${r.startedAt ? fmtDuration(now - r.startedAt) : "?"} ${fmtUsd(r.totalCost)} ${shortPath(r.cwd)}`,
     );
   }
-  for (const s of fleet.liveSessions) out.push(`  session ${shortPath(s.cwd)} ${fmtAge(s.lastActiveAt, now)}`);
-  if (!findings.length && !attentionRuns(fleet).length) out.push("no active work");
+  for (const s of fleet.liveSessions)
+    out.push(`  session ${shortPath(s.cwd)} ${fmtAge(s.lastActiveAt, now)}`);
+  if (!findings.length && !attentionRuns(fleet).length)
+    out.push("no active work");
   return out.join("\n");
 }
 
@@ -156,7 +218,10 @@ export default function (pi: ExtensionAPI) {
   // compute always matches the key the owning session computes.
   const selfSessionKey = (): string | undefined => {
     try {
-      return liveCtx?.sessionManager.getSessionFile() ?? liveCtx?.sessionManager.getSessionId();
+      return (
+        liveCtx?.sessionManager.getSessionFile() ??
+        liveCtx?.sessionManager.getSessionId()
+      );
     } catch {
       return undefined;
     }
@@ -172,7 +237,12 @@ export default function (pi: ExtensionAPI) {
 
   /** Executes in the process that owns the run, after a peer command arrives. */
   async function handleCommand(command: ControlCommand): Promise<void> {
-    const result = await executeLocalControl(pi.events, command.verb, command.runId, command.text);
+    const result = await executeLocalControl(
+      pi.events,
+      command.verb,
+      command.runId,
+      command.text,
+    );
     channel.publishResult({
       target: command.target,
       runId: command.runId,
@@ -208,14 +278,28 @@ export default function (pi: ExtensionAPI) {
         liveRuns: number;
         sessions: number;
         liveSessions: number;
-        findings: { rule: string; severity: Severity; id: string; action: Action }[];
+        findings: {
+          rule: string;
+          severity: Severity;
+          id: string;
+          action: Action;
+        }[];
         totals: { tokens: number; cost: number };
         control: ControlChannelStatus;
       };
 
-  async function runControl(verb: Verb, runId: string, text?: string): Promise<ControlOutcome> {
+  async function runControl(
+    verb: Verb,
+    runId: string,
+    text?: string,
+  ): Promise<ControlOutcome> {
     const run = findRun(runId);
-    if (!run) return { ok: false, detail: `no run '${runId}' found on this host`, where: "lookup" };
+    if (!run)
+      return {
+        ok: false,
+        detail: `no run '${runId}' found on this host`,
+        where: "lookup",
+      };
 
     const owner = run.parentSessionFile;
     const self = selfSessionKey();
@@ -224,7 +308,12 @@ export default function (pi: ExtensionAPI) {
       return { ok: result.ok, detail: result.detail, where: "local" };
     }
 
-    const published = channel.publishCommand({ target: owner, runId, verb, text });
+    const published = channel.publishCommand({
+      target: owner,
+      runId,
+      verb,
+      text,
+    });
     return published.ok
       ? {
           ok: true,
@@ -248,7 +337,12 @@ export default function (pi: ExtensionAPI) {
         const runId = (params.runId ?? "").trim();
         if (!runId) {
           return {
-            content: [{ type: "text", text: `${action} requires runId (use action: "runs" to list ids)` }],
+            content: [
+              {
+                type: "text",
+                text: `${action} requires runId (use action: "runs" to list ids)`,
+              },
+            ],
             details: { action, ok: false },
           };
         }
@@ -262,7 +356,13 @@ export default function (pi: ExtensionAPI) {
                 : `${action} failed (${outcome.where}): ${outcome.detail}`,
             },
           ],
-          details: { action, runId, ok: outcome.ok, where: outcome.where, detail: outcome.detail },
+          details: {
+            action,
+            runId,
+            ok: outcome.ok,
+            where: outcome.where,
+            detail: outcome.detail,
+          },
           isError: !outcome.ok,
         };
       }
@@ -276,7 +376,12 @@ export default function (pi: ExtensionAPI) {
       switch (action) {
         case "findings":
           text = findings.length
-            ? findings.map((f) => `[${f.severity}] ${f.rule} · ${f.label} · ${f.message} → ${f.action}`).join("\n")
+            ? findings
+                .map(
+                  (f) =>
+                    `[${f.severity}] ${f.rule} · ${f.label} · ${f.message} → ${f.action}`,
+                )
+                .join("\n")
             : "No rule findings.";
           break;
         case "runs":
@@ -310,7 +415,12 @@ export default function (pi: ExtensionAPI) {
           liveRuns: fleet.liveRuns.length,
           sessions: fleet.sessions.length,
           liveSessions: fleet.liveSessions.length,
-          findings: findings.map((f) => ({ rule: f.rule, severity: f.severity, id: f.id, action: f.action })),
+          findings: findings.map((f) => ({
+            rule: f.rule,
+            severity: f.severity,
+            id: f.id,
+            action: f.action,
+          })),
           totals: fleet.totals,
           control,
         },
@@ -333,7 +443,9 @@ export default function (pi: ExtensionAPI) {
         ...(params.peer === undefined ? {} : { peer: params.peer }),
         ...(params.task === undefined ? {} : { task: params.task }),
         ...(params.project === undefined ? {} : { project: params.project }),
-        ...(params.context === undefined ? {} : { context: params.context as Record<string, unknown> }),
+        ...(params.context === undefined
+          ? {}
+          : { context: params.context as Record<string, unknown> }),
         ...(params.session === undefined ? {} : { session: params.session }),
         ...(params.job === undefined ? {} : { job: params.job }),
         ...(params.message === undefined ? {} : { message: params.message }),
@@ -348,7 +460,8 @@ export default function (pi: ExtensionAPI) {
   });
 
   pi.registerCommand("overseer", {
-    description: "Show all live pi sessions and subagent runs, and steering status",
+    description:
+      "Show all live pi sessions and subagent runs, and steering status",
     handler: async (_args, ctx) => {
       liveCtx = ctx;
       const data = { ...scan(config), control: channel.status() };
@@ -357,7 +470,12 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       await ctx.ui.custom<void>((_tui, theme, _kb, done) => {
-        return new OverseerPanel(data, theme, () => done(), () => ({ ...scan(config), control: channel.status() }));
+        return new OverseerPanel(
+          data,
+          theme,
+          () => done(),
+          () => ({ ...scan(config), control: channel.status() }),
+        );
       });
     },
   });
@@ -394,10 +512,15 @@ export default function (pi: ExtensionAPI) {
         finding.severity === "critical" ? "error" : "warning",
       );
 
-      const wantsAction = config.rules.action === "steer" || config.rules.action === "stop";
+      const wantsAction =
+        config.rules.action === "steer" || config.rules.action === "stop";
       if (wantsAction && finding.kind === "run") {
         const verb: Verb = config.rules.action === "stop" ? "stop" : "steer";
-        void runControl(verb, finding.id, verb === "steer" ? config.autoSteerMessage : undefined).then((outcome) => {
+        void runControl(
+          verb,
+          finding.id,
+          verb === "steer" ? config.autoSteerMessage : undefined,
+        ).then((outcome) => {
           notify(
             `overseer auto-${verb} ${finding.id.slice(0, 8)} (${outcome.where}): ${outcome.ok ? "ok" : outcome.detail}`,
             outcome.ok ? "info" : "warning",
@@ -409,7 +532,9 @@ export default function (pi: ExtensionAPI) {
 
     const control = channel.status();
     const bits = [`${data.fleet.liveRuns.length} live`];
-    const unknownRuns = data.fleet.runs.filter((r) => r.liveness.state === "unknown").length;
+    const unknownRuns = data.fleet.runs.filter(
+      (r) => r.liveness.state === "unknown",
+    ).length;
     if (unknownRuns) bits.push(`${unknownRuns} unknown`);
     if (data.findings.length) bits.push(`${data.findings.length} finding(s)`);
     if (control.available && control.connected) bits.push("steer ready");

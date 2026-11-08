@@ -113,10 +113,7 @@ export function buildAgentTxtRecord(
     [TXT_KEY_PORT]: String(descriptor.port),
     // Chunked because one mDNS TXT string cannot exceed 255 bytes and the skill
     // list passed that at 20 capabilities; see chunkTxtValue.
-    ...chunkTxtValue(
-      TXT_KEY_CAPABILITIES,
-      descriptor.capabilities.join(","),
-    ),
+    ...chunkTxtValue(TXT_KEY_CAPABILITIES, descriptor.capabilities.join(",")),
   });
 }
 

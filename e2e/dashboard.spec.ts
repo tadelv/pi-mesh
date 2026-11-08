@@ -5887,8 +5887,14 @@ test("a burst of watch frames costs far fewer browser refreshes than frames", as
         const response = await original(...args);
         try {
           const raw = args[0];
+          // A call site may pass a string, a URL, or a Request; only the last
+          // two carry .url and URL has it too, so narrow rather than assume.
           const url = new URL(
-            typeof raw === "string" ? raw : raw.url,
+            typeof raw === "string"
+              ? raw
+              : raw instanceof URL
+                ? raw.href
+                : raw.url,
             location.href,
           );
           if (url.pathname === "/api/state")
@@ -6065,6 +6071,472 @@ test("an added session appears and a removed one leaves without rebuilding rows"
           document.querySelector('button.session-link[title="session-keep"]'),
       ),
       "membership clause: a remove does not rebuild an existing row",
+    ).toBe(true);
+  } finally {
+    await page.close().catch(() => undefined);
+    try {
+      await control.stop();
+    } finally {
+      store.close();
+      await new Promise<void>((resolve) => stub.close(() => resolve()));
+    }
+  }
+});
+
+// M8-7 runs panel: a stub agent whose watch snapshot carries runs and one
+// findings pass, like a real agent with a recognised run layout.
+interface RunsStubRun {
+  run_id: string;
+  state: string;
+  liveness: {
+    state: string;
+    reason: string;
+    probed_at: string;
+    status_age_ms: number;
+  };
+  pid: number;
+  started_at: string;
+  last_update: string;
+  status_age_ms: number;
+  steps: Array<Record<string, unknown>>;
+}
+
+function runsStubRun(runId: string, state = "running"): RunsStubRun {
+  const now = Date.now();
+  return {
+    run_id: runId,
+    state,
+    liveness: {
+      state: "alive",
+      reason: "pid-alive",
+      probed_at: new Date(now - 60_000).toISOString(),
+      status_age_ms: 60_000,
+    },
+    pid: 101,
+    started_at: new Date(now - 600_000).toISOString(),
+    last_update: new Date(now - 60_000).toISOString(),
+    status_age_ms: 60_000,
+    steps: [],
+  };
+}
+
+async function startRunsStub(options: {
+  name: string;
+  runs: RunsStubRun[];
+  evaluatedAt?: string;
+  findings?: Array<Record<string, unknown>>;
+}) {
+  const evaluatedAt =
+    options.evaluatedAt ?? new Date(Date.now() - 30_000).toISOString();
+  const findings = options.findings ?? [
+    {
+      rule: "run-stale",
+      run_id: options.runs[0]?.run_id ?? "run-1",
+      summary: "Run has not updated for a while.",
+      observed_at: evaluatedAt,
+      actual: 600_000,
+      threshold: 300_000,
+    },
+  ];
+  const coverage = {
+    layout_recognised: true,
+    last_success: evaluatedAt,
+    last_error: null,
+  };
+  const watchPushers: Array<(frame: unknown) => void> = [];
+  const stub: Server = createServer((request, response) => {
+    const url = new URL(request.url ?? "/", "http://stub");
+    if (
+      request.method === "GET" &&
+      url.pathname === "/.well-known/agent-card.json"
+    ) {
+      response.writeHead(200, { "content-type": "application/json" });
+      response.end(
+        JSON.stringify({
+          name: options.name,
+          skills: [
+            "mesh.watch",
+            "session.list",
+            "run.list",
+            "run.findings",
+          ].map((id) => ({ id, name: id, description: "", tags: [] })),
+        }),
+      );
+      return;
+    }
+    if (request.method === "POST" && url.pathname === "/") {
+      let body = "";
+      request.on("data", (chunk) => {
+        body += chunk;
+      });
+      request.on("end", () => {
+        const rpc = JSON.parse(body) as {
+          id: unknown;
+          method: string;
+          params?: {
+            message?: { parts?: Array<{ data?: { skill?: string } }> };
+          };
+        };
+        const reply = (result: unknown): void => {
+          response.writeHead(200, { "content-type": "application/json" });
+          response.end(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: rpc.id,
+              result: { message: { parts: [{ data: { result } }] } },
+            }),
+          );
+        };
+        const skill = rpc.params?.message?.parts?.[0]?.data?.skill;
+        if (rpc.method === "message/send" && skill === "session.list") {
+          reply({ sessions: [] });
+          return;
+        }
+        if (rpc.method === "message/send" && skill === "run.list") {
+          reply({ runs: options.runs, coverage, evaluated_at: evaluatedAt });
+          return;
+        }
+        if (rpc.method === "message/stream" && skill === "mesh.watch") {
+          response.writeHead(200, {
+            "content-type": "text/event-stream; charset=utf-8",
+            "cache-control": "no-cache",
+            connection: "keep-alive",
+          });
+          const send = (payload: unknown): void => {
+            if (!response.destroyed)
+              response.write(`data: ${JSON.stringify(payload)}\n\n`);
+          };
+          send({ task: { id: "watch-task" } });
+          const push = (frame: unknown): void =>
+            send({ message: { parts: [{ data: { result: frame } }] } });
+          push({
+            type: "snapshot",
+            sessions: [],
+            jobs: [],
+            runs: options.runs,
+            findings: { findings, evaluated_at: evaluatedAt, coverage },
+          });
+          watchPushers.push(push);
+          response.once("close", () => {
+            const index = watchPushers.indexOf(push);
+            if (index !== -1) watchPushers.splice(index, 1);
+          });
+          return;
+        }
+        reply({});
+      });
+      return;
+    }
+    response.writeHead(404);
+    response.end("unknown");
+  });
+  await new Promise<void>((resolve) => stub.listen(0, "127.0.0.1", resolve));
+  return { stub, watchPushers };
+}
+
+function runsSection(page: import("@playwright/test").Page, agentName: string) {
+  return page.locator("#runs section.agent-section").filter({
+    has: page.locator("h2", { hasText: agentName }),
+  });
+}
+
+test("runs panel lists runs with liveness evidence and findings with coverage and freshness", async ({
+  browser,
+}) => {
+  const timestamp = new Date(0).toISOString();
+  const { stub, watchPushers } = await startRunsStub({
+    name: "Runs Agent",
+    runs: [runsStubRun("run-1")],
+  });
+  void watchPushers;
+  const stubPort = (stub.address() as { port: number }).port;
+  const store = new ControlStore(":memory:");
+  store.controlName("Runs Control");
+  store.upsertAgent({
+    peer_id: "peer-runs",
+    name: "Runs Agent",
+    host: "127.0.0.1",
+    port: stubPort,
+    credential: Buffer.alloc(32, 7).toString("base64"),
+    paired_at: timestamp,
+  });
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const page = await browser.newPage();
+  try {
+    const { port } = await control.start();
+    await page.addInitScript(
+      (dashboardToken) => localStorage.setItem("pi_mesh_token", dashboardToken),
+      store.dashboardToken(),
+    );
+    await page.goto(`http://127.0.0.1:${port}`);
+    await expect(
+      page.getByRole("heading", { name: "Runs Control" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Sync", exact: true }).click();
+    const section = runsSection(page, "Runs Agent");
+    // Liveness evidence: state, the pid-liveness tri-state with its reason,
+    // the pid, and the age.
+    await expect(
+      section,
+      "runs clause: the run renders with its liveness evidence",
+    ).toContainText(
+      "run-1 \u2014 running (alive \u00b7 pid-alive) \u00b7 pid 101",
+    );
+    await expect(
+      section,
+      "runs clause: the run row states its age",
+    ).toContainText("updated");
+    await expect(
+      section,
+      "runs clause: a live watch with a stamped mirror reads live, not cached",
+    ).toContainText("runs live");
+    await expect(
+      section,
+      "runs clause: the mirror states its age",
+    ).toContainText("Live: mirror updated");
+    // Findings with coverage and freshness: the rule, the labelled pass age
+    // and the per-agent coverage - never a bare "no findings".
+    await expect(
+      section,
+      "findings clause: the finding renders with its rule",
+    ).toContainText("run-stale");
+    await expect(
+      section,
+      "findings clause: the pass states its age and coverage",
+    ).toContainText("Evaluated");
+    await expect(
+      section,
+      "findings clause: coverage travels with the findings",
+    ).toContainText("layout recognised");
+    await expect(
+      section,
+      "findings clause: an observed pass is not rendered as 'no findings'",
+    ).not.toContainText("No findings snapshot observed");
+    await expect(
+      section,
+      "runs clause: a live agent is not rendered as unobserved",
+    ).not.toContainText("Unobserved");
+  } finally {
+    await page.close().catch(() => undefined);
+    try {
+      await control.stop();
+    } finally {
+      store.close();
+      await new Promise<void>((resolve) => stub.close(() => resolve()));
+    }
+  }
+});
+
+test("a run for agent A never renders under agent B", async ({ browser }) => {
+  const timestamp = new Date(0).toISOString();
+  const stubA = await startRunsStub({
+    name: "Runs Agent A",
+    runs: [runsStubRun("run-a1")],
+  });
+  const stubB = await startRunsStub({
+    name: "Runs Agent B",
+    runs: [runsStubRun("run-b1")],
+  });
+  const store = new ControlStore(":memory:");
+  store.controlName("Runs Isolation Control");
+  store.upsertAgent({
+    peer_id: "peer-runs-a",
+    name: "Runs Agent A",
+    host: "127.0.0.1",
+    port: (stubA.stub.address() as { port: number }).port,
+    credential: Buffer.alloc(32, 7).toString("base64"),
+    paired_at: timestamp,
+  });
+  store.upsertAgent({
+    peer_id: "peer-runs-b",
+    name: "Runs Agent B",
+    host: "127.0.0.1",
+    port: (stubB.stub.address() as { port: number }).port,
+    credential: Buffer.alloc(32, 7).toString("base64"),
+    paired_at: timestamp,
+  });
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const page = await browser.newPage();
+  try {
+    const { port } = await control.start();
+    await page.addInitScript(
+      (dashboardToken) => localStorage.setItem("pi_mesh_token", dashboardToken),
+      store.dashboardToken(),
+    );
+    await page.goto(`http://127.0.0.1:${port}`);
+    await expect(
+      page.getByRole("heading", { name: "Runs Isolation Control" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Sync", exact: true }).click();
+    const sectionA = runsSection(page, "Runs Agent A");
+    const sectionB = runsSection(page, "Runs Agent B");
+    await expect(sectionA, "isolation clause: A's run renders").toContainText(
+      "run-a1",
+    );
+    await expect(sectionB, "isolation clause: B's run renders").toContainText(
+      "run-b1",
+    );
+    await expect(
+      sectionA,
+      "isolation clause: B's run never renders under A",
+    ).not.toContainText("run-b1");
+    await expect(
+      sectionB,
+      "isolation clause: A's run never renders under B",
+    ).not.toContainText("run-a1");
+  } finally {
+    await page.close().catch(() => undefined);
+    try {
+      await control.stop();
+    } finally {
+      store.close();
+      await new Promise<void>((resolve) => stubA.stub.close(() => resolve()));
+      await new Promise<void>((resolve) => stubB.stub.close(() => resolve()));
+    }
+  }
+});
+
+test("an agent with no stream renders as unobserved rather than healthy", async ({
+  browser,
+}) => {
+  // A cached run row with a fresh stamp, but no watch subscription: the
+  // panel must say unobserved. A stamp alone never renders a row as current.
+  const recent = new Date(Date.now() - 30_000).toISOString();
+  const store = new ControlStore(":memory:");
+  store.controlName("Runs Unobserved Control");
+  store.upsertAgent({
+    peer_id: "peer-runs-off",
+    name: "Offline Agent",
+    host: "127.0.0.1",
+    port: 1,
+    credential: Buffer.alloc(32, 7).toString("base64"),
+    paired_at: new Date(0).toISOString(),
+  });
+  store.replaceRuns(
+    "peer-runs-off",
+    [
+      {
+        run_id: "run-cached",
+        state: "running",
+        liveness: {
+          state: "alive",
+          reason: "pid-alive",
+          probed_at: recent,
+          status_age_ms: 1_000,
+        },
+        started_at: recent,
+        last_update: recent,
+        status_age_ms: 1_000,
+        steps: [],
+      },
+    ],
+    recent,
+  );
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const page = await browser.newPage();
+  try {
+    const { port } = await control.start();
+    await page.addInitScript(
+      (dashboardToken) => localStorage.setItem("pi_mesh_token", dashboardToken),
+      store.dashboardToken(),
+    );
+    await page.goto(`http://127.0.0.1:${port}`);
+    await expect(
+      page.getByRole("heading", { name: "Runs Unobserved Control" }),
+    ).toBeVisible();
+    const section = runsSection(page, "Offline Agent");
+    await expect(
+      section,
+      "unobserved clause: the agent says it is unobserved",
+    ).toContainText("Unobserved");
+    await expect(
+      section,
+      "unobserved clause: nothing claims the cached row is current",
+    ).not.toContainText("runs live");
+    await expect(
+      section,
+      "unobserved clause: no mirror age is presented as currency",
+    ).not.toContainText("Live: mirror updated");
+    await expect(
+      section,
+      "unobserved clause: no observed pass is claimed either",
+    ).toContainText("No findings snapshot observed");
+  } finally {
+    await page.close().catch(() => undefined);
+    try {
+      await control.stop();
+    } finally {
+      store.close();
+    }
+  }
+});
+
+test("a runs refresh reuses its rows instead of rebuilding them", async ({
+  browser,
+}) => {
+  // The same clause as the session-list flicker fix, for this view: capture
+  // a row's handle, push an update for a DIFFERENT run, and require the
+  // handle to still be the same connected node afterwards.
+  const timestamp = new Date(0).toISOString();
+  const kept = runsStubRun("run-keep");
+  const other = runsStubRun("run-other");
+  const { stub, watchPushers } = await startRunsStub({
+    name: "Runs Reuse Agent",
+    runs: [kept, other],
+  });
+  const stubPort = (stub.address() as { port: number }).port;
+  const store = new ControlStore(":memory:");
+  store.controlName("Runs Reuse Control");
+  store.upsertAgent({
+    peer_id: "peer-runs-reuse",
+    name: "Runs Reuse Agent",
+    host: "127.0.0.1",
+    port: stubPort,
+    credential: Buffer.alloc(32, 7).toString("base64"),
+    paired_at: timestamp,
+  });
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const page = await browser.newPage();
+  try {
+    const { port } = await control.start();
+    await page.addInitScript(
+      (dashboardToken) => localStorage.setItem("pi_mesh_token", dashboardToken),
+      store.dashboardToken(),
+    );
+    await page.goto(`http://127.0.0.1:${port}`);
+    await expect(
+      page.getByRole("heading", { name: "Runs Reuse Control" }),
+    ).toBeVisible();
+    await page.getByRole("button", { name: "Sync", exact: true }).click();
+    const section = runsSection(page, "Runs Reuse Agent");
+    await expect(section, "reuse clause: both runs render").toContainText(
+      "run-keep",
+    );
+    // Run rows live under .job; findings rows are bare .job-line, so the
+    // handle below is the run row even though the finding names the run too.
+    const row = section.locator(".job > .job-line", { hasText: "run-keep" });
+    const before = await row.elementHandle();
+    expect(before, "positive control: the row handle exists").not.toBeNull();
+    // An update for a DIFFERENT run arrives over the watch.
+    for (const push of [...watchPushers])
+      push({ type: "run", run: { ...other, state: "complete" } });
+    await expect(
+      section,
+      "reuse clause: the other run's update arrives",
+    ).toContainText("run-other \u2014 complete");
+    expect(
+      await before!.evaluate((el) => el.isConnected),
+      "reuse clause: the untouched row stays connected across a refresh (rebuild the rows to fail this)",
+    ).toBe(true);
+    expect(
+      await before!.evaluate(
+        (el) =>
+          el ===
+          [...document.querySelectorAll("#runs .job-line")].find((node) =>
+            node.textContent?.includes("run-keep"),
+          ),
+      ),
+      "reuse clause: the untouched row is the same node after a refresh",
     ).toBe(true);
   } finally {
     await page.close().catch(() => undefined);

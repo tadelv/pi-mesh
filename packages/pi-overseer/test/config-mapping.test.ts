@@ -8,11 +8,7 @@
 import { describe, expect, it } from "vitest";
 
 import { DEFAULT_RULES as MODULE_DEFAULT_RULES } from "@pi-mesh/runs";
-import {
-  DEFAULT_RULES,
-  toModuleConfig,
-  type RulesConfig,
-} from "../rules.js";
+import { DEFAULT_RULES, toModuleConfig, type RulesConfig } from "../rules.js";
 
 describe("toModuleConfig", () => {
   it("maps the package defaults onto the module defaults", () => {

@@ -143,7 +143,7 @@ function readSessionHeader(
   return {
     id: h.id,
     cwd: typeof h.cwd === "string" ? h.cwd : "",
-    timestamp: typeof h.timestamp === "string" ? h.timestamp : undefined,
+    ...(typeof h.timestamp === "string" ? { timestamp: h.timestamp } : {}),
   };
 }
 
@@ -188,7 +188,11 @@ export function discoverSessions(opts: DiscoveryOptions = {}): SessionRecord[] {
         id: header.id,
         file,
         cwd: header.cwd,
-        startedAt: header.timestamp,
+        // exactOptionalPropertyTypes: an absent value is an omitted key, never
+        // an explicit undefined.
+        ...(header.timestamp === undefined
+          ? {}
+          : { startedAt: header.timestamp }),
         lastActiveAt: mtimeMs,
         live: age <= LIVE_WINDOW_MS,
       });
@@ -212,21 +216,23 @@ function readRunExtras(dir: string): {
 } {
   let s: Record<string, unknown>;
   try {
-    s = JSON.parse(
-      readFileSync(join(dir, "status.json"), "utf8"),
-    ) as Record<string, unknown>;
+    s = JSON.parse(readFileSync(join(dir, "status.json"), "utf8")) as Record<
+      string,
+      unknown
+    >;
   } catch {
     return {};
   }
   const tokens = s.totalTokens as
-    | { window?: unknown; total?: unknown }
-    | undefined;
+    { window?: unknown; total?: unknown } | undefined;
   return {
-    cwd: typeof s.cwd === "string" ? s.cwd : undefined,
-    contextWindow:
-      typeof tokens?.window === "number" ? tokens.window : undefined,
-    lastActivityAt:
-      typeof s.lastActivityAt === "number" ? s.lastActivityAt : undefined,
+    ...(typeof s.cwd === "string" ? { cwd: s.cwd } : {}),
+    ...(typeof tokens?.window === "number"
+      ? { contextWindow: tokens.window }
+      : {}),
+    ...(typeof s.lastActivityAt === "number"
+      ? { lastActivityAt: s.lastActivityAt }
+      : {}),
   };
 }
 
@@ -251,27 +257,35 @@ export function attentionRuns(fleet: Fleet): RunRecord[] {
 function toPackageRun(mod: ModuleRunRecord): RunRecord {
   const liveness = probeLiveness(mod.pid);
   const extras = readRunExtras(mod.runDir);
-  const active = (ACTIVE_RUN_STATES as readonly string[]).includes(
-    mod.state,
-  );
+  const active = (ACTIVE_RUN_STATES as readonly string[]).includes(mod.state);
   return {
     runId: mod.runId,
     dir: mod.runDir,
     state: mod.state,
     live: active && liveness.state === "alive",
     liveness,
-    pid: mod.pid,
-    cwd: extras.cwd,
-    parentSessionFile: mod.parentSessionFile,
-    childSessionFile: mod.childSessionFile,
-    agent: mod.agent,
-    mode: mod.mode,
-    startedAt: mod.startedAt,
-    lastActivityAt: mod.lastUpdate ?? extras.lastActivityAt,
-    endedAt: mod.endedAt,
-    totalTokens: mod.tokens?.total,
-    totalCost: mod.costUsd,
-    contextWindow: extras.contextWindow,
+    ...(mod.pid === undefined ? {} : { pid: mod.pid }),
+    ...(extras.cwd === undefined ? {} : { cwd: extras.cwd }),
+    ...(mod.parentSessionFile === undefined
+      ? {}
+      : { parentSessionFile: mod.parentSessionFile }),
+    ...(mod.childSessionFile === undefined
+      ? {}
+      : { childSessionFile: mod.childSessionFile }),
+    ...(mod.agent === undefined ? {} : { agent: mod.agent }),
+    ...(mod.mode === undefined ? {} : { mode: mod.mode }),
+    ...(mod.startedAt === undefined ? {} : { startedAt: mod.startedAt }),
+    ...(mod.lastUpdate === undefined && extras.lastActivityAt === undefined
+      ? {}
+      : { lastActivityAt: mod.lastUpdate ?? extras.lastActivityAt }),
+    ...(mod.endedAt === undefined ? {} : { endedAt: mod.endedAt }),
+    ...(mod.tokens?.total === undefined
+      ? {}
+      : { totalTokens: mod.tokens.total }),
+    ...(mod.costUsd === undefined ? {} : { totalCost: mod.costUsd }),
+    ...(extras.contextWindow === undefined
+      ? {}
+      : { contextWindow: extras.contextWindow }),
     stepCount: mod.steps.length,
   };
 }

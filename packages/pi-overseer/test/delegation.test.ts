@@ -85,13 +85,15 @@ function toPackageFleet(modRuns: ModuleRunRecord[], now: number): Fleet {
     state: m.state,
     live: false,
     liveness: { state: "unknown", reason: "no-pid", probedAt: now },
-    pid: m.pid,
-    parentSessionFile: m.parentSessionFile,
-    agent: m.agent,
-    startedAt: m.startedAt,
-    lastActivityAt: m.lastUpdate,
-    totalTokens: m.tokens?.total,
-    totalCost: m.costUsd,
+    ...(m.pid === undefined ? {} : { pid: m.pid }),
+    ...(m.parentSessionFile === undefined
+      ? {}
+      : { parentSessionFile: m.parentSessionFile }),
+    ...(m.agent === undefined ? {} : { agent: m.agent }),
+    ...(m.startedAt === undefined ? {} : { startedAt: m.startedAt }),
+    ...(m.lastUpdate === undefined ? {} : { lastActivityAt: m.lastUpdate }),
+    ...(m.tokens?.total === undefined ? {} : { totalTokens: m.tokens.total }),
+    ...(m.costUsd === undefined ? {} : { totalCost: m.costUsd }),
   }));
   return {
     generatedAt: now,

@@ -15,7 +15,8 @@
 import type { EventBus } from "./control.ts";
 
 export const INTERCOM_REGISTER_EVENT = "intercom:extension-register";
-export const INTERCOM_REGISTRY_READY_EVENT = "intercom:extension-registry-ready";
+export const INTERCOM_REGISTRY_READY_EVENT =
+  "intercom:extension-registry-ready";
 export const OVERSEER_NAMESPACE = "overseer/v1";
 
 export interface ControlCommand {
@@ -56,7 +57,9 @@ export function isControlCommand(payload: unknown): payload is ControlCommand {
 export function isControlResult(payload: unknown): payload is ControlResult {
   if (!payload || typeof payload !== "object") return false;
   const p = payload as Record<string, unknown>;
-  return p.kind === "overseer.result" && p.v === 1 && typeof p.runId === "string";
+  return (
+    p.kind === "overseer.result" && p.v === 1 && typeof p.runId === "string"
+  );
 }
 
 interface RawChannel {
@@ -86,13 +89,19 @@ export interface ControlChannelStatus {
 
 export interface ControlChannel {
   register(): void;
-  publishCommand(command: Omit<ControlCommand, "kind" | "v">): { ok: boolean; detail: string };
+  publishCommand(command: Omit<ControlCommand, "kind" | "v">): {
+    ok: boolean;
+    detail: string;
+  };
   publishResult(result: Omit<ControlResult, "kind" | "v">): void;
   status(): ControlChannelStatus;
   dispose(): void;
 }
 
-export function createControlChannel(bus: EventBus, handlers: ControlChannelHandlers): ControlChannel {
+export function createControlChannel(
+  bus: EventBus,
+  handlers: ControlChannelHandlers,
+): ControlChannel {
   let raw: RawChannel | undefined;
   let registered = false;
   let connected = false;
@@ -137,19 +146,33 @@ export function createControlChannel(bus: EventBus, handlers: ControlChannelHand
 
     publishCommand(partial) {
       register();
-      if (!raw) return { ok: false, detail: "control channel unavailable — is pi-intercom installed and loaded?" };
+      if (!raw)
+        return {
+          ok: false,
+          detail:
+            "control channel unavailable — is pi-intercom installed and loaded?",
+        };
       try {
-        raw.publish({ kind: "overseer.control", v: 1, ...partial }, { audience: "capable" });
+        raw.publish(
+          { kind: "overseer.control", v: 1, ...partial },
+          { audience: "capable" },
+        );
         return { ok: true, detail: "broadcast to peers" };
       } catch (error) {
-        return { ok: false, detail: error instanceof Error ? error.message : String(error) };
+        return {
+          ok: false,
+          detail: error instanceof Error ? error.message : String(error),
+        };
       }
     },
 
     publishResult(partial) {
       if (!raw) return;
       try {
-        raw.publish({ kind: "overseer.result", v: 1, ...partial }, { audience: "capable" });
+        raw.publish(
+          { kind: "overseer.result", v: 1, ...partial },
+          { audience: "capable" },
+        );
       } catch {
         // best-effort reporting; the command itself already ran
       }

@@ -19,7 +19,7 @@ import {
   type RulesConfig as ModuleRulesConfig,
 } from "@pi-mesh/runs";
 import type { Fleet, RunRecord } from "./discovery.ts";
-import { baseName } from "./format.ts";
+import { baseName } from "./format.js";
 
 export type Action = "notify" | "steer" | "stop";
 export type Severity = "info" | "warn" | "critical";
@@ -59,9 +59,7 @@ export interface Finding {
 }
 
 function num(value: unknown, fallback: number): number {
-  return typeof value === "number" && Number.isFinite(value)
-    ? value
-    : fallback;
+  return typeof value === "number" && Number.isFinite(value) ? value : fallback;
 }
 
 /**
@@ -88,12 +86,9 @@ export function toModuleConfig(config: RulesConfig): ModuleRulesConfig {
  */
 export function toModuleRuns(fleet: Fleet, now: number): ModuleRunRecord[] {
   return fleet.runs.map((run: RunRecord): ModuleRunRecord => {
-    const startedAt =
-      typeof run.startedAt === "number" ? run.startedAt : now;
+    const startedAt = typeof run.startedAt === "number" ? run.startedAt : now;
     const lastUpdate =
-      typeof run.lastActivityAt === "number"
-        ? run.lastActivityAt
-        : undefined;
+      typeof run.lastActivityAt === "number" ? run.lastActivityAt : undefined;
     const record: ModuleRunRecord = {
       runId: run.runId,
       runDir: run.dir,
@@ -140,10 +135,7 @@ export function evaluateModuleFindings(
 }
 
 /** Severity is presentation and stays package-side. */
-function severityFor(
-  finding: ModuleFinding,
-  config: RulesConfig,
-): Severity {
+function severityFor(finding: ModuleFinding, config: RulesConfig): Severity {
   if (finding.rule === "session-failure-streak") return "critical";
   if (
     finding.rule === "run-stale" &&
@@ -185,10 +177,7 @@ function toPackageFinding(
   };
 }
 
-export function evaluateRules(
-  fleet: Fleet,
-  config: RulesConfig,
-): Finding[] {
+export function evaluateRules(fleet: Fleet, config: RulesConfig): Finding[] {
   if (!config.enabled) return [];
   return evaluateModuleFindings(fleet, config).map((f) =>
     toPackageFinding(f, fleet, config),

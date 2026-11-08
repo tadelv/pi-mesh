@@ -10,7 +10,7 @@
   "packageManager": "pnpm@9.12.0",
   "scripts": {
     "build": "tsc -b",
-    "typecheck": "tsc -p tsconfig.test.json",
+    "typecheck": "tsc -p tsconfig.test.json && tsc -p e2e/tsconfig.json",
     "clean": "tsc -b --clean && rm -rf packages/*/dist",
     "test": "pnpm -r --if-present test",
     "test:browser": "playwright test",

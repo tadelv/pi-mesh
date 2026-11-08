@@ -135,7 +135,10 @@ describe("agent mDNS", () => {
     // mDNSResponder dropped every response from the machine while the agent was
     // still running and logging a completed announce. Nothing asserted the
     // ceiling, so nothing failed.
-    const capabilities = Array.from({ length: 40 }, (_, index) => `skill.number.${index}`);
+    const capabilities = Array.from(
+      { length: 40 },
+      (_, index) => `skill.number.${index}`,
+    );
     const descriptorWith = { ...descriptor, capabilities };
     const txt = buildAgentTxtRecord(descriptorWith);
     for (const [key, value] of Object.entries(txt)) {
@@ -144,7 +147,9 @@ describe("agent mDNS", () => {
         `TXT key ${key} must fit one mDNS string`,
       ).toBeLessThanOrEqual(255);
     }
-    expect(Object.keys(txt).filter((key) => key.startsWith("caps")).length).toBeGreaterThan(1);
+    expect(
+      Object.keys(txt).filter((key) => key.startsWith("caps")).length,
+    ).toBeGreaterThan(1);
     expect(joinTxtValue(txt, "caps")).toBe(capabilities.join(","));
   });
 

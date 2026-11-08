@@ -161,12 +161,15 @@ describe("stopRun", () => {
       path.join(runDir, "control", "stop-inbox-closed.json"),
       JSON.stringify({ version: 1 }),
     );
-    let result;
+    let result: ReturnType<typeof stopRun> | undefined;
     expect(() => {
       result = stopRun(runDir);
     }).not.toThrow();
     expect(result?.ok).toBe(false);
-    expect(result?.code).toBe("stop-inbox-closed");
+    if (result === undefined || result.ok) {
+      throw new Error("expected a refusal from a closed stop inbox");
+    }
+    expect(result.code).toBe("stop-inbox-closed");
     expect(stopFiles(runDir)).toEqual([]);
   });
 });

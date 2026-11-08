@@ -3,6 +3,7 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { SessionSummary, WatchFrame } from "@pi-mesh/protocol";
 import { ControlStore } from "../src/db.js";
+import type { AgentTarget } from "../src/client.js";
 import { WatchManager, type WatchOpener } from "../src/watch.js";
 
 const PEER = "agent-watch-1";
@@ -43,8 +44,8 @@ class WatchSource {
 
   readonly open: WatchOpener = async function* (
     this: WatchSource,
-    _target,
-    signal,
+    _target: AgentTarget,
+    signal: AbortSignal,
   ): AsyncGenerator<WatchFrame> {
     void _target;
     this.opens += 1;

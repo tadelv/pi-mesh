@@ -304,6 +304,65 @@ describe("agent CLI", () => {
     expect(captured.read().stderr).toContain("sessions takes no arguments");
   });
 
+  it("narrows a session listing to one project with --project", async () => {
+    // The whole point of the flag is that a caller can list one checkout
+    // without paying for 500 other transcripts, so this asserts the filter
+    // cuts both neighbours: a sibling with a longer name, and the whole list.
+    const sessionsRoot = await mkdtemp(join(tmpdir(), "pi-mesh-cli-project-"));
+    const directory = join(sessionsRoot, "--project-holder--");
+    await mkdir(directory, { recursive: true });
+    const header = (id: string, cwd: string): string =>
+      `${JSON.stringify({
+        type: "session",
+        version: 3,
+        id,
+        timestamp: "2024-01-01T00:00:00.000Z",
+        cwd,
+      })}\n`;
+    await writeFile(
+      join(directory, "app.jsonl"),
+      header("11111111-1111-4111-8111-111111111111", "/repo/app"),
+    );
+    await writeFile(
+      join(directory, "app-worktrees.jsonl"),
+      header("22222222-2222-4222-8222-222222222222", "/repo/app-worktrees/x"),
+    );
+
+    const captured = output();
+    await expect(
+      run(["sessions", "--project", "/repo/app/"], {
+        ...captured.io,
+        sessionsRoot,
+      }),
+    ).resolves.toBe(0);
+    const listed = JSON.parse(captured.read().stdout) as {
+      sessions: { project: string }[];
+    };
+    expect(listed.sessions.map((session) => session.project)).toEqual([
+      "/repo/app",
+    ]);
+
+    const all = output();
+    await expect(run(["sessions"], { ...all.io, sessionsRoot })).resolves.toBe(
+      0,
+    );
+    const unfiltered = JSON.parse(all.read().stdout) as {
+      sessions: unknown[];
+    };
+    expect(unfiltered.sessions).toHaveLength(2);
+  });
+
+  it("refuses a --project outside the sessions command", async () => {
+    const captured = output();
+
+    await expect(
+      run(["stream", "session", "--project", "/repo/app"], captured.io),
+    ).resolves.toBe(2);
+    expect(captured.read().stderr).toContain(
+      "--project is only valid with sessions",
+    );
+  });
+
   it("refuses a directly dialed peer that cannot prove swarm membership", async () => {
     // Dialing an address skips mDNS, so the peer's claimed id is the only
     // identity on offer. It is accepted only because the handshake challenge

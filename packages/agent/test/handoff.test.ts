@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import { execFileSync } from "node:child_process";
+import { joinTxtValue } from "@pi-mesh/protocol";
 import {
   chmod,
   mkdir,
@@ -698,7 +699,7 @@ async function observeCapabilities(
       { signal: AbortSignal.timeout(2_000) },
     );
     const card = (await response.json()) as AgentCard;
-    const caps = bonjour.published[0]?.txt?.caps;
+    const caps = joinTxtValue(bonjour.published[0]?.txt ?? {}, "caps");
     return {
       card: card.skills.map((skill) => skill.id).sort(),
       caps: typeof caps === "string" ? caps.split(",").sort() : [],

@@ -9,6 +9,19 @@ loses ten minutes instead.
 a commit. "This seemed flaky" is not an entry. If you cannot say how you know,
 you do not know yet.
 
+## Discovery
+
+- **An mDNS TXT string is capped at 255 bytes, and passing it makes a machine
+  mute.** Measured 2026-11-07: the `caps` value reached 269 bytes at 20 skills and
+  297 at 22. Both macOS agents kept running, served signed requests and logged
+  `mdns: announced … (probe complete)`, while answering **zero** queries - a fresh
+  socket on the peer got responses from both Linux nodes and none from either Mac.
+  A probe publishing a small TXT answered immediately from the same machine, which
+  is what separated "the library is broken" from "our record is invalid". Linux
+  userspace queriers parse an oversized string happily, so the fault only shows
+  between a Mac and anything that validates. `caps` is now chunked
+  (docs/PROTOCOL.md) and a test asserts every emitted TXT value fits.
+
 ## Verification
 
 - **A green local run is not evidence.** CI failed three times on changes whose

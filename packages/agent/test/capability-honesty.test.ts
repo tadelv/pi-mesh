@@ -6,6 +6,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { beforeAll, describe, expect, it, vi } from "vitest";
+import { joinTxtValue } from "@pi-mesh/protocol";
 import type { AgentCard } from "@pi-mesh/protocol";
 import type {
   BonjourLike,
@@ -202,7 +203,8 @@ async function observe(gate: string | undefined): Promise<Observation> {
       throw new Error(`agent card returned HTTP ${response.status}`);
     }
     const card = (await response.json()) as AgentCard;
-    const caps = bonjour.published[0]?.txt?.caps;
+    // Read the wire the way a peer does: caps may arrive in continuation keys.
+    const caps = joinTxtValue(bonjour.published[0]?.txt ?? {}, "caps");
     return {
       cardSkills: card.skills.map((skill) => skill.id).sort(),
       capsSkills: typeof caps === "string" ? caps.split(",").sort() : [],

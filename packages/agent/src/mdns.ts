@@ -6,6 +6,7 @@ import createMulticastDns from "multicast-dns";
 import {
   SERVICE_TYPE_CONTROL,
   SERVICE_TYPE_MESH,
+  chunkTxtValue,
   TXT_KEY_AGENT_VERSION,
   TXT_KEY_CAPABILITIES,
   TXT_KEY_ID,
@@ -110,7 +111,12 @@ export function buildAgentTxtRecord(
     [TXT_KEY_VERSION]: descriptor.version,
     [TXT_KEY_AGENT_VERSION]: descriptor.agentVersion,
     [TXT_KEY_PORT]: String(descriptor.port),
-    [TXT_KEY_CAPABILITIES]: descriptor.capabilities.join(","),
+    // Chunked because one mDNS TXT string cannot exceed 255 bytes and the skill
+    // list passed that at 20 capabilities; see chunkTxtValue.
+    ...chunkTxtValue(
+      TXT_KEY_CAPABILITIES,
+      descriptor.capabilities.join(","),
+    ),
   });
 }
 

@@ -1,6 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import type { PeerSummary, Skill } from "@pi-mesh/protocol";
+import {
+  joinTxtValue,
+  TXT_KEY_CAPABILITIES,
+  type PeerSummary,
+  type Skill,
+} from "@pi-mesh/protocol";
 import { basename, isAbsolute, join, relative, sep } from "node:path";
 import { realpath, stat } from "node:fs/promises";
 import { ErrorCode, PiMeshError } from "@pi-mesh/shared";
@@ -256,7 +261,7 @@ function requiredString(input: SkillInput, key: string): string {
 
 function peerSummaries(registry: PeerRegistry): PeerSummary[] {
   return registry.peers.map((peer) => {
-    const skills = (peer.txt.caps ?? "")
+    const skills = joinTxtValue(peer.txt, TXT_KEY_CAPABILITIES)
       .split(",")
       .filter((skill): skill is Skill => KNOWN_SKILLS.includes(skill));
     return {

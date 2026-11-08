@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
+import { joinTxtValue } from "@pi-mesh/protocol";
 import { run } from "../src/cli.js";
 import {
   createAgentServer,
@@ -685,7 +686,9 @@ describe("agent CLI", () => {
         await new Promise((resolve) => setTimeout(resolve, 5));
       }
       expect(bonjour.published).toHaveLength(1);
-      const capabilities = bonjour.published[0]?.txt.caps?.split(",").sort();
+      const capabilities = joinTxtValue(bonjour.published[0]?.txt ?? {}, "caps")
+        .split(",")
+        .sort();
       expect(capabilities).toEqual([...servedSkills()].sort());
       const cardResponse = await fetch(
         "http://127.0.0.1:47931/.well-known/agent-card.json",

@@ -7,7 +7,9 @@ import {
   publishAgent,
   SERVICE_TYPE_CONTROL,
   SERVICE_TYPE_MESH,
+  buildAgentTxtRecord,
 } from "../src/index.js";
+import { joinTxtValue } from "@pi-mesh/protocol";
 import type {
   BonjourLike,
   BonjourPublishOptions,
@@ -127,6 +129,25 @@ const descriptor = {
 };
 
 describe("agent mDNS", () => {
+  it("no TXT value exceeds one mDNS string, and the caps rejoin exactly", () => {
+    // An mDNS TXT string is length-prefixed with one byte, so 255 bytes is the
+    // hard ceiling. At 20 capabilities the joined list was 269 bytes and macOS's
+    // mDNSResponder dropped every response from the machine while the agent was
+    // still running and logging a completed announce. Nothing asserted the
+    // ceiling, so nothing failed.
+    const capabilities = Array.from({ length: 40 }, (_, index) => `skill.number.${index}`);
+    const descriptorWith = { ...descriptor, capabilities };
+    const txt = buildAgentTxtRecord(descriptorWith);
+    for (const [key, value] of Object.entries(txt)) {
+      expect(
+        Buffer.byteLength(value, "utf8"),
+        `TXT key ${key} must fit one mDNS string`,
+      ).toBeLessThanOrEqual(255);
+    }
+    expect(Object.keys(txt).filter((key) => key.startsWith("caps")).length).toBeGreaterThan(1);
+    expect(joinTxtValue(txt, "caps")).toBe(capabilities.join(","));
+  });
+
   it("reports the announce, so a mute advertiser is not invisible", async () => {
     // artemis answered no mDNS query for 53 hours while its agent ran and served
     // HTTP, and nothing in the log said so: publish() was called and its result

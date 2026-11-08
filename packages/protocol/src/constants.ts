@@ -42,6 +42,70 @@ export const TXT_KEY_AGENT_VERSION = "agent_version";
 export const TXT_KEY_PORT = "port";
 export const TXT_KEY_CAPABILITIES = "caps";
 
+/**
+ * A single mDNS TXT string is length-prefixed with ONE byte, so its value cannot
+ * exceed 255 bytes (`dns-packet` and every responder assume that). The skill
+ * list outgrew it at 20 capabilities - 269 bytes - and macOS's mDNSResponder
+ * began dropping the whole response, which made the machine answer nobody while
+ * its agent logged a completed announce. Linux peers kept working because a
+ * userspace querier parses whatever arrives.
+ *
+ * So a long value is carried in continuation keys: `caps`, then `caps1`,
+ * `caps2`, ... concatenated in numeric order. A reader that knows only `caps`
+ * still gets a prefix rather than nothing.
+ */
+export const TXT_CHUNK_VALUE_BYTES = 200;
+
+/** Split one TXT value into ordered chunks that each fit an mDNS string. */
+export function chunkTxtValue(
+  key: string,
+  value: string,
+  maximumBytes: number = TXT_CHUNK_VALUE_BYTES,
+): Record<string, string> {
+  if (Buffer.byteLength(value, "utf8") <= maximumBytes) return { [key]: value };
+  const chunks: string[] = [];
+  let current = "";
+  for (const part of value.split(",")) {
+    const candidate = current === "" ? part : `${current},${part}`;
+    if (Buffer.byteLength(candidate, "utf8") > maximumBytes && current !== "") {
+      // Keep the separator with the chunk: joining then restores the original
+      // value exactly, comma included.
+      chunks.push(`${current},`);
+      current = part;
+    } else {
+      current = candidate;
+    }
+  }
+  if (current !== "") chunks.push(current);
+  const record: Record<string, string> = {};
+  chunks.forEach((chunk, index) => {
+    record[index === 0 ? key : `${key}${index}`] = chunk;
+  });
+  return record;
+}
+
+/** Rejoin the chunks written by chunkTxtValue, in numeric order. */
+export function joinTxtValue(
+  record: Record<string, string | Uint8Array | undefined>,
+  key: string,
+): string {
+  const read = (candidate: string): string | undefined => {
+    const value = record[candidate];
+    if (typeof value === "string") return value;
+    if (value instanceof Uint8Array) return Buffer.from(value).toString("utf8");
+    return undefined;
+  };
+  const chunks: string[] = [];
+  const first = read(key);
+  if (first !== undefined) chunks.push(first);
+  for (let index = 1; index < 64; index += 1) {
+    const next = read(`${key}${index}`);
+    if (next === undefined) break;
+    chunks.push(next);
+  }
+  return chunks.join("");
+}
+
 export const CONTROL_TXT_KEYS = [
   TXT_KEY_ID,
   TXT_KEY_NAME,

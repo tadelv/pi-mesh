@@ -27,6 +27,15 @@ There is no `fp` key. M0 advertised a constant `"unpaired"`, which looks like
 data and verifies nothing; the key returns when it has verification semantics
 (ADR 0006).
 
+`caps` is **chunked** when it is long: one mDNS TXT string is limited to 255
+bytes (its length prefix is a single byte), so a list that does not fit arrives as
+`caps`, `caps1`, `caps2`, … concatenated in numeric order. The chunks carry
+their own commas, so the concatenation is the original value byte for byte. A
+reader that knows only `caps` sees a prefix rather than nothing, and a writer MUST
+NOT emit a TXT value longer than 255 bytes - macOS's mDNSResponder drops the whole
+response when it does, and the machine appears to answer nobody while its agent
+logs a completed announce (docs/GOTCHAS.md).
+
 mDNS TXT attributes are unordered `key=value` strings with no separate value
 concept, so an entry whose value is empty reaches the wire as a bare `key=` and
 parsers disagree about the result. A key whose value would be empty MUST be

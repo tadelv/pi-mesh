@@ -251,12 +251,11 @@ async function start(
   }
 
   const registry = io.registry ?? new PeerRegistry();
-  // Publishing (bonjour-service) and browsing (multicast-dns) never share an
-  // instance: a machine (artemis, 2026-11-07) advertising through a shared
-  // browser answered no query at all, and a mute advertiser is
-  // indistinguishable from an absent peer. An injected instance (tests) is
-  // still honoured per path, because a fixture wants to observe publish and
-  // browse together.
+  // ONE Bonjour, one socket, for both jobs. Two sockets on the same UDP port is a
+  // way to end up mute: on macOS a packet is hashed to a single SO_REUSEPORT
+  // socket, so a query can land on the browser and the publisher never sees it to
+  // answer. Measured 2026-11-07 - a probe publishing the agent's exact record from
+  // a fresh process answered instantly while the agent answered nothing.
   const publishBonjour =
     profile === "public" ? undefined : (io.bonjour ?? new Bonjour());
   let server: Awaited<ReturnType<typeof createAgentServer>> | undefined;

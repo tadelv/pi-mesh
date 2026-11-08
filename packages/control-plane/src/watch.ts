@@ -1,6 +1,13 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-import type { SessionSummary, WatchFrame, WatchJob } from "@pi-mesh/protocol";
+import type {
+  SessionSummary,
+  WatchFinding,
+  WatchFindingsCoverage,
+  WatchFrame,
+  WatchJob,
+  WatchRun,
+} from "@pi-mesh/protocol";
 import type { AgentTarget } from "./client.js";
 import { streamAgent } from "./client.js";
 import type { ControlStore, PairedAgent } from "./db.js";
@@ -54,6 +61,9 @@ function isWatchFrame(value: unknown): value is WatchFrame {
     type === "removed" ||
     type === "job" ||
     type === "job-removed" ||
+    type === "run" ||
+    type === "run-removed" ||
+    type === "findings" ||
     type === "dropped"
   );
 }
@@ -271,12 +281,27 @@ class WatchUpstream {
   private applySnapshot(frame: {
     sessions: SessionSummary[];
     jobs: WatchJob[];
+    runs?: WatchRun[];
+    findings?: {
+      findings: WatchFinding[];
+      evaluated_at: string;
+      coverage: WatchFindingsCoverage;
+    };
   }): void {
     const at = new Date(this.callbacks.now()).toISOString();
     // COMPLETE listing through the existing path: rows absent from the
-    // snapshot are pruned, exactly as a sync would prune them.
+    // snapshot are pruned, exactly as a sync would prune them. Runs and
+    // findings ride the same bootstrap (M8-7) - but only when present:
+    // absent means this agent does not report them (older version), and
+    // must leave the mirror alone rather than read as "none".
     this.store.upsertSessions(this.agent.peer_id, frame.sessions, at);
     this.store.replaceWatchJobs(this.agent.peer_id, frame.jobs, at);
+    if (frame.runs !== undefined) {
+      this.store.replaceRuns(this.agent.peer_id, frame.runs, at);
+    }
+    if (frame.findings !== undefined) {
+      this.store.replaceFindings(this.agent.peer_id, frame.findings, at);
+    }
   }
 
   private applyDelta(frame: WatchFrame): void {
@@ -299,6 +324,27 @@ class WatchUpstream {
         break;
       case "job-removed":
         this.store.removeJob(this.agent.peer_id, frame.job_id);
+        break;
+      case "run":
+        // Explicit per-row operation, never replaceRuns: a delta is not a
+        // complete listing (the data-loss trap ADR 0022 §4 names).
+        this.store.upsertRun(this.agent.peer_id, frame.run, at);
+        break;
+      case "run-removed":
+        this.store.removeRun(this.agent.peer_id, frame.run_id);
+        break;
+      case "findings":
+        // One evaluation pass replaces the previous set wholesale: a
+        // partial input must never read as "these are all the findings".
+        this.store.replaceFindings(
+          this.agent.peer_id,
+          {
+            findings: frame.findings,
+            evaluated_at: frame.evaluated_at,
+            coverage: frame.coverage,
+          },
+          at,
+        );
         break;
       case "dropped":
         // A stated gap, never a silent one: re-list once to converge while the

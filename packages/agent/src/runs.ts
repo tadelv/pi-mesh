@@ -287,6 +287,19 @@ export interface RunsPlane {
     coverage: RunCoverage;
     evaluated_at: string;
   };
+  /**
+   * The full currently-firing set, WITHOUT suppression side effects: no
+   * key is recorded and nothing is re-armed. The inventory watch (M8-7)
+   * mirrors through this, because a findings frame replaces the previous
+   * set wholesale and a suppressed (new-only) answer would wipe still-firing
+   * findings from the mirror. `evaluateFindings` stays the notify path.
+   */
+  peekFindings(): {
+    findings: WireFinding[];
+    config: RulesConfig;
+    coverage: RunCoverage;
+    evaluated_at: string;
+  };
 }
 
 /**
@@ -378,6 +391,24 @@ export function createRunsPlane(options: RunsPlaneOptions): RunsPlane {
       });
       return {
         findings: firing.map(wireFinding),
+        config,
+        coverage: coverage(),
+        evaluated_at: toIso(now),
+      };
+    },
+
+    peekFindings() {
+      // Same refusal order as evaluateFindings: a malformed file refuses
+      // before any finding is computed, so a bad file can never read as
+      // "no findings". No suppression side effect: the map above is
+      // neither read nor written, so the returned set is the whole
+      // currently-firing set - the only shape a wholesale mirror may take.
+      const { config } = loadRulesConfig(rulesPath);
+      const now = clock();
+      const runs = observe();
+      const current = evaluateRules(runs, config, now);
+      return {
+        findings: current.map(wireFinding),
         config,
         coverage: coverage(),
         evaluated_at: toIso(now),

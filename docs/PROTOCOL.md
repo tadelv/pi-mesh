@@ -503,13 +503,26 @@ only file frames promise replay or resumption.
 ### Inventory watch
 
 `mesh.watch` streams **inventory facts**, never transcript content: a session
-added, a session's summary changed, a session removed, or a job changing
-state (`WatchFrame`). The subscription starts with one complete listing
-(`snapshot`, produced by the same code as sync), then emits deltas. The agent
+added, a session's summary changed, a session removed, a job changing
+state, a subagent run fact, or one findings pass (`WatchFrame`). The
+subscription starts with one complete listing (`snapshot`, produced by the
+same code as sync), then emits deltas. The snapshot also carries the agent's
+runs and findings alongside sessions and jobs, so a newly connected agent
+needs no second round trip (M8-7). Runs are per-row like sessions (`run` /
+`run-removed`, never the complete-listing path); findings are one evaluation
+pass replaced wholesale, carrying that pass's `evaluated_at` and per-agent
+coverage (last success, last error, whether the layout was recognised). A
+present-but-empty findings set means "evaluated, none firing"; no set at
+all means "not observed" and must never render as "no findings". The agent
 stats the enumerated session files on an interval and reparses only changed
 paths, with a slower full re-list repairing a silently missed change while
-connected. Frames are bounded: an overflowing buffer drops the oldest frame
-and emits a `dropped` marker stating the reason, never a silent truncation.
+connected; run deltas ride both passes, while a findings frame rides the
+bootstrap and the slow pass only (evaluation is a pass, not a poll). A run
+delta fires only on a material change: `probed_at` and `status_age_ms` are
+clock-derived and ignored by the comparison, and age is recomputed from
+`last_update` / `started_at`. Frames are bounded: an overflowing buffer drops
+the oldest frame and emits a `dropped` marker stating the reason, never a
+silent truncation.
 A machine with no recognised session layout serves neither the skill nor its
 advertisement until it is restarted.
 
@@ -576,6 +589,17 @@ position. Like the session stream it is a read: no execution grant, no ADR
 advertise `mesh.watch`, `stale` after any close until the re-list and
 reconnect complete. `POST /api/sync` stays served for agents without the
 advertisement; the dashboard offers a per-agent sync button only for those.
+Run deltas apply per row (`upsertRun` / `removeRun`, never the
+complete-listing path); a findings frame replaces the previous set wholesale
+with its `evaluated_at` and coverage. `GET /api/state` also reports the
+mirror itself (`runs`, `findings`) and, per agent, the freshness the panel
+renders: `runs_synced_at` (newest mirror write, or null when nothing was ever
+mirrored) and `findings_snapshot` (`evaluated_at` plus coverage, or null
+when no pass was ever observed). Null is "not observed" and is never
+rendered as "no runs" or "no findings". `POST /api/sync` re-lists runs
+through `run.list`; it deliberately never calls `run.findings`, which is
+notify-once per evaluator epoch - calling it would consume the agent's
+suppression. Findings arrive only through the watch's own passes.
 
 ## Task lifecycle
 

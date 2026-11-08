@@ -5,7 +5,13 @@ import { dirname } from "node:path";
 import { randomBytes, randomUUID } from "node:crypto";
 import { createRequire } from "node:module";
 import type { DatabaseSync as DatabaseSyncType } from "node:sqlite";
-import type { Event, SessionSummary } from "@pi-mesh/protocol";
+import type {
+  Event,
+  SessionSummary,
+  WatchFinding,
+  WatchFindingsCoverage,
+  WatchRun,
+} from "@pi-mesh/protocol";
 
 const { DatabaseSync } = createRequire(import.meta.url)(
   "node:sqlite",
@@ -63,6 +69,55 @@ export interface CachedJob {
   state: string;
 }
 
+/** One mirrored subagent run (M8-7). `steps` and `tokens` are JSON, like events data. */
+export interface CachedRun {
+  agent_id: string;
+  run_id: string;
+  state: string;
+  liveness_state: string;
+  liveness_reason: string;
+  probed_at: string;
+  status_age_ms: number;
+  pid: number | null;
+  parent_session: string | null;
+  child_session: string | null;
+  agent: string | null;
+  mode: string | null;
+  started_at: string;
+  ended_at: string | null;
+  last_update: string | null;
+  steps: string;
+  tokens: string | null;
+  cost_usd: number | null;
+  error: string | null;
+  /** Mirror write time: the freshness stamp. A row without it is never current. */
+  synced_at: string;
+}
+
+/** One mirrored finding (M8-7). The set is replaced wholesale per pass. */
+export interface CachedFinding {
+  agent_id: string;
+  key: string;
+  rule: string;
+  run_id: string | null;
+  session_file: string | null;
+  summary: string;
+  observed_at: string;
+  actual: number | null;
+  threshold: number | null;
+}
+
+/** The evaluation pass a mirrored findings set came from (M8-7). */
+export interface CachedFindingsSnapshot {
+  agent_id: string;
+  evaluated_at: string;
+  layout_recognised: boolean;
+  last_success: string | null;
+  last_error: string | null;
+  /** Mirror write time: the freshness stamp. No snapshot row, no currency. */
+  synced_at: string;
+}
+
 export class ControlStore {
   private readonly db: DatabaseSyncType;
   private readonly now: () => number;
@@ -97,6 +152,9 @@ export class ControlStore {
       CREATE TABLE IF NOT EXISTS sessions (agent_id TEXT NOT NULL, session_id TEXT NOT NULL, project TEXT NOT NULL, name TEXT, started_at TEXT NOT NULL, updated_at TEXT NOT NULL, synced_at TEXT NOT NULL, PRIMARY KEY(agent_id, session_id)) STRICT;
       CREATE TABLE IF NOT EXISTS events (agent_id TEXT NOT NULL, session_id TEXT NOT NULL, entry_id TEXT NOT NULL, type TEXT NOT NULL, timestamp TEXT NOT NULL, data TEXT NOT NULL, PRIMARY KEY(agent_id, session_id, entry_id)) STRICT;
       CREATE TABLE IF NOT EXISTS jobs (agent_id TEXT NOT NULL, job_id TEXT NOT NULL, session_id TEXT, pid INTEGER, project TEXT NOT NULL, created_at TEXT NOT NULL, state TEXT NOT NULL, PRIMARY KEY(agent_id, job_id)) STRICT;
+      CREATE TABLE IF NOT EXISTS runs (agent_id TEXT NOT NULL, run_id TEXT NOT NULL, state TEXT NOT NULL, liveness_state TEXT NOT NULL, liveness_reason TEXT NOT NULL, probed_at TEXT NOT NULL, status_age_ms INTEGER NOT NULL, pid INTEGER, parent_session TEXT, child_session TEXT, agent TEXT, mode TEXT, started_at TEXT NOT NULL, ended_at TEXT, last_update TEXT, steps TEXT NOT NULL, tokens TEXT, cost_usd REAL, error TEXT, synced_at TEXT NOT NULL, PRIMARY KEY(agent_id, run_id)) STRICT;
+      CREATE TABLE IF NOT EXISTS findings (agent_id TEXT NOT NULL, key TEXT NOT NULL, rule TEXT NOT NULL, run_id TEXT, session_file TEXT, summary TEXT NOT NULL, observed_at TEXT NOT NULL, actual REAL, threshold REAL, PRIMARY KEY(agent_id, key)) STRICT;
+      CREATE TABLE IF NOT EXISTS findings_snapshots (agent_id TEXT PRIMARY KEY, evaluated_at TEXT NOT NULL, layout_recognised INTEGER NOT NULL, last_success TEXT, last_error TEXT, synced_at TEXT NOT NULL) STRICT;
     `);
     this.db.exec("DROP TABLE IF EXISTS agent_caps");
     // Prune on open as well as on write: a database written by an earlier
@@ -190,12 +248,19 @@ export class ControlStore {
     // row: the jobs mirror is replaced wholesale on every sync (see
     // replaceJobs), and the session mirror is pruned to the latest listing
     // (see upsertSessions), so rows the agent no longer vouches for must not
-    // linger in the dashboard after the pairing is gone.
+    // linger in the dashboard after the pairing is gone. Runs, findings and
+    // their snapshot meta go the same way: an unpaired agent is unobserved,
+    // and its last evaluation must not render as anyone's current state.
     this.db.exec("BEGIN");
     try {
       this.db.prepare("DELETE FROM agents WHERE peer_id = ?").run(peerId);
       this.db.prepare("DELETE FROM jobs WHERE agent_id = ?").run(peerId);
       this.db.prepare("DELETE FROM sessions WHERE agent_id = ?").run(peerId);
+      this.db.prepare("DELETE FROM runs WHERE agent_id = ?").run(peerId);
+      this.db.prepare("DELETE FROM findings WHERE agent_id = ?").run(peerId);
+      this.db
+        .prepare("DELETE FROM findings_snapshots WHERE agent_id = ?")
+        .run(peerId);
       this.db.exec("COMMIT");
     } catch (error) {
       this.db.exec("ROLLBACK");
@@ -249,6 +314,214 @@ export class ControlStore {
     this.db
       .prepare("DELETE FROM jobs WHERE agent_id = ? AND job_id = ?")
       .run(agentId, jobId);
+  }
+
+  /**
+   * Apply one run fact (M8-7): exactly one row, never a prune. A run delta
+   * routed through `replaceRuns` would treat it as a complete listing and
+   * delete every other mirrored run for this agent - the data-loss trap ADR
+   * 0022 §4 names for sessions, repeated here for runs.
+   */
+  upsertRun(agentId: string, run: WatchRun, syncedAt: string): void {
+    this.db
+      .prepare(
+        "INSERT INTO runs(agent_id,run_id,state,liveness_state,liveness_reason,probed_at,status_age_ms,pid,parent_session,child_session,agent,mode,started_at,ended_at,last_update,steps,tokens,cost_usd,error,synced_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(agent_id,run_id) DO UPDATE SET state=excluded.state,liveness_state=excluded.liveness_state,liveness_reason=excluded.liveness_reason,probed_at=excluded.probed_at,status_age_ms=excluded.status_age_ms,pid=excluded.pid,parent_session=excluded.parent_session,child_session=excluded.child_session,agent=excluded.agent,mode=excluded.mode,started_at=excluded.started_at,ended_at=excluded.ended_at,last_update=excluded.last_update,steps=excluded.steps,tokens=excluded.tokens,cost_usd=excluded.cost_usd,error=excluded.error,synced_at=excluded.synced_at",
+      )
+      .run(
+        agentId,
+        run.run_id,
+        run.state,
+        run.liveness.state,
+        run.liveness.reason,
+        run.liveness.probed_at,
+        run.liveness.status_age_ms,
+        run.pid ?? null,
+        run.parent_session ?? null,
+        run.child_session ?? null,
+        run.agent ?? null,
+        run.mode ?? null,
+        run.started_at,
+        run.ended_at ?? null,
+        run.last_update ?? null,
+        JSON.stringify(run.steps),
+        run.tokens === undefined ? null : JSON.stringify(run.tokens),
+        run.cost_usd ?? null,
+        run.error ?? null,
+        syncedAt,
+      );
+  }
+
+  /** The removal half of a run delta: exactly one row for this agent. */
+  removeRun(agentId: string, runId: string): void {
+    this.db
+      .prepare("DELETE FROM runs WHERE agent_id = ? AND run_id = ?")
+      .run(agentId, runId);
+  }
+
+  /**
+   * Apply a complete run listing (watch bootstrap, sync): runs absent from
+   * it are pruned, exactly like `replaceJobs`. Only complete listings may
+   * pass through here - never a delta.
+   */
+  replaceRuns(
+    agentId: string,
+    runs: readonly WatchRun[],
+    syncedAt: string,
+  ): void {
+    const statement = this.db.prepare(
+      "INSERT INTO runs(agent_id,run_id,state,liveness_state,liveness_reason,probed_at,status_age_ms,pid,parent_session,child_session,agent,mode,started_at,ended_at,last_update,steps,tokens,cost_usd,error,synced_at) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+    );
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare("DELETE FROM runs WHERE agent_id = ?").run(agentId);
+      for (const run of runs) {
+        statement.run(
+          agentId,
+          run.run_id,
+          run.state,
+          run.liveness.state,
+          run.liveness.reason,
+          run.liveness.probed_at,
+          run.liveness.status_age_ms,
+          run.pid ?? null,
+          run.parent_session ?? null,
+          run.child_session ?? null,
+          run.agent ?? null,
+          run.mode ?? null,
+          run.started_at,
+          run.ended_at ?? null,
+          run.last_update ?? null,
+          JSON.stringify(run.steps),
+          run.tokens === undefined ? null : JSON.stringify(run.tokens),
+          run.cost_usd ?? null,
+          run.error ?? null,
+          syncedAt,
+        );
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  listRuns(agentId?: string): CachedRun[] {
+    const sql =
+      "SELECT agent_id, run_id, state, liveness_state, liveness_reason, probed_at, status_age_ms, pid, parent_session, child_session, agent, mode, started_at, ended_at, last_update, steps, tokens, cost_usd, error, synced_at FROM runs";
+    return (agentId === undefined
+      ? this.db.prepare(`${sql} ORDER BY agent_id, run_id`).all()
+      : this.db
+          .prepare(`${sql} WHERE agent_id = ? ORDER BY run_id`)
+          .all(agentId)) as unknown as CachedRun[];
+  }
+
+  /**
+   * The freshness stamp for one agent's run mirror: the newest mirror write,
+   * or null when nothing was ever mirrored. The panel renders rows as current
+   * only with this stamp (and a live watch); without it a cached row is
+   * stale, never current.
+   */
+  runsSyncedAt(agentId: string): string | null {
+    const row = this.db
+      .prepare(
+        "SELECT MAX(synced_at) AS synced_at FROM runs WHERE agent_id = ?",
+      )
+      .get(agentId) as { synced_at: string | null };
+    return row.synced_at;
+  }
+
+  /**
+   * Apply one evaluation pass (M8-7): the set is replaced wholesale, because
+   * findings are derived from a single pass and a partial input must never
+   * be read as "these are all the findings". `evaluated_at` and coverage
+   * are stored with the set so the panel can state age and coverage; a
+   * present-but-empty set means "evaluated, none firing".
+   */
+  replaceFindings(
+    agentId: string,
+    set: {
+      findings: readonly WatchFinding[];
+      evaluated_at: string;
+      coverage: WatchFindingsCoverage;
+    },
+    syncedAt: string,
+  ): void {
+    const statement = this.db.prepare(
+      "INSERT INTO findings(agent_id,key,rule,run_id,session_file,summary,observed_at,actual,threshold) VALUES(?,?,?,?,?,?,?,?,?)",
+    );
+    this.db.exec("BEGIN");
+    try {
+      this.db.prepare("DELETE FROM findings WHERE agent_id = ?").run(agentId);
+      for (const finding of set.findings) {
+        statement.run(
+          agentId,
+          `${finding.rule}\0${finding.run_id ?? finding.session_file ?? ""}`,
+          finding.rule,
+          finding.run_id ?? null,
+          finding.session_file ?? null,
+          finding.summary,
+          finding.observed_at,
+          finding.actual ?? null,
+          finding.threshold ?? null,
+        );
+      }
+      this.db
+        .prepare(
+          "INSERT INTO findings_snapshots(agent_id,evaluated_at,layout_recognised,last_success,last_error,synced_at) VALUES(?,?,?,?,?,?) ON CONFLICT(agent_id) DO UPDATE SET evaluated_at=excluded.evaluated_at,layout_recognised=excluded.layout_recognised,last_success=excluded.last_success,last_error=excluded.last_error,synced_at=excluded.synced_at",
+        )
+        .run(
+          agentId,
+          set.evaluated_at,
+          set.coverage.layout_recognised ? 1 : 0,
+          set.coverage.last_success,
+          set.coverage.last_error,
+          syncedAt,
+        );
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  listFindings(agentId?: string): CachedFinding[] {
+    const sql =
+      "SELECT agent_id, key, rule, run_id, session_file, summary, observed_at, actual, threshold FROM findings";
+    return (agentId === undefined
+      ? this.db.prepare(`${sql} ORDER BY agent_id, key`).all()
+      : this.db
+          .prepare(`${sql} WHERE agent_id = ? ORDER BY key`)
+          .all(agentId)) as unknown as CachedFinding[];
+  }
+
+  /**
+   * The pass a mirrored findings set came from, or undefined when no pass
+   * was ever observed. Absence is not "no findings" - the panel says so.
+   */
+  getFindingsSnapshot(agentId: string): CachedFindingsSnapshot | undefined {
+    const row = this.db
+      .prepare(
+        "SELECT agent_id, evaluated_at, layout_recognised, last_success, last_error, synced_at FROM findings_snapshots WHERE agent_id = ?",
+      )
+      .get(agentId) as
+      | {
+          agent_id: string;
+          evaluated_at: string;
+          layout_recognised: number;
+          last_success: string | null;
+          last_error: string | null;
+          synced_at: string;
+        }
+      | undefined;
+    if (row === undefined) return undefined;
+    return {
+      agent_id: row.agent_id,
+      evaluated_at: row.evaluated_at,
+      layout_recognised: row.layout_recognised === 1,
+      last_success: row.last_success,
+      last_error: row.last_error,
+      synced_at: row.synced_at,
+    };
   }
 
   /**

@@ -124,11 +124,9 @@ class Reader {
   async next(label: string, milliseconds = 5_000): Promise<WatchFrame> {
     const result = await Promise.race([
       this.take(),
-      sleep(milliseconds).then(
-        (): IteratorResult<WatchFrame> => {
-          throw new Error(`${label}: no frame arrived within ${milliseconds}ms`);
-        },
-      ),
+      sleep(milliseconds).then((): IteratorResult<WatchFrame> => {
+        throw new Error(`${label}: no frame arrived within ${milliseconds}ms`);
+      }),
     ]);
     if (result.done) throw new Error(`${label}: the watch ended early`);
     return result.value;
@@ -218,8 +216,12 @@ describe("mesh.watch inventory deltas", () => {
       );
       await writeFile(
         path,
-        sessionContent(sessionIdA, "alpha", "2024-01-01T00:00:09.000Z", "first") +
-          messageLine("entry-2", "2024-01-01T00:00:09.000Z", "second"),
+        sessionContent(
+          sessionIdA,
+          "alpha",
+          "2024-01-01T00:00:09.000Z",
+          "first",
+        ) + messageLine("entry-2", "2024-01-01T00:00:09.000Z", "second"),
       );
       await watch.poll();
       const frame = await reader.next(
@@ -279,8 +281,12 @@ describe("mesh.watch inventory deltas", () => {
       );
       await writeFile(
         newPath,
-        sessionContent(sessionIdA, "alpha", "2024-01-01T00:00:09.000Z", "first") +
-          messageLine("entry-2", "2024-01-01T00:00:09.000Z", "second"),
+        sessionContent(
+          sessionIdA,
+          "alpha",
+          "2024-01-01T00:00:09.000Z",
+          "first",
+        ) + messageLine("entry-2", "2024-01-01T00:00:09.000Z", "second"),
       );
       await watch.poll();
       const frame = await reader.next(
@@ -349,8 +355,12 @@ describe("mesh.watch inventory deltas", () => {
     const root = await testRoot();
     const directory = await projectDir(root, "/fixture/project");
     const path = join(directory, "a.jsonl");
-    const before =
-      sessionContent(sessionIdA, "alpha", "2024-01-01T00:00:02.000Z", "first");
+    const before = sessionContent(
+      sessionIdA,
+      "alpha",
+      "2024-01-01T00:00:02.000Z",
+      "first",
+    );
     // Same byte length, different summary: only a metadata inequality can
     // notice this rewrite, and the mtime steps backwards.
     const after = before.replace("alpha", "alphb");
@@ -383,7 +393,9 @@ describe("mesh.watch inventory deltas", () => {
       path,
       sessionContent(sessionIdA, "alpha", "2024-01-01T00:00:02.000Z", "first"),
     );
-    const realStat = async (target: string): Promise<{ mtimeMs: number; size: number }> => {
+    const realStat = async (
+      target: string,
+    ): Promise<{ mtimeMs: number; size: number }> => {
       const value = await stat(target);
       return { mtimeMs: value.mtimeMs, size: value.size };
     };
@@ -397,8 +409,12 @@ describe("mesh.watch inventory deltas", () => {
       frozen.set(path, await realStat(path));
       await writeFile(
         path,
-        sessionContent(sessionIdA, "alpha", "2024-01-01T00:00:09.000Z", "first") +
-          messageLine("entry-2", "2024-01-01T00:00:09.000Z", "second"),
+        sessionContent(
+          sessionIdA,
+          "alpha",
+          "2024-01-01T00:00:09.000Z",
+          "first",
+        ) + messageLine("entry-2", "2024-01-01T00:00:09.000Z", "second"),
       );
       await watch.poll();
       await reader.quiet(
@@ -528,11 +544,12 @@ describe("mesh.watch serving", () => {
     recipientPeerId: string,
   ): AsyncGenerator<Record<string, unknown>> {
     const text = JSON.stringify(watchCall({}));
-    const headers = signedHeaders(
-      testKey,
-      testIdentity,
-      { method: "POST", path: "/", recipientPeerId, body: text },
-    );
+    const headers = signedHeaders(testKey, testIdentity, {
+      method: "POST",
+      path: "/",
+      recipientPeerId,
+      body: text,
+    });
     const client = request({
       host: "127.0.0.1",
       port,
@@ -585,8 +602,7 @@ describe("mesh.watch serving", () => {
 
   function resultOf(frame: Record<string, unknown>): unknown {
     const message = frame.message as
-      | { parts?: { data?: { result?: unknown } }[] }
-      | undefined;
+      { parts?: { data?: { result?: unknown } }[] } | undefined;
     return message?.parts?.[0]?.data?.result;
   }
 
@@ -647,8 +663,11 @@ describe("mesh.watch serving", () => {
         watchCall({ id: sessionIdA }),
       );
       expect(
-        (JSON.parse(withId.text) as { error: { code: number; message: string } })
-          .error,
+        (
+          JSON.parse(withId.text) as {
+            error: { code: number; message: string };
+          }
+        ).error,
       ).toMatchObject({ code: -32602 });
     } finally {
       await server.stop();
@@ -672,7 +691,9 @@ describe("mesh.watch serving", () => {
         watchCall({}),
       );
       const error = (
-        JSON.parse(response.text) as { error: { code: number; message: string } }
+        JSON.parse(response.text) as {
+          error: { code: number; message: string };
+        }
       ).error;
       expect(error.code).toBe(-32004);
       expect(error.message).toMatch(/recognised session layout/);
@@ -770,8 +791,11 @@ describe("mesh.watch serving", () => {
       const snapshotFrame = await frames.next();
       expect(snapshotFrame.done).toBe(false);
       expect(
-        (resultOf(snapshotFrame.value as Record<string, unknown>) as { type?: string })
-          ?.type,
+        (
+          resultOf(snapshotFrame.value as Record<string, unknown>) as {
+            type?: string;
+          }
+        )?.type,
       ).toBe("snapshot");
 
       const secret = "a named session created after the watch opened";
@@ -792,7 +816,7 @@ describe("mesh.watch serving", () => {
         const next = await Promise.race([
           frames.next(),
           sleep(Math.max(1, deadline - Date.now())).then(
-            (): AsyncIteratorResult<Record<string, unknown>> => {
+            (): IteratorResult<Record<string, unknown>> => {
               throw new Error(
                 "discriminating: the added session never arrived on the open watch",
               );
@@ -810,7 +834,9 @@ describe("mesh.watch serving", () => {
           break;
         }
       }
-      expect((added as { session: { id: string; name: string } }).session).toMatchObject({
+      expect(
+        (added as { session: { id: string; name: string } }).session,
+      ).toMatchObject({
         id: sessionIdA,
         name: "named-session",
       });

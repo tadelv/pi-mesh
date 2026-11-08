@@ -1044,11 +1044,17 @@ export class HttpAgentServer implements AgentServer {
     const task = this.tasks.create(
       call.contextId === undefined ? {} : { contextId: call.contextId },
     );
+    // The watch reuses the registry's runs epoch (M8-7): the same plane the
+    // run.list / run.findings handlers read, so runs and findings ride this
+    // subscription with no second evaluator. A bare registry has no plane
+    // and the watch omits both - absent, never fabricated.
+    const runs = this.skills.runsPlane;
     const iterator = (this.options.watch ?? sessionWatch)({
       ...(this.options.sessionsRoot === undefined
         ? {}
         : { sessionsRoot: this.options.sessionsRoot }),
       ...(this.options.jobs === undefined ? {} : { jobs: this.options.jobs }),
+      ...(runs === undefined ? {} : { runs }),
       ...(this.options.watchPollIntervalMs === undefined
         ? {}
         : { pollIntervalMs: this.options.watchPollIntervalMs }),

@@ -15,6 +15,7 @@ import {
   defaultRulesPath,
   defaultRunsTmp,
   hasRecognisedRunLayout,
+  type RunsPlane,
 } from "./runs.js";
 import {
   MAX_STEER_MESSAGE_BYTES,
@@ -277,6 +278,14 @@ function peerSummaries(registry: PeerRegistry): PeerSummary[] {
 export class SkillRegistry {
   private readonly handlers = new Map<Skill, SkillHandler>();
   private readonly closers: (() => Promise<void> | void)[] = [];
+  /**
+   * The runs-plane reader the inventory watch reuses (M8-7): the same
+   * epoch the `run.list` / `run.findings` handlers read, so the watch
+   * carries no second evaluator and no second suppression map. Undefined
+   * on a bare registry, which serves a watch with no runs - absent, never
+   * fabricated.
+   */
+  runsPlane: RunsPlane | undefined;
 
   register(skill: Skill, handler: SkillHandler): this {
     // The other direction of drift from registerExecution. `EXECUTION_SKILLS`
@@ -397,6 +406,9 @@ export function createSkillRegistry(
       ? {}
       : { livenessDeps: options.runsLiveness }),
   });
+  // The watch reads through this same epoch (see SkillRegistry.runsPlane):
+  // one evaluator, one suppression map, no second runs reader.
+  skills.runsPlane = plane;
 
   // Registered UNCONDITIONALLY, exactly like session.steer - and that is
   // load-bearing, not a style choice. The gate can only report "execution is

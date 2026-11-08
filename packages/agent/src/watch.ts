@@ -1,8 +1,17 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 import { readFile, stat } from "node:fs/promises";
-import type { SessionSummary, WatchFrame, WatchJob } from "@pi-mesh/protocol";
+import type {
+  SessionSummary,
+  WatchFinding,
+  WatchFindingsCoverage,
+  WatchFindingsSet,
+  WatchFrame,
+  WatchJob,
+  WatchRun,
+} from "@pi-mesh/protocol";
 import type { JobManager } from "./jobs.js";
+import type { RunCoverage, RunsPlane, WireFinding, WireRun } from "./runs.js";
 import {
   defaultSessionsRoot,
   parseSession,
@@ -40,6 +49,13 @@ export interface SessionWatchOptions {
   maxBufferedFrames?: number;
   /** Optional jobs plane: job state changes are inventory facts too. */
   jobs?: JobManager;
+  /**
+   * Optional runs plane (M8-7): the same epoch the `run.list` /
+   * `run.findings` handlers read, so the watch carries no second evaluator.
+   * Absent means the watch reports no runs and no findings - omitted from
+   * the frames, never fabricated.
+   */
+  runs?: RunsPlane;
   /**
    * Injectable stat for tests: return stale metadata to simulate a change the
    * index missed, then let the reconciliation pass repair it. Defaults to the
@@ -106,16 +122,94 @@ function jobsEqual(a: WatchJob, b: WatchJob): boolean {
   );
 }
 
+/** The wire boundary for runs: pick the fields the protocol carries. */
+function watchRunOf(wire: WireRun): WatchRun {
+  return {
+    run_id: wire.run_id,
+    state: wire.state,
+    liveness: { ...wire.liveness },
+    ...(wire.pid === undefined ? {} : { pid: wire.pid }),
+    ...(wire.parent_session === undefined
+      ? {}
+      : { parent_session: wire.parent_session }),
+    ...(wire.child_session === undefined
+      ? {}
+      : { child_session: wire.child_session }),
+    ...(wire.agent === undefined ? {} : { agent: wire.agent }),
+    ...(wire.mode === undefined ? {} : { mode: wire.mode }),
+    started_at: wire.started_at,
+    ...(wire.ended_at === undefined ? {} : { ended_at: wire.ended_at }),
+    ...(wire.last_update === undefined
+      ? {}
+      : { last_update: wire.last_update }),
+    status_age_ms: wire.status_age_ms,
+    steps: wire.steps.map((step) => ({ ...step })),
+    ...(wire.tokens === undefined ? {} : { tokens: { ...wire.tokens } }),
+    ...(wire.cost_usd === undefined ? {} : { cost_usd: wire.cost_usd }),
+    ...(wire.error === undefined ? {} : { error: wire.error }),
+  };
+}
+
+function watchFindingOf(wire: WireFinding): WatchFinding {
+  return {
+    rule: wire.rule,
+    ...(wire.run_id === undefined ? {} : { run_id: wire.run_id }),
+    ...(wire.session_file === undefined
+      ? {}
+      : { session_file: wire.session_file }),
+    summary: wire.summary,
+    observed_at: wire.observed_at,
+    ...(wire.actual === undefined ? {} : { actual: wire.actual }),
+    ...(wire.threshold === undefined ? {} : { threshold: wire.threshold }),
+  };
+}
+
+function watchCoverageOf(coverage: RunCoverage): WatchFindingsCoverage {
+  return { ...coverage };
+}
+
+/**
+ * Material equality for runs: `probed_at` and `status_age_ms` are
+ * clock-derived at every emission and always move, so comparing them would
+ * re-emit every run on every poll. A delta fires on what the runner did
+ * (state, liveness tri-state and reason, pid, timings, steps, tokens, cost,
+ * error); the panel recomputes age from `last_update` / `started_at`.
+ */
+function runsEqual(a: WatchRun, b: WatchRun): boolean {
+  return (
+    JSON.stringify({ ...a, probed_at: undefined, status_age_ms: undefined }) ===
+      JSON.stringify({
+        ...b,
+        probed_at: undefined,
+        status_age_ms: undefined,
+      }) &&
+    JSON.stringify({
+      ...a.liveness,
+      probed_at: undefined,
+      status_age_ms: undefined,
+    }) ===
+      JSON.stringify({
+        ...b.liveness,
+        probed_at: undefined,
+        status_age_ms: undefined,
+      })
+  );
+}
+
 /**
  * A read-only, independently stoppable inventory subscription over one
- * machine's session files (plus, when a JobManager is provided, its jobs).
+ * machine's session files (plus, when a JobManager is provided, its jobs,
+ * and when a runs plane is provided, its runs and one findings pass).
  *
- * Frames carry inventory facts only - added / updated / removed sessions and
- * job state changes - and never transcript entries. The subscription starts
- * with one complete listing produced by the same `SessionStore.list()` code
- * as sync, then emits deltas: the fast path stats the enumerated session
- * files and reparses only changed paths, while a slower pass re-lists in
- * full to repair a silently missed change.
+ * Frames carry inventory facts only - added / updated / removed sessions,
+ * job state changes, per-row run facts, and one wholesale findings set -
+ * and never transcript entries. The subscription starts with one complete
+ * listing produced by the same `SessionStore.list()` code as sync, then
+ * emits deltas: the fast path stats the enumerated session files and
+ * reparses only changed paths, while a slower pass re-lists in full to
+ * repair a silently missed change. Run deltas ride both passes; a findings
+ * frame rides the bootstrap and the slow pass only (evaluation is a pass,
+ * not a poll).
  */
 export class SessionWatch implements AsyncIterableIterator<WatchFrame> {
   private readonly sessionsRoot: string;
@@ -125,6 +219,7 @@ export class SessionWatch implements AsyncIterableIterator<WatchFrame> {
   private readonly reconcileIntervalMs: number;
   private readonly maxBufferedFrames: number;
   private readonly jobs: JobManager | undefined;
+  private readonly runs: RunsPlane | undefined;
   private readonly statFn: (
     path: string,
   ) => Promise<{ mtimeMs: number; size: number }>;
@@ -137,6 +232,8 @@ export class SessionWatch implements AsyncIterableIterator<WatchFrame> {
   /** The sessions truth last emitted, by id. Both the fast path and the reconciliation pass converge on it. */
   private readonly byId = new Map<string, SessionSummary>();
   private readonly jobsById = new Map<string, WatchJob>();
+  /** The runs truth last emitted, by run id. Same convergence rule. */
+  private readonly runsById = new Map<string, WatchRun>();
   private dropped = 0;
   private pollTimer: ReturnType<typeof setTimeout> | undefined;
   private reconcileTimer: ReturnType<typeof setTimeout> | undefined;
@@ -162,8 +259,7 @@ export class SessionWatch implements AsyncIterableIterator<WatchFrame> {
     ) {
       throw new Error("reconcileIntervalMs must be a positive finite number");
     }
-    this.maxBufferedFrames =
-      options.maxBufferedFrames ?? DEFAULT_MAX_BUFFERED;
+    this.maxBufferedFrames = options.maxBufferedFrames ?? DEFAULT_MAX_BUFFERED;
     if (
       !Number.isFinite(this.maxBufferedFrames) ||
       this.maxBufferedFrames < 1
@@ -171,6 +267,7 @@ export class SessionWatch implements AsyncIterableIterator<WatchFrame> {
       throw new Error("maxBufferedFrames must be a finite number >= 1");
     }
     this.jobs = options.jobs;
+    this.runs = options.runs;
     this.statFn =
       options.stat ??
       (async (path: string) => {
@@ -194,12 +291,41 @@ export class SessionWatch implements AsyncIterableIterator<WatchFrame> {
     if (this.stopped) return;
     for (const summary of sessions) this.byId.set(summary.id, summary);
     for (const job of this.currentJobs()) this.jobsById.set(job.job_id, job);
+    // The bootstrap carries the agent's runs and findings alongside sessions
+    // and jobs (M8-7), so a newly connected agent needs no second round
+    // trip. A failed observation omits the field - not observed, never an
+    // empty list that reads as "none".
+    let bootstrapRuns: WatchRun[] | undefined;
+    let bootstrapFindings: WatchFindingsSet | undefined;
+    if (this.runs !== undefined) {
+      try {
+        const listed = this.runs.listRuns();
+        bootstrapRuns = listed.runs.map(watchRunOf);
+        for (const run of bootstrapRuns) this.runsById.set(run.run_id, run);
+      } catch {
+        bootstrapRuns = undefined;
+      }
+      try {
+        const peeked = this.runs.peekFindings();
+        bootstrapFindings = {
+          findings: peeked.findings.map(watchFindingOf),
+          evaluated_at: peeked.evaluated_at,
+          coverage: watchCoverageOf(peeked.coverage),
+        };
+      } catch {
+        bootstrapFindings = undefined;
+      }
+    }
     await this.rebuildIndex();
     if (this.stopped) return;
     this.enqueue({
       type: "snapshot",
       sessions: [...this.byId.values()],
       jobs: [...this.jobsById.values()],
+      ...(bootstrapRuns === undefined ? {} : { runs: bootstrapRuns }),
+      ...(bootstrapFindings === undefined
+        ? {}
+        : { findings: bootstrapFindings }),
     });
     this.schedule();
   }
@@ -250,7 +376,8 @@ export class SessionWatch implements AsyncIterableIterator<WatchFrame> {
     file: string,
     report = true,
   ): Promise<
-    { mtimeMs: number; size: number; id: string; summary: SessionSummary } | undefined
+    | { mtimeMs: number; size: number; id: string; summary: SessionSummary }
+    | undefined
   > {
     let meta: { mtimeMs: number; size: number };
     try {
@@ -349,6 +476,58 @@ export class SessionWatch implements AsyncIterableIterator<WatchFrame> {
   }
 
   /**
+   * One run-listing pass: per-row facts, never the complete-listing path.
+   * A failed observation emits nothing - absence from a failed read is not
+   * a removal signal, the same rule the evaluator keeps for suppression.
+   */
+  private emitRunDeltas(): void {
+    if (this.runs === undefined) return;
+    let listed: WatchRun[];
+    try {
+      listed = this.runs.listRuns().runs.map(watchRunOf);
+    } catch {
+      return;
+    }
+    const current = new Map<string, WatchRun>();
+    for (const run of listed) current.set(run.run_id, run);
+    for (const [id, run] of current) {
+      const previous = this.runsById.get(id);
+      if (previous === undefined || !runsEqual(previous, run)) {
+        this.runsById.set(id, run);
+        this.enqueue({ type: "run", run });
+      }
+    }
+    for (const id of [...this.runsById.keys()]) {
+      if (!current.has(id)) {
+        this.runsById.delete(id);
+        this.enqueue({ type: "run-removed", run_id: id });
+      }
+    }
+  }
+
+  /**
+   * One evaluation pass, emitted as a whole set: findings are derived from
+   * a single pass and carry that pass's `evaluated_at` and coverage, so a
+   * frame replaces the previous set rather than patching it. A failed pass
+   * emits nothing - the mirror keeps the previous set with its age, which
+   * is honest, while an empty frame would read as "evaluated, none".
+   */
+  private emitFindings(): void {
+    if (this.runs === undefined) return;
+    try {
+      const peeked = this.runs.peekFindings();
+      this.enqueue({
+        type: "findings",
+        findings: peeked.findings.map(watchFindingOf),
+        evaluated_at: peeked.evaluated_at,
+        coverage: watchCoverageOf(peeked.coverage),
+      });
+    } catch {
+      return;
+    }
+  }
+
+  /**
    * One fast-path pass: stat the enumerated files, reparse only the paths
    * whose metadata differs (compared for inequality, so a backwards clock is
    * a change), and reconcile the path set by session id (so a rename is not
@@ -423,6 +602,7 @@ export class SessionWatch implements AsyncIterableIterator<WatchFrame> {
     }
     this.emitSessionDeltas(current);
     this.emitJobDeltas();
+    this.emitRunDeltas();
   }
 
   /**
@@ -443,6 +623,10 @@ export class SessionWatch implements AsyncIterableIterator<WatchFrame> {
     // re-list just converged.
     await this.rebuildIndex();
     this.emitJobDeltas();
+    this.emitRunDeltas();
+    // Findings ride the slow pass only: evaluation is a pass, not a poll,
+    // and every frame carries a fresh evaluated_at with the whole set.
+    this.emitFindings();
   }
 
   private schedule(): void {

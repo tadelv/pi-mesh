@@ -114,19 +114,144 @@ export interface WatchJob {
 }
 
 /**
+ * A run as reported by the inventory watch: per-row facts about one
+ * subagent run (ADR 0021 decision 1), never a claimed outcome.
+ *
+ * Observations (read from the run's `status.json` or probed from the
+ * machine): `run_id`, `state`, `pid`, the parent/child session references,
+ * `agent`, `mode`, every timestamp, `steps`, `tokens`, `cost_usd`, `error`,
+ * and the whole `liveness` probe. `liveness.state` is tri-state with its
+ * evidence: a successful `kill(pid, 0)` proves a process exists, never that
+ * it is this run's runner, and is never presented as identity. `probed_at`
+ * and `status_age_ms` are clock-derived at emission and always move, so a
+ * delta comparison ignores them (like `WatchJob` ignores everything but
+ * identity and state); the mirror and the panel recompute age from
+ * `last_update`/`started_at` instead.
+ *
+ * Claims: none. A run frame states what was read; the threshold
+ * interpretation of it is a finding, carried separately.
+ */
+export interface WatchRun {
+  run_id: string;
+  state: string;
+  liveness: {
+    state: "alive" | "dead" | "unknown";
+    reason: string;
+    probed_at: string;
+    status_age_ms: number;
+  };
+  pid?: number;
+  parent_session?: string;
+  child_session?: string;
+  agent?: string;
+  mode?: string;
+  started_at: string;
+  ended_at?: string;
+  last_update?: string;
+  status_age_ms: number;
+  steps: Array<{
+    index: number;
+    agent: string;
+    status: string;
+    sessionFile?: string;
+  }>;
+  tokens?: { input: number; output: number; total: number };
+  cost_usd?: number;
+  error?: string;
+}
+
+/**
+ * One finding from a single threshold-evaluation pass (ADR 0021 decision 4).
+ *
+ * Observations: `observed_at` (when this pass ran) and the `run_id` /
+ * `session_file` identity the rule fired on.
+ *
+ * Claims: `summary`, `actual` and `threshold` are the evaluator's
+ * interpretation - a threshold crossed, not a fact about the world. A
+ * finding never claims delivery, control, or liveness.
+ */
+export interface WatchFinding {
+  rule: string;
+  run_id?: string;
+  session_file?: string;
+  summary: string;
+  observed_at: string;
+  actual?: number;
+  threshold?: number;
+}
+
+/**
+ * Per-agent observation coverage for one evaluation pass (ADR 0021 decision
+ * 4): what the pass saw, so a reader can tell healthy-empty apart from
+ * never-evaluated, a failed discovery, an unrecognised layout, or an
+ * offline agent. All three fields are observations about the pass itself.
+ */
+export interface WatchFindingsCoverage {
+  layout_recognised: boolean;
+  last_success: string | null;
+  last_error: string | null;
+}
+
+/**
+ * The output of ONE evaluation pass: the complete findings set, replaced
+ * wholesale by every frame that carries it. A partial input must never be
+ * read as "these are all the findings".
+ *
+ * `evaluated_at` present with `findings: []` means "evaluated and none
+ * firing"; NO frame (or no `findings` on the snapshot) means "not
+ * observed" and must never render as "no findings". An empty list that
+ * cannot be told apart from 'not observed' is never sent: presence of the
+ * set, with its `evaluated_at`, is the observation signal.
+ */
+export interface WatchFindingsSet {
+  findings: WatchFinding[];
+  evaluated_at: string;
+  coverage: WatchFindingsCoverage;
+}
+
+/**
  * One `mesh.watch` inventory frame (ADR 0022). Every variant carries
- * inventory facts only - session summaries or job states - and never
- * transcript entries. `snapshot` is the bootstrap: one complete listing
- * produced by the same code as sync. `dropped` marks a bounded-buffer
- * overflow so a gap is stated, never silent.
+ * inventory facts only - session summaries, job states, run facts, or one
+ * evaluation pass - and never transcript entries. `snapshot` is the
+ * bootstrap: one complete listing produced by the same code as sync.
+ * `dropped` marks a bounded-buffer overflow so a gap is stated, never
+ * silent.
+ *
+ * Runs are per-row like sessions (`run` / `run-removed` semantics, never
+ * the complete-listing path - the data-loss trap ADR 0022 §4 names).
+ * Findings are a set replaced wholesale per evaluation, because they are
+ * derived from one pass and carry that pass's `evaluated_at` and coverage.
  */
 export type WatchFrame =
-  | { type: "snapshot"; sessions: SessionSummary[]; jobs: WatchJob[] }
+  | {
+      type: "snapshot";
+      sessions: SessionSummary[];
+      jobs: WatchJob[];
+      /**
+       * The agent's runs at connect. Present (even empty) means observed;
+       * absent means this agent does not report runs (older version, no
+       * provider) and must not read as "no runs".
+       */
+      runs?: WatchRun[];
+      /**
+       * The agent's findings at connect. Present means one pass ran;
+       * absent means not observed and must never render as "no findings".
+       */
+      findings?: WatchFindingsSet;
+    }
   | { type: "added"; session: SessionSummary }
   | { type: "updated"; session: SessionSummary }
   | { type: "removed"; id: string }
   | { type: "job"; job: WatchJob }
   | { type: "job-removed"; job_id: string }
+  | { type: "run"; run: WatchRun }
+  | { type: "run-removed"; run_id: string }
+  | {
+      type: "findings";
+      findings: WatchFinding[];
+      evaluated_at: string;
+      coverage: WatchFindingsCoverage;
+    }
   | { type: "dropped"; reason: string; dropped: number };
 
 /** Wire shapes for GET /handshake, per docs/PROTOCOL.md. */

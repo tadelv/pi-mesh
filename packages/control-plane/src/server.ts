@@ -9,6 +9,7 @@ import {
   type ServerResponse,
 } from "node:http";
 import { configuredMeshPort } from "@pi-mesh/shared";
+import type { WatchRun } from "@pi-mesh/protocol";
 import { ControlStore, type PairedAgent } from "./db.js";
 import { PairingService } from "./pairing.js";
 import {
@@ -242,6 +243,31 @@ export function createControlServer(
       jobsSyncedAt.delete(agent.peer_id);
       jobsListingSettled.set(agent.peer_id, sequence);
     }
+    // Runs ride the same single refresh path (M8-7): the watch bootstrap
+    // and this listing share it, so there is no second subscription and no
+    // polling loop. `run.list` is a plain read, safe to re-list; a failure
+    // leaves the last mirror in place. `run.findings` is deliberately NOT
+    // re-listed here: it is notify-once per evaluator epoch, and calling it
+    // would consume the agent's suppression. Findings arrive only through
+    // the watch's own evaluation passes (bootstrap + reconcile).
+    if (card?.skills.includes("run.list")) {
+      try {
+        const result = await callAgent<{ runs: WatchRun[] }>(
+          target,
+          "run.list",
+          {},
+          callOptions,
+        );
+        if (!Array.isArray(result.runs)) throw new Error("malformed run.list");
+        store.replaceRuns(
+          agent.peer_id,
+          result.runs,
+          new Date((options.now ?? Date.now)()).toISOString(),
+        );
+      } catch {
+        // A failed run listing leaves the last mirror in place, like jobs.
+      }
+    }
     try {
       const sessions = await fetchSessionList(target, callOptions);
       store.upsertSessions(
@@ -324,6 +350,7 @@ export function createControlServer(
           // browser needs the identity and address, nothing more.
           agents: store.listAgents().map((agent) => {
             const skills = agentCaps.get(agent.peer_id) ?? null;
+            const findingsSnapshot = store.getFindingsSnapshot(agent.peer_id);
             return {
               ...publicAgent(agent),
               skills,
@@ -334,10 +361,31 @@ export function createControlServer(
               // re-list and reconnect complete, off when the agent does not
               // advertise mesh.watch (ADR 0022 §7).
               watch: watch.status(agent.peer_id),
+              // The runs freshness stamp (M8-7): the newest mirror write for
+              // this agent, or null when nothing was ever mirrored. The
+              // panel renders rows as current only with this stamp and a
+              // live watch; without it a cached row is stale, never current.
+              runs_synced_at: runSyncedAtMs(store, agent.peer_id),
+              // The pass the mirrored findings came from, or null when no
+              // pass was ever observed. Null is "not observed" and must
+              // never render as "no findings".
+              findings_snapshot:
+                findingsSnapshot === undefined
+                  ? null
+                  : {
+                      evaluated_at: findingsSnapshot.evaluated_at,
+                      coverage: {
+                        layout_recognised: findingsSnapshot.layout_recognised,
+                        last_success: findingsSnapshot.last_success,
+                        last_error: findingsSnapshot.last_error,
+                      },
+                    },
             };
           }),
           sessions: store.listSessions(),
           jobs: store.listJobs(),
+          runs: store.listRuns(),
+          findings: store.listFindings(),
           // Computed from THIS request, so the page can explain a refused
           // button instead of looking broken. See ADR 0014 decision 6.
           execution_transport: confidential(request)
@@ -1006,6 +1054,18 @@ function isLoopback(address: string | undefined): boolean {
 }
 
 const INVALID = Symbol("invalid-json");
+
+/**
+ * The runs freshness stamp as milliseconds, or null when nothing was ever
+ * mirrored. Parsed from the mirror's own MAX(synced_at): the stamp lives
+ * with the rows, so deleting the stamp is deleting the currency claim.
+ */
+function runSyncedAtMs(store: ControlStore, peerId: string): number | null {
+  const at = store.runsSyncedAt(peerId);
+  if (at === null) return null;
+  const ms = Date.parse(at);
+  return Number.isNaN(ms) ? null : ms;
+}
 
 /**
  * The projection of a paired agent the browser receives. Explicit rather than a

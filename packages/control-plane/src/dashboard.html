@@ -343,6 +343,7 @@
     </main>
     <aside class="agents-pane" aria-label="Agents and jobs">
       <section id="agents"></section>
+      <section id="runs" aria-label="Runs"><h2 class="management-heading">Runs</h2></section>
     </aside>
   </div>
 <script>
@@ -532,12 +533,19 @@
   }
   // Relative ages ("2 hours ago") must not drive re-renders: one slow
   // interval rewrites only the age fallback text nodes, never the structure.
+  // Runs ages reuse this same ticker: the runs panel opens no timer of its
+  // own (see the runs panel note), so its ages refresh here or not at all.
   setInterval(() => {
     if(!state) return;
     for(const row of sessionRowByKey.values()) {
       if(!row.button.isConnected || row.button.dataset.ageFallback !== '1') continue;
       const want = ago(row.button.dataset.updatedAt);
       if(row.name.textContent !== want) row.name.textContent = want;
+    }
+    for(const row of runRowByKey.values()) {
+      if(!row.age.isConnected || !row.stamp) continue;
+      const want = (row.kind || 'updated')+' '+ago(row.stamp);
+      if(row.age.textContent !== want) row.age.textContent = want;
     }
   }, 30000);
   function showMessage(parent, key) {
@@ -1828,6 +1836,158 @@
       showMessage(item, key+':stop'); showMessage(item, key+':abort');
     }
   }
+  // Runs and findings across the fleet (M8-7). Fed by the same watch
+  // subscription as the session list: watch events re-read /api/state
+  // through load(), and renderRuns() only reuses nodes keyed by agent and
+  // run id - the same keyed reuse the session list has, so a refresh never
+  // rebuilds the rows and hover/selection survive it. The panel opens no
+  // timer, no polling loop and no second subscription of its own; a second
+  // refresh mechanism here fails no-second-refresh-mechanism by name.
+  // M8-7-RUNS-PANEL-BEGIN
+  const runsSectionById = new Map();
+  const runRowByKey = new Map();
+  const findingRowByKey = new Map();
+  function runsStatusText(agent) {
+    if(agent.watch === 'stale') return 'Stale: the watch closed. Cached rows are not current.';
+    if(agent.watch !== 'live') return 'Unobserved: no live watch for this agent. Nothing here is current.';
+    if(typeof agent.runs_synced_at !== 'number') return 'Live: no runs observed yet.';
+    return 'Live: mirror updated '+ago(new Date(agent.runs_synced_at).toISOString())+'.';
+  }
+  function findingsStatusText(agent) {
+    const snapshot = agent.findings_snapshot;
+    if(!snapshot) return 'No findings snapshot observed from this agent. That is not "no findings".';
+    const coverage = snapshot.coverage || {};
+    const parts = ['Evaluated '+ago(snapshot.evaluated_at)];
+    parts.push(coverage.layout_recognised ? 'layout recognised' : 'layout unrecognised');
+    parts.push('last success '+(typeof coverage.last_success === 'string' ? ago(coverage.last_success) : 'none'));
+    parts.push('last error '+(typeof coverage.last_error === 'string' ? ago(coverage.last_error) : 'none'));
+    return parts.join(' \u00b7 ')+'.';
+  }
+  function renderRuns() {
+    const container = document.querySelector('#runs');
+    if(!container || !state) return;
+    const heading = container.querySelector('h2');
+    const seenSections = new Set();
+    const seenRuns = new Set();
+    const seenFindings = new Set();
+    let prevPlaced = heading;
+    for(const agent of state.agents) {
+      seenSections.add(agent.peer_id);
+      let section = runsSectionById.get(agent.peer_id);
+      if(!section || !section.el.isConnected) {
+        const el = document.createElement('section');
+        el.className = 'agent-section';
+        const head = document.createElement('header');
+        head.className = 'agent-title';
+        const title = document.createElement('h2');
+        const chip = document.createElement('span');
+        chip.className = 'chip';
+        head.append(title, chip);
+        const status = document.createElement('p');
+        status.className = 'dim';
+        const runsHeading = document.createElement('h3');
+        runsHeading.textContent = 'Runs';
+        const runsList = document.createElement('div');
+        const runsEmpty = document.createElement('p');
+        runsEmpty.className = 'dim';
+        const findingsHeading = document.createElement('h3');
+        findingsHeading.textContent = 'Findings';
+        const findingsStatus = document.createElement('p');
+        findingsStatus.className = 'dim';
+        const findingsList = document.createElement('div');
+        el.append(head, status, runsHeading, runsList, runsEmpty, findingsHeading, findingsStatus, findingsList);
+        section = {el, title, chip, status, runsList, runsEmpty, findingsStatus, findingsList};
+        runsSectionById.set(agent.peer_id, section);
+      }
+      if(section.title.textContent !== agent.name) section.title.textContent = agent.name;
+      const live = agent.watch === 'live';
+      const chipText = live ? 'runs live' : agent.watch === 'stale' ? 'runs stale' : 'runs unobserved';
+      if(section.chip.textContent !== chipText) section.chip.textContent = chipText;
+      const chipClass = 'chip '+(live ? 'chip-on' : 'chip-off');
+      if(section.chip.className !== chipClass) section.chip.className = chipClass;
+      const statusText = runsStatusText(agent);
+      if(section.status.textContent !== statusText) section.status.textContent = statusText;
+      placeAfter(container, section.el, prevPlaced);
+      prevPlaced = section.el;
+      const agentRuns = (state.runs || []).filter(run => run.agent_id === agent.peer_id);
+      let prevRow = null;
+      for(const run of agentRuns) {
+        const rowKey = agent.peer_id+'\0'+run.run_id;
+        seenRuns.add(rowKey);
+        let row = runRowByKey.get(rowKey);
+        if(!row || !row.el.isConnected) {
+          const el = document.createElement('div');
+          el.className = 'job';
+          const line = document.createElement('p');
+          line.className = 'job-line';
+          const main = document.createElement('span');
+          const age = document.createElement('span');
+          age.className = 'dim';
+          line.append(main, document.createTextNode(' '), age);
+          el.append(line);
+          row = {el, main, age, stamp:'', kind:'updated'};
+          runRowByKey.set(rowKey, row);
+        }
+        const mainText = run.run_id+' \u2014 '+run.state+' ('+run.liveness_state+' \u00b7 '+run.liveness_reason+')'+(run.pid === null || run.pid === undefined ? '' : ' \u00b7 pid '+run.pid);
+        if(row.main.textContent !== mainText) row.main.textContent = mainText;
+        row.kind = run.last_update ? 'updated' : 'started';
+        row.stamp = run.last_update || run.started_at;
+        const ageText = row.kind+' '+ago(row.stamp);
+        if(row.age.textContent !== ageText) row.age.textContent = ageText;
+        // A row belongs to its agent's list: it is only ever placed under
+        // the section built for that agent, never under another's.
+        placeAfter(section.runsList, row.el, prevRow);
+        prevRow = row.el;
+      }
+      const runsEmptyText = agentRuns.length === 0 ? (live ? 'No runs reported by the agent.' : 'No cached runs; the agent is not currently observed.') : '';
+      if(section.runsEmpty.textContent !== runsEmptyText) section.runsEmpty.textContent = runsEmptyText;
+      section.runsEmpty.hidden = agentRuns.length !== 0;
+      const agentFindings = (state.findings || []).filter(finding => finding.agent_id === agent.peer_id);
+      const findingsText = findingsStatusText(agent);
+      if(section.findingsStatus.textContent !== findingsText) section.findingsStatus.textContent = findingsText;
+      let prevFinding = null;
+      for(const finding of agentFindings) {
+        const findingKey = agent.peer_id+'\0'+finding.key;
+        seenFindings.add(findingKey);
+        let item = findingRowByKey.get(findingKey);
+        if(!item || !item.isConnected) {
+          item = document.createElement('p');
+          item.className = 'job-line';
+          findingRowByKey.set(findingKey, item);
+        }
+        const subject = finding.run_id || finding.session_file || '';
+        const itemText = finding.rule+(subject ? ' \u00b7 '+subject : '')+' \u2014 '+finding.summary;
+        if(item.textContent !== itemText) item.textContent = itemText;
+        placeAfter(section.findingsList, item, prevFinding);
+        prevFinding = item;
+      }
+      for(const [findingKey, item] of findingRowByKey) {
+        if(!seenFindings.has(findingKey) && item.parentElement === section.findingsList) {
+          item.remove();
+          findingRowByKey.delete(findingKey);
+        }
+      }
+    }
+    for(const [rowKey, row] of runRowByKey) {
+      if(!seenRuns.has(rowKey)) {
+        row.el.remove();
+        runRowByKey.delete(rowKey);
+      }
+    }
+    for(const [findingKey, item] of findingRowByKey) {
+      if(!seenFindings.has(findingKey)) {
+        item.remove();
+        findingRowByKey.delete(findingKey);
+      }
+    }
+    for(const [agentId, section] of runsSectionById) {
+      if(!seenSections.has(agentId)) {
+        section.el.remove();
+        runsSectionById.delete(agentId);
+      }
+    }
+  }
+  // M8-7-RUNS-PANEL-END
   function render() {
     root.replaceChildren(); if(!state) return;
     document.querySelector('#title').textContent = state.control.name;
@@ -1845,6 +2005,10 @@
     node('h2', 'Agent management', root).className = 'management-heading';
     if(state.agents.length === 0) node('p', 'No paired agents yet. Pair an agent to begin.', root).className = 'dim';
     for(const agent of state.agents) renderAgent(agent);
+    // The runs panel reuses its rows across this rebuild: renderRuns() never
+    // reconstructs a node whose content did not change (same clause as the
+    // session-list flicker fix).
+    renderRuns();
   }
   let refreshPending = false;
   async function refreshSelected(fromLiveView = false) {

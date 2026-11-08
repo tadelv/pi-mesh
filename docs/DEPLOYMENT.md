@@ -41,6 +41,14 @@ Execution is **off by default**. Enable it deliberately with
 convenience list), or the lower-precedence `PI_MESH_ALLOW_SPAWN` for a service
 manager. `PI_MESH_WORKSPACE` defaults to the user's home directory.
 
+Which id goes in that list is decided by *who calls*, not by which machine the
+call is about. A CLI call signs as the calling machine's own peer id
+(`peerId` in that machine's `~/.pi-mesh/credentials.json`); a dashboard
+instruction signs as the control plane's id. The two differ on a host that runs
+both, so a list holding only the control-plane id refuses every peer call with
+`-32102`. That refusal does not name the caller: compare the calling machine's
+`credentials.json` with the list in this unit before changing anything.
+
 ### systemd (Linux)
 
 `/etc/systemd/system/pi-mesh-agent.service`:

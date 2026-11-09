@@ -71,7 +71,7 @@ const usage =
   "Usage: pi-mesh-agent pair <token> [--control-host host:port] [--timeout seconds]\n" +
   "Usage: pi-mesh-agent peers [--profile lan|public] [--watch] [--timeout seconds]\n" +
   "Usage: pi-mesh-agent start [--profile lan|public] [--allow-execution[=peer-id,peer-id]]\n" +
-  "Usage: pi-mesh-agent sessions [--peer id | --peer-host host[:port]] [--timeout seconds]\n" +
+  "Usage: pi-mesh-agent sessions [--project path] [--peer id | --peer-host host[:port]] [--timeout seconds]\n" +
   "Usage: pi-mesh-agent stream <session> [--follow] [--peer id | --peer-host host[:port]] [--timeout seconds]\n" +
   "Usage: pi-mesh-agent call <peer> <skill> [json] [--timeout seconds]\n" +
   "       pi-mesh-agent call <skill> [json] --peer-host host[:port]\n" +
@@ -123,6 +123,9 @@ export async function run(
     if (parsed.follow && parsed.command !== "stream") {
       throw new CliUsageError("--follow is only valid with stream");
     }
+    if (parsed.project !== undefined && parsed.command !== "sessions") {
+      throw new CliUsageError("--project is only valid with sessions");
+    }
     if (parsed.controlHost !== undefined && parsed.command !== "pair") {
       throw new CliUsageError("--control-host is only valid with pair");
     }
@@ -151,7 +154,13 @@ export async function run(
     if (parsed.command === "sessions") {
       if (parsed.args.length > 0)
         throw new CliUsageError("sessions takes no arguments");
-      return await sessions(parsed.peer, parsed.peerHost, parsed.timeoutMs, io);
+      return await sessions(
+        parsed.peer,
+        parsed.peerHost,
+        parsed.timeoutMs,
+        io,
+        parsed.project,
+      );
     }
     if (parsed.command === "stream") {
       if (parsed.args.length !== 1)
@@ -381,6 +390,7 @@ async function sessions(
   peerHost: string | undefined,
   timeoutMs: number,
   io: CliIO,
+  project: string | undefined,
 ): Promise<number> {
   if (peerId === undefined && peerHost === undefined) {
     const store = new SessionStore({
@@ -390,7 +400,10 @@ async function sessions(
       onError: (error) =>
         io.stderr.write(`Session parse warning: ${error.message}\n`),
     });
-    io.stdout.write(`${JSON.stringify({ sessions: await store.list() })}\n`);
+    const listed = (await store.list()).filter((summary) =>
+      inProject(project, summary.project),
+    );
+    io.stdout.write(`${JSON.stringify({ sessions: listed })}\n`);
     return 0;
   }
   const peer = await resolveRemote(peerId, peerHost, timeoutMs, io);
@@ -401,8 +414,44 @@ async function sessions(
     {},
     await clientOptions(io, timeoutMs),
   );
-  io.stdout.write(`${JSON.stringify(result)}\n`);
+  io.stdout.write(`${JSON.stringify(projectSessions(result, project))}\n`);
   return 0;
+}
+
+/**
+ * `--project` narrows a listing to one checkout. It compares whole path
+ * segments, so `/repo/app` does not also match `/repo/app-worktrees`: a bare
+ * prefix test would hand the caller another tree's sessions.
+ */
+function inProject(project: string | undefined, candidate: unknown): boolean {
+  if (project === undefined) return true;
+  if (typeof candidate !== "string") return false;
+  return candidate === project || candidate.startsWith(`${project}/`);
+}
+
+/** The same filter for a peer's `session.list` reply, which is untyped JSON. */
+function projectSessions(
+  result: unknown,
+  project: string | undefined,
+): unknown {
+  if (
+    project === undefined ||
+    typeof result !== "object" ||
+    result === null ||
+    !("sessions" in result) ||
+    !Array.isArray(result.sessions)
+  ) {
+    return result;
+  }
+  return {
+    ...result,
+    sessions: result.sessions.filter(
+      (summary: unknown) =>
+        typeof summary === "object" &&
+        summary !== null &&
+        inProject(project, (summary as { project?: unknown }).project),
+    ),
+  };
 }
 
 async function callSkill(
@@ -882,6 +931,7 @@ function parseArguments(argv: string[]):
       command: string | undefined;
       args: string[];
       peer: string | undefined;
+      project: string | undefined;
       allowExecution: string | undefined;
       allowExecutionFlag: boolean;
       follow: boolean;
@@ -897,6 +947,7 @@ function parseArguments(argv: string[]):
   let timeoutMs = 5_000;
   let peer: string | undefined;
   let peerHost: string | undefined;
+  let project: string | undefined;
   let controlHost: string | undefined;
   let allowExecution: string | undefined;
   let allowExecutionFlag = false;
@@ -942,6 +993,15 @@ function parseArguments(argv: string[]):
       if (value === undefined || value.startsWith("--")) return undefined;
       peerHost = value;
       index += 1;
+    } else if (argument === "--project") {
+      const value = argv[index + 1];
+      if (value === undefined || value.startsWith("--")) return undefined;
+      // A trailing slash is the same directory, and a silently empty match
+      // would look like "this project has no sessions".
+      const trimmed = value.replace(/\/+$/, "");
+      if (trimmed === "") return undefined;
+      project = trimmed;
+      index += 1;
     } else if (argument !== undefined && !argument.startsWith("--")) {
       commands.push(argument);
     } else {
@@ -955,6 +1015,7 @@ function parseArguments(argv: string[]):
         args: commands.slice(1),
         peer,
         peerHost,
+        project,
         allowExecution,
         allowExecutionFlag,
         follow,

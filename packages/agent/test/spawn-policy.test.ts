@@ -287,6 +287,26 @@ describe("the execution gate", () => {
     }
   });
 
+  it("names the refused caller when the machine opts in for other peers", async () => {
+    const server = await executionServer(
+      parseSpawnPolicy("11111111-1111-4111-8111-111111111111", ""),
+    );
+    try {
+      const response = await post(server.port, sendMessage("session.steer"));
+      const body = JSON.parse(response.body) as {
+        error?: { code: number; message: string };
+      };
+      expect(body.error?.code).toBe(-32102);
+      // The refused caller's only debugging handle. The refusal deliberately
+      // does not list what the machine does allow, so the caller must be
+      // comparable with the unit's --allow-execution list by eye.
+      expect(body.error?.message).toContain(callerIdentity.peerId);
+      expect(server.calls).toHaveLength(0);
+    } finally {
+      await server.stop();
+    }
+  });
+
   it("serves the same skill once the machine opts in", async () => {
     const server = await executionServer(parseSpawnPolicy("*", ""));
     try {

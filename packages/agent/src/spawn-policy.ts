@@ -144,7 +144,7 @@ export function assertExecutionAllowed(
   throw new PiMeshError(
     ErrorCode.SpawnDenied,
     policy.enabled
-      ? `Peer is not permitted to execute on this machine: ${skill}`
+      ? `Peer ${peerId} is not permitted to execute on this machine: ${skill}`
       : `Execution is disabled on this machine (start with --allow-execution or set PI_MESH_ALLOW_SPAWN for a service manager): ${skill}`,
   );
 }

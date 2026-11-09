@@ -7,6 +7,12 @@
 # exits 0. Real deployment overrides it with `publish`.
 FROM node:22-alpine
 
+# Provenance: the deployed control plane could only be identified by hashing its
+# copied source tree against git history, because nothing in the image named a
+# commit. Pass the revision at build time and it becomes one docker inspect away.
+ARG GIT_SHA=unknown
+LABEL org.opencontainers.image.revision=$GIT_SHA
+
 # Tracks the pnpm version pinned in package.json's packageManager field.
 RUN corepack enable
 

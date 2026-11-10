@@ -2055,16 +2055,21 @@
       for(const session of state.sessions) if(session.agent_id === agent.peer_id) seen.add(session.project);
       return [agent.peer_id, [...seen].sort()];
     });
-    const sideFingerprint = JSON.stringify([state.agents, state.runs, state.findings, state.jobs, projectsByAgent]);
-    if(sideFingerprint === renderedSideFingerprint) return;
-    renderedSideFingerprint = sideFingerprint;
-    root.replaceChildren();
-    node('h2', 'Agent management', root).className = 'management-heading';
-    if(state.agents.length === 0) node('p', 'No paired agents yet. Pair an agent to begin.', root).className = 'dim';
-    for(const agent of state.agents) renderAgent(agent);
-    // The runs panel reuses its rows across this rebuild: renderRuns() never
-    // reconstructs a node whose content did not change (same clause as the
-    // session-list flicker fix).
+    // Runs and findings update on their own cadence and renderRuns() reuses its
+    // rows, so they are not part of the rebuild decision: leaving them in it
+    // rebuilt every agent card (11k nodes per four seconds) each time a run
+    // frame arrived.
+    const sideFingerprint = JSON.stringify([state.agents, state.jobs, projectsByAgent]);
+    if(sideFingerprint !== renderedSideFingerprint) {
+      renderedSideFingerprint = sideFingerprint;
+      root.replaceChildren();
+      node('h2', 'Agent management', root).className = 'management-heading';
+      if(state.agents.length === 0) node('p', 'No paired agents yet. Pair an agent to begin.', root).className = 'dim';
+      for(const agent of state.agents) renderAgent(agent);
+    }
+    // The runs panel reuses its rows: renderRuns() never reconstructs a node
+    // whose content did not change (same clause as the session-list flicker
+    // fix), so it is safe to call on every refresh without a rebuild.
     renderRuns();
   }
   let refreshPending = false;

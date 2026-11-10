@@ -2124,20 +2124,36 @@
   function invalidateRenderFingerprints() {
     loadedFingerprint = null;
     renderedSideFingerprint = null;
-    // The transcript also shows what the job surface reports (a composer once a
-    // job is confirmed), so an interaction must be allowed to repaint it even
-    // when the session's updated_at did not move.
+  }
+  // The transcript also shows what the job surface reports (a composer once a
+  // job is confirmed), so an action must be allowed to repaint it even when the
+  // session's updated_at did not move. Typing is deliberately not an action:
+  // it must not repaint the panel it is being typed into.
+  function invalidateTranscriptStamp() {
     if(selected) selected.transcriptStamp = undefined;
   }
-  for(const type of ['click', 'input', 'change', 'keydown', 'submit']) {
+  for(const type of ['click', 'change', 'submit']) {
+    document.addEventListener(type, () => { invalidateRenderFingerprints(); invalidateTranscriptStamp(); }, true);
+  }
+  for(const type of ['input', 'keydown']) {
     document.addEventListener(type, invalidateRenderFingerprints, true);
   }
+  // A scroll the operator made during a refresh must win over the position
+  // captured when the refresh started. Restoring the captured value blindly
+  // wrote a stale 0 over a list the operator had just scrolled, which is the
+  // same class of fault as repainting under the pointer.
+  let lastOperatorScrollAt = 0;
+  document.addEventListener('DOMContentLoaded', () => {
+    const list = document.querySelector('#session-list');
+    if(list) list.addEventListener('scroll', () => { lastOperatorScrollAt = performance.now(); }, { passive: true });
+  });
   async function load(){
     // A push re-render must not move the reader: save the list position
     // across the rebuild (selection and composer drafts already live in
     // memory outside the DOM, so they survive it unchanged).
     const list = document.querySelector('#session-list');
     const top = list ? list.scrollTop : 0;
+    const startedAt = performance.now();
     invalidateSpawnModels(); invalidateCommandHints();
     const next = await api('/api/state');
     // A refresh that returns the same document has nothing to paint: bail out
@@ -2148,7 +2164,7 @@
     loadedFingerprint = fingerprint;
     state = next; render();
     const after = document.querySelector('#session-list');
-    if(after) after.scrollTop = top;
+    if(after && lastOperatorScrollAt < startedAt) after.scrollTop = top;
     maybeWatch();
   }
   async function sync(){ await api('/api/sync','POST'); await load(); }

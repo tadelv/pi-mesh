@@ -2059,13 +2059,24 @@
     // rows, so they are not part of the rebuild decision: leaving them in it
     // rebuilt every agent card (11k nodes per four seconds) each time a run
     // frame arrived.
-    // jobs_synced_at and runs_synced_at move on every poll, so including them
-    // raw rebuilt every agent card twice a second (10624 node replacements in
-    // four seconds). They only feed an "ago" label in the pane, so they enter
-    // the decision rounded to half a minute: the label stays roughly true and
-    // the cards repaint at most twice a minute on their account.
+    // Only what a card actually draws belongs in the decision. jobs_synced_at
+    // and runs_synced_at move on every poll, and findings_snapshot carries its
+    // own timestamp, so including them rebuilt every card twice a second
+    // (10624 node replacements in four seconds) while nothing visible had
+    // changed. The two sync stamps only feed an "ago" label, so they enter the
+    // decision rounded to half a minute; the snapshot belongs to the runs panel
+    // and is left out entirely.
     const coarse = (value) => (typeof value === 'number' ? Math.floor(value / 30000) : value);
-    const paneAgents = state.agents.map((agent) => ({ ...agent, jobs_synced_at: coarse(agent.jobs_synced_at), runs_synced_at: coarse(agent.runs_synced_at) }));
+    const paneAgents = state.agents.map((agent) => ({
+      peer_id: agent.peer_id,
+      name: agent.name,
+      host: agent.host,
+      port: agent.port,
+      controls: agent.controls,
+      skills: agent.skills,
+      jobs_synced_at: coarse(agent.jobs_synced_at),
+      runs_synced_at: coarse(agent.runs_synced_at),
+    }));
     const sideFingerprint = JSON.stringify([paneAgents, state.jobs, projectsByAgent]);
     if(sideFingerprint !== renderedSideFingerprint) {
       renderedSideFingerprint = sideFingerprint;
@@ -2084,7 +2095,19 @@
   // swaps the nodes under the pointer, so a refresh waits while a selection is
   // anchored inside it. The durable page is re-read on the next refresh after
   // the selection is released.
+  // Two reasons to hold off, both of them "the operator is using this pane":
+  // a text selection anchored in it, and the pointer resting in it. A rebuild
+  // detaches the nodes under either, which is what made the panel feel jumpy
+  // while its session was being written to.
+  let pointerInTranscript = false;
+  document.addEventListener('DOMContentLoaded', () => {
+    const panel = document.querySelector('#transcript-panel');
+    if(!panel) return;
+    panel.addEventListener('pointerenter', () => { pointerInTranscript = true; });
+    panel.addEventListener('pointerleave', () => { pointerInTranscript = false; });
+  });
   function operatorIsSelectingTranscript() {
+    if(pointerInTranscript) return true;
     const panel = document.querySelector('#transcript-panel');
     const selection = document.getSelection();
     if(!panel || !selection || selection.isCollapsed || selection.rangeCount === 0) return false;

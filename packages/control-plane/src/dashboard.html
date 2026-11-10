@@ -1026,6 +1026,12 @@
     const previous = transcriptPanel.querySelector('.transcript');
     const memory = scrollMemory.get(key) ?? {stuck:true};
     const previousDistance = previous ? previous.scrollHeight - previous.scrollTop : 0;
+    // A rebuild recreates the composer, so the draft is carried across it. It
+    // is the operator's unsent text: losing it because a watch frame arrived
+    // mid-sentence is not a refresh, it is data loss (e2e/dashboard.spec.ts:
+    // "watch delivery preserves the unsent composer draft").
+    const previousComposer = transcriptPanel.querySelector('textarea[aria-label="Message to session"]');
+    const draft = previousComposer ? { value: previousComposer.value, focused: document.activeElement === previousComposer } : null;
     transcriptPanel.replaceChildren();
     const session = state.sessions.find(item => item.agent_id === owner.agentId && item.session_id === owner.sessionId);
     const heading = node('header', undefined, transcriptPanel);
@@ -2108,6 +2114,13 @@
   });
   function operatorIsSelectingTranscript() {
     if(pointerInTranscript) return true;
+    // A caret in the composer counts too: a refresh that replaces the textarea
+    // mid-sentence loses whatever was typed into the detached node, which is how
+    // the draft came back empty in CI. Focus elsewhere in the panel does not
+    // block: reading a live session must still show what it is doing.
+    const focused = document.activeElement;
+    const focusedPanel = document.querySelector('#transcript-panel');
+    if(focused && focusedPanel && focusedPanel.contains(focused) && (focused.tagName === 'TEXTAREA' || focused.tagName === 'INPUT')) return true;
     const panel = document.querySelector('#transcript-panel');
     const selection = document.getSelection();
     if(!panel || !selection || selection.isCollapsed || selection.rangeCount === 0) return false;
@@ -2132,7 +2145,10 @@
         return;
       }
       const data = await fetchSessionPage(current.agentId, current.sessionId);
-      if(selected === current) { current.transcriptStamp = stamped; renderTranscript(data, current); }
+      // Re-check after the await: the operator can take up the pointer, the
+      // selection or the caret while the page is in flight, and a rebuild then
+      // lands on what they just touched.
+      if(selected === current && !operatorIsSelectingTranscript()) { current.transcriptStamp = stamped; renderTranscript(data, current); }
     } catch(error) {
       // Say so rather than leaving a stale view on screen: the live overlay is
       // gone now, so silence would read as "the record is what you see".

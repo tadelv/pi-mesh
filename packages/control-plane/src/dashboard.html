@@ -2026,9 +2026,15 @@
     }
   }
   // M8-7-RUNS-PANEL-END
+  // The right pane is rebuilt from scratch, so it is rebuilt only when one of
+  // its inputs changed. At ~2 watch refreshes per second against three busy
+  // agents that was ~5600 node replacements and ~6000 attribute writes per
+  // four seconds, which moved whatever the operator was pointing at.
+  let renderedSideFingerprint = null;
   function render() {
-    root.replaceChildren(); if(!state) return;
-    document.querySelector('#title').textContent = state.control.name;
+    if(!state) { root.replaceChildren(); return; }
+    const title = document.querySelector('#title');
+    if(title.textContent !== state.control.name) title.textContent = state.control.name;
     // The manual route stays for agents that do not advertise mesh.watch
     // (ADR 0022 §7). The global button is offered while any agent still needs
     // a click; agents with a live subscription get a per-card note instead.
@@ -2040,6 +2046,19 @@
       const session = state.sessions.find(item => item.agent_id === selected.agentId && item.session_id === selected.sessionId);
       if(session && transcriptPanel.hidden === false) void refreshSelected();
     }
+    // The start form suggests projects from the session list, so the project
+    // set is part of what the right pane shows even though it is not an agent
+    // field: a new project must repaint, a session that merely got activity
+    // must not.
+    const projectsByAgent = state.agents.map((agent) => {
+      const seen = new Set();
+      for(const session of state.sessions) if(session.agent_id === agent.peer_id) seen.add(session.project);
+      return [agent.peer_id, [...seen].sort()];
+    });
+    const sideFingerprint = JSON.stringify([state.agents, state.runs, state.findings, state.jobs, projectsByAgent]);
+    if(sideFingerprint === renderedSideFingerprint) return;
+    renderedSideFingerprint = sideFingerprint;
+    root.replaceChildren();
     node('h2', 'Agent management', root).className = 'management-heading';
     if(state.agents.length === 0) node('p', 'No paired agents yet. Pair an agent to begin.', root).className = 'dim';
     for(const agent of state.agents) renderAgent(agent);
@@ -2049,13 +2068,36 @@
     renderRuns();
   }
   let refreshPending = false;
+  // A rebuild of the transcript destroys the operator's text selection and
+  // swaps the nodes under the pointer, so a refresh waits while a selection is
+  // anchored inside it. The durable page is re-read on the next refresh after
+  // the selection is released.
+  function operatorIsSelectingTranscript() {
+    const panel = document.querySelector('#transcript-panel');
+    const selection = document.getSelection();
+    if(!panel || !selection || selection.isCollapsed || selection.rangeCount === 0) return false;
+    return panel.contains(selection.anchorNode);
+  }
   async function refreshSelected(fromLiveView = false) {
     if(refreshPending || !selected) return;
     refreshPending = true;
     const current = selected;
     try {
+      const session = state?.sessions.find(item => item.agent_id === current.agentId && item.session_id === current.sessionId);
+      const stamped = session?.updated_at;
+      // Unchanged session and an unchanged transcript: nothing to paint, and a
+      // repaint would only cost the operator their place.
+      if(!fromLiveView && stamped !== undefined && stamped === current.transcriptStamp && current.transcript) {
+        refreshPending = false;
+        if(selected === current) void maybeStartLiveView(current);
+        return;
+      }
+      if(operatorIsSelectingTranscript()) {
+        refreshPending = false;
+        return;
+      }
       const data = await fetchSessionPage(current.agentId, current.sessionId);
-      if(selected === current) renderTranscript(data, current);
+      if(selected === current) { current.transcriptStamp = stamped; renderTranscript(data, current); }
     } catch(error) {
       // Say so rather than leaving a stale view on screen: the live overlay is
       // gone now, so silence would read as "the record is what you see".
@@ -2069,13 +2111,37 @@
     // loop back into itself.
     if(!fromLiveView && selected === current) void maybeStartLiveView(current);
   }
+  let loadedFingerprint = null;
+  // Any operator action invalidates the "nothing changed" verdicts: a click can
+  // change what a card should show without changing /api/state (a status read,
+  // a spawn form), and a stale card is worse than a repaint. Only refreshes
+  // that follow no interaction are allowed to skip work.
+  function invalidateRenderFingerprints() {
+    loadedFingerprint = null;
+    renderedSideFingerprint = null;
+    // The transcript also shows what the job surface reports (a composer once a
+    // job is confirmed), so an interaction must be allowed to repaint it even
+    // when the session's updated_at did not move.
+    if(selected) selected.transcriptStamp = undefined;
+  }
+  for(const type of ['click', 'input', 'change', 'keydown', 'submit']) {
+    document.addEventListener(type, invalidateRenderFingerprints, true);
+  }
   async function load(){
     // A push re-render must not move the reader: save the list position
     // across the rebuild (selection and composer drafts already live in
     // memory outside the DOM, so they survive it unchanged).
     const list = document.querySelector('#session-list');
     const top = list ? list.scrollTop : 0;
-    invalidateSpawnModels(); invalidateCommandHints(); state=await api('/api/state'); render();
+    invalidateSpawnModels(); invalidateCommandHints();
+    const next = await api('/api/state');
+    // A refresh that returns the same document has nothing to paint: bail out
+    // before any pane touches the DOM. The watch stream is much noisier than
+    // the state it reports, so most frames land here.
+    const fingerprint = JSON.stringify(next);
+    if(fingerprint === loadedFingerprint) { maybeWatch(); return; }
+    loadedFingerprint = fingerprint;
+    state = next; render();
     const after = document.querySelector('#session-list');
     if(after) after.scrollTop = top;
     maybeWatch();

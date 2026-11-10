@@ -5856,11 +5856,29 @@ test("a group that disappears does not detach the groups after it", async ({
     started_at: string;
     updated_at: string;
   }> = [
-    { id: "session-a", project: "/work/alpha", name: "A", started_at: seenAt(3), updated_at: seenAt(3) },
+    {
+      id: "session-a",
+      project: "/work/alpha",
+      name: "A",
+      started_at: seenAt(3),
+      updated_at: seenAt(3),
+    },
     // Sits between alpha and beta while it exists, so it is the stale node that
     // used to invalidate beta's placement anchor.
-    { id: "session-s", project: "/work/zeta", name: "S", started_at: seenAt(2), updated_at: seenAt(2) },
-    { id: "session-b", project: "/work/beta", name: "B", started_at: seenAt(1), updated_at: seenAt(1) },
+    {
+      id: "session-s",
+      project: "/work/zeta",
+      name: "S",
+      started_at: seenAt(2),
+      updated_at: seenAt(2),
+    },
+    {
+      id: "session-b",
+      project: "/work/beta",
+      name: "B",
+      started_at: seenAt(1),
+      updated_at: seenAt(1),
+    },
   ];
   const { stub, watchPushers } = await startFlickerStub(sessions);
   const stubPort = (stub.address() as { port: number }).port;
@@ -5908,9 +5926,16 @@ test("a group that disappears does not detach the groups after it", async ({
     await expect(page.locator("#session-list")).not.toContainText("/work/zeta");
     const detached = await page.evaluate(() => {
       const removed = (window as unknown as { __removed: Node[] }).__removed;
-      return removed.map((node) => (node as Element).querySelector?.("summary")?.getAttribute("title") ?? null);
+      return removed.map(
+        (node) =>
+          (node as Element).querySelector?.("summary")?.getAttribute("title") ??
+          null,
+      );
     });
-    expect(detached, "placement clause: removal never detaches a surviving group").toEqual([]);
+    expect(
+      detached,
+      "placement clause: removal never detaches a surviving group",
+    ).toEqual([]);
     expect(
       await betaHandle!.evaluate((el) => el.isConnected),
       "placement clause: beta's group is still the same connected node",

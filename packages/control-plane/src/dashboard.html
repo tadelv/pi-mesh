@@ -2059,7 +2059,14 @@
     // rows, so they are not part of the rebuild decision: leaving them in it
     // rebuilt every agent card (11k nodes per four seconds) each time a run
     // frame arrived.
-    const sideFingerprint = JSON.stringify([state.agents, state.jobs, projectsByAgent]);
+    // jobs_synced_at and runs_synced_at move on every poll, so including them
+    // raw rebuilt every agent card twice a second (10624 node replacements in
+    // four seconds). They only feed an "ago" label in the pane, so they enter
+    // the decision rounded to half a minute: the label stays roughly true and
+    // the cards repaint at most twice a minute on their account.
+    const coarse = (value) => (typeof value === 'number' ? Math.floor(value / 30000) : value);
+    const paneAgents = state.agents.map((agent) => ({ ...agent, jobs_synced_at: coarse(agent.jobs_synced_at), runs_synced_at: coarse(agent.runs_synced_at) }));
+    const sideFingerprint = JSON.stringify([paneAgents, state.jobs, projectsByAgent]);
     if(sideFingerprint !== renderedSideFingerprint) {
       renderedSideFingerprint = sideFingerprint;
       root.replaceChildren();

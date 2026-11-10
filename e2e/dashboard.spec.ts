@@ -5837,6 +5837,120 @@ test("a watch refresh keeps the hovered and selected rows as the same nodes", as
   }
 });
 
+test("a group that disappears does not detach the groups after it", async ({
+  browser,
+}) => {
+  // The placement clause. Placement used to run before the sweep that removes
+  // vanished nodes, so a group that was on its way out still sat between two
+  // survivors: every node behind it looked out of order and was detached and
+  // re-inserted. On the live dashboard that happens ~40 times a second, and a
+  // click whose mousedown and mouseup straddle a detach is never dispatched -
+  // which is why the disclosure triangles and the session buttons stopped
+  // responding while the list looked unchanged.
+  const seenAt = (seconds: number): string =>
+    new Date(seconds * 1000).toISOString();
+  const sessions: Array<{
+    id: string;
+    project: string;
+    name?: string;
+    started_at: string;
+    updated_at: string;
+  }> = [
+    {
+      id: "session-a",
+      project: "/work/alpha",
+      name: "A",
+      started_at: seenAt(3),
+      updated_at: seenAt(3),
+    },
+    // Sits between alpha and beta while it exists, so it is the stale node that
+    // used to invalidate beta's placement anchor.
+    {
+      id: "session-s",
+      project: "/work/zeta",
+      name: "S",
+      started_at: seenAt(2),
+      updated_at: seenAt(2),
+    },
+    {
+      id: "session-b",
+      project: "/work/beta",
+      name: "B",
+      started_at: seenAt(1),
+      updated_at: seenAt(1),
+    },
+  ];
+  const { stub, watchPushers } = await startFlickerStub(sessions);
+  const stubPort = (stub.address() as { port: number }).port;
+  const store = new ControlStore(":memory:");
+  store.controlName("Placement Control");
+  store.upsertAgent({
+    peer_id: "peer-flicker",
+    name: "Flicker Agent",
+    host: "127.0.0.1",
+    port: stubPort,
+    credential: Buffer.alloc(32, 5).toString("base64"),
+    paired_at: seenAt(0),
+  });
+  const control = createControlServer({ store, host: "127.0.0.1", port: 0 });
+  const page = await browser.newPage();
+  try {
+    const { port } = await control.start();
+    await page.addInitScript(
+      (dashboardToken) => localStorage.setItem("pi_mesh_token", dashboardToken),
+      store.dashboardToken(),
+    );
+    await page.goto(`http://127.0.0.1:${port}`);
+    await page.getByRole("button", { name: "Sync", exact: true }).click();
+    await expect(page.locator("#session-list")).toContainText("S");
+    const beta = page.locator(
+      '#session-list details.session-group:has(> summary[title="/work/beta"])',
+    );
+    const betaHandle = await beta.elementHandle();
+    expect(betaHandle, "positive control: beta's group exists").not.toBeNull();
+    await page.evaluate(() => {
+      const list = document.querySelector("#session-list")!;
+      const removed: Node[] = [];
+      (window as unknown as { __removed: Node[] }).__removed = removed;
+      new MutationObserver((records) => {
+        for (const record of records) {
+          for (const node of record.removedNodes) removed.push(node);
+        }
+      }).observe(list, { childList: true });
+    });
+    // Zeta vanishes. Alpha and beta stay, in the same relative order.
+    const index = sessions.findIndex((session) => session.id === "session-s");
+    sessions.splice(index, 1);
+    for (const push of [...watchPushers])
+      push({ type: "removed", session_id: "session-s" });
+    await expect(page.locator("#session-list")).not.toContainText("/work/zeta");
+    const detached = await page.evaluate(() => {
+      const removed = (window as unknown as { __removed: Node[] }).__removed;
+      return removed.map(
+        (node) =>
+          (node as Element).querySelector?.("summary")?.getAttribute("title") ??
+          null,
+      );
+    });
+    expect(
+      detached,
+      "placement clause: removal never detaches a surviving group",
+    ).toEqual([]);
+    expect(
+      await betaHandle!.evaluate((el) => el.isConnected),
+      "placement clause: beta's group is still the same connected node",
+    ).toBe(true);
+  } finally {
+    await page.close().catch(() => undefined);
+    try {
+      await control.stop();
+    } finally {
+      store.close();
+      await new Promise<void>((resolve) => stub.close(() => resolve()));
+    }
+  }
+});
+
 test("a burst of watch frames costs far fewer browser refreshes than frames", async ({
   browser,
 }) => {

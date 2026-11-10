@@ -407,6 +407,26 @@
     const anchor = prev === null ? parent.firstChild : prev.nextSibling;
     if(anchor !== node) parent.insertBefore(node, anchor);
   }
+  // Place a whole sequence, or touch nothing. Removing and re-inserting a node
+  // still counts as detaching it: a click whose mousedown and mouseup straddle
+  // that detach is never dispatched, so a pass that "only reorders" is enough
+  // to make the list unclickable. Comparing first costs a walk and buys zero
+  // mutations whenever the order already matches.
+  function placeInOrder(parent, nodes, firstPrev) {
+    let cursor = firstPrev === null ? parent.firstChild : firstPrev.nextSibling;
+    let identical = parent.children.length === nodes.length;
+    for(const candidate of nodes) {
+      if(candidate !== cursor) { identical = false; break; }
+      cursor = cursor === null ? null : cursor.nextSibling;
+    }
+    if(identical && cursor === null) return;
+    let prev = firstPrev;
+    for(const candidate of nodes) {
+      const anchor = prev === null ? parent.firstChild : prev.nextSibling;
+      if(anchor !== candidate) parent.insertBefore(candidate, anchor);
+      prev = candidate;
+    }
+  }
   function renderSessions() {
     if(!state) return;
     const sessions = visibleSessions();
@@ -443,8 +463,17 @@
     const seenLabels = new Set();
     const seenGroups = new Set();
     const seenRows = new Set();
-    let prevPlaced = null;
-    for(const [agentId, projects] of agents) {
+    const orderedTop = [];
+    const orderedRowsByGroup = new Map();
+    // Agent blocks are ordered by name, never by which block holds the newest
+    // session. Recency at that level swapped whole blocks - up to 57 node
+    // moves in a single pass - whenever a different agent wrote anything,
+    // which detached the group under the operator's cursor. Recency still
+    // decides the order of projects inside a block.
+    const nameFor = (id) => state.agents.find((candidate) => candidate.peer_id === id)?.name || id;
+    const agentOrder = [...agents.keys()].sort((left, right) => nameFor(left).localeCompare(nameFor(right)) || left.localeCompare(right));
+    for(const agentId of agentOrder) {
+      const projects = agents.get(agentId);
       seenLabels.add(agentId);
       const agent = state.agents.find(candidate => candidate.peer_id === agentId);
       const labelText = agent?.name || agentId;
@@ -457,8 +486,7 @@
       if(label.textContent !== labelText) label.textContent = labelText;
       // Iterating in recency order keeps the visible order without ever
       // rebuilding the container; an already-placed node is not moved.
-      placeAfter(sessionList, label, prevPlaced);
-      prevPlaced = label;
+      orderedTop.push(label);
       for(const [project, grouped] of projects) {
         const key = agentId+'\0'+project;
         seenGroups.add(key);
@@ -486,9 +514,9 @@
         const headerText = basename(project)+' ('+grouped.length+')';
         if(group.summary.textContent !== headerText) group.summary.textContent = headerText;
         if(group.summary.title !== project) group.summary.title = project;
-        placeAfter(sessionList, group.details, prevPlaced);
-        prevPlaced = group.details;
-        let prevRow = group.summary;
+        orderedTop.push(group.details);
+        const orderedRows = [];
+        orderedRowsByGroup.set(group, orderedRows);
         for(const session of grouped) {
           const rowKey = session.agent_id+'\0'+session.session_id;
           seenRows.add(rowKey);
@@ -522,14 +550,24 @@
           if(row.button.dataset.updatedAt !== session.updated_at) row.button.dataset.updatedAt = session.updated_at;
           const wantSecondary = session.session_id.slice(0, 8)+' \u00b7 '+basename(session.project);
           if(row.secondary.textContent !== wantSecondary) row.secondary.textContent = wantSecondary;
-          placeAfter(group.details, row.button, prevRow);
-          prevRow = row.button;
+          orderedRows.push(row.button);
         }
       }
     }
-    for(const [rowKey, row] of sessionRowByKey) if(!seenRows.has(rowKey)) { row.button.remove(); sessionRowByKey.delete(rowKey); }
-    for(const [groupKey, group] of sessionGroupByKey) if(!seenGroups.has(groupKey)) { group.details.remove(); sessionGroupByKey.delete(groupKey); }
-    for(const [agentId, label] of agentLabelById) if(!seenLabels.has(agentId)) { label.remove(); agentLabelById.delete(agentId); }
+    // Sweep before placing: a node that is on its way out still sits between
+    // two survivors during placement, so placing first made every node behind
+    // it look out of order and moved it too.
+    const keepTop = new Set(orderedTop);
+    for(const child of [...sessionList.children]) if(!keepTop.has(child)) child.remove();
+    placeInOrder(sessionList, orderedTop, null);
+    for(const [group, rows] of orderedRowsByGroup) {
+      const keepRows = new Set(rows);
+      for(const child of [...group.details.children]) if(child !== group.summary && !keepRows.has(child)) child.remove();
+      placeInOrder(group.details, rows, group.summary);
+    }
+    for(const rowKey of [...sessionRowByKey.keys()]) if(!seenRows.has(rowKey)) sessionRowByKey.delete(rowKey);
+    for(const groupKey of [...sessionGroupByKey.keys()]) if(!seenGroups.has(groupKey)) sessionGroupByKey.delete(groupKey);
+    for(const agentId of [...agentLabelById.keys()]) if(!seenLabels.has(agentId)) agentLabelById.delete(agentId);
   }
   // Relative ages ("2 hours ago") must not drive re-renders: one slow
   // interval rewrites only the age fallback text nodes, never the structure.
